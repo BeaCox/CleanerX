@@ -1,0 +1,30 @@
+/target/
+/node_modules/
+/dist/
+/.pnpm-store/
+/coverage/
+.eslintcache
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# CleanerX local archives and scratch data
+/.cleanerx/
+*.cxb
+*.cxb.partial
+
+# Editors and operating systems
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and generated intermediates
+*.log
+*.partial
+*.tsbuildinfo
+*.profraw
+src-tauri/gen/

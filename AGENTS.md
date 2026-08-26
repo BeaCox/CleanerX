@@ -1,0 +1,79 @@
+# CleanerX agent instructions
+
+These instructions apply to the entire repository. CleanerX deletes private local Agent data, so safety requirements take precedence over convenience, compatibility, or UI polish.
+
+## Product invariants
+
+- CleanerX is local-only. Do not add telemetry, crash upload, cloud synchronization, an updater, or a background daemon without an explicit product decision.
+- Never recursively scan or mutate a source/project directory. A project path is grouping metadata, not a cleanup root.
+- Never target authentication, configuration, MCP credentials, rules, skills, plugins, cookies, browser accounts, or source code.
+- Never expose a general shell or unrestricted filesystem API to the webview.
+- Never force-quit Codex or another process. Detect active writers, explain the blocker, and let the user retry.
+- Recoverable data must have a verified, atomically committed encrypted backup before mutation starts.
+
+## Architecture boundaries
+
+- `crates/cleanerx-core` owns domain types, cleanup planning, path validation, backup/restore, hashing, and transaction invariants. It must not depend on Tauri or a concrete Agent.
+- `crates/adapter-codex` owns Codex discovery, capability probing, App Server transport, Codex storage classification, and read-only compatibility fallbacks.
+- Future adapters implement the compile-time `AgentAdapter` trait. Do not add a dynamic plugin ABI for the MVP.
+- `src-tauri` is the narrow application boundary. Expose only purpose-specific commands and validate all identifiers and paths again on the Rust side.
+- `src` owns presentation and interaction. It must not infer that an unavailable control is safe merely because a path was discovered.
+
+## Codex integration rules
+
+- Prefer public, documented Codex App Server methods for session mutations. Complete the `initialize` request and `initialized` notification handshake.
+- A stale or unresponsive control socket should fall back to an isolated stdio App Server. Failure of both transports makes session operations read-only.
+- `thread/delete` is the supported session deletion route. Never repair or delete sessions through private SQLite writes.
+- Treat `memory/reset` as an independently probed capability. Its absence disables memory reset only; it must not disable otherwise supported session cleanup.
+- State databases may supplement scans only when their schema is recognized. Unknown schemas are read-only and must not block a filesystem inventory.
+- Inventory scans must not load or retain transcript, memory, or log bodies. Content is loaded only after an explicit detail action, through a purpose-specific read-only command scoped to an item in the current snapshot. Enforce recognized schemas, fixed roots, symlink rejection, bounded previews, and clear the content when the detail view closes.
+
+## Mutation and path safety
+
+- Every direct file operation must resolve beneath a fixed, category-specific allowlisted root.
+- Reject symbolic links, lexical traversal, ownership anomalies, protected descendants, and file identity changes between planning and execution.
+- Session cleanup must expand descendants, show them in the review plan, back them up together, and call the official deletion operation only for the minimal root set.
+- Delete allowlisted attachments only after the owning session deletion succeeds. Rescan to verify the result.
+- Restoration is all-or-nothing: verify manifest hashes and preflight every destination before the first move. Never overwrite an existing ID or path.
+- Keep transaction journal transitions atomic and recoverable. New mutation steps require fault-injection coverage for every boundary before and after irreversible work.
+
+## UI and information architecture
+
+- “Sessions” is the only navigation entry for project-associated session data. In its default tree, project roots group root sessions and descendants; do not reintroduce a duplicate Projects page.
+- Keep the filtered flat list as an alternate session view.
+- Filtering a child must retain its ancestors as non-selectable context.
+- Bulk selection applies only to the visible/current scope and must skip blocked or protected items. Preserve `Cmd/Ctrl+A` inside text inputs for normal text selection.
+- No cleanup item is automatically selected. Pinned and loaded sessions remain unavailable for selection where required by the mutation safety rules.
+- Open item details by activating the row or card itself; do not add a redundant view-details icon or button. Embedded selection and disclosure controls must not open details.
+- Keep Chinese and English translations in sync. Use system theme, keyboard-accessible controls, visible focus states, and reduced-motion preferences.
+- Avoid microtype for operational data. Body/table/control text should normally be at least 12 px; auxiliary monospace metadata may be 10–11 px when contrast remains accessible.
+
+## Development workflow
+
+- Use the root `Makefile` as the stable entry point. Tool-specific commands remain implemented by Cargo, pnpm, and Tauri underneath it.
+- Run `make check` before handing off a code change. It covers Rust formatting, Clippy, Rust tests, frontend tests, and the frontend production build.
+- Use `make dev` for hot-reload development, `make app` for a local unsigned `.app`, and `make bundles` for `.app` plus DMG release artifacts.
+- Do not edit generated content in `dist/`, `target/`, or `node_modules/`. Change sources and regenerate.
+- Keep lockfiles committed and avoid unrelated dependency upgrades.
+- Preserve user changes in a dirty worktree and keep edits scoped to the requested task.
+
+## Test requirements
+
+- New storage schemas, categories, or mutation paths require temporary fixtures and negative-path tests.
+- Safety tests must prove protected fixture bytes and source trees remain unchanged.
+- App Server changes require transport failure, capability downgrade, pagination, active/archived/pinned, and descendant coverage.
+- Frontend behavior changes require Testing Library coverage for selection, blockers, confirmation, errors, i18n, and keyboard accessibility as applicable.
+- Platform-specific behavior must have an abstraction-level test runnable on Windows and Linux, plus a native smoke test on the affected platform.
+- Live tests must use an isolated temporary `CODEX_HOME` unless they are explicitly ignored, read-only diagnostics.
+
+## Documentation ownership
+
+- Update `docs/storage-model.md` when discovery, classification, mutation, backup, journal, or restore behavior changes.
+- Update `docs/agent-session-hierarchy.md` when an adapter changes hierarchy semantics.
+- Update `docs/roadmap.md` when milestone scope or status changes.
+- Update `SECURITY.md` for any safety-boundary or threat-model change.
+- Link compatibility decisions to official Agent documentation whenever available, and clearly label reverse-engineered behavior as read-only.
+
+## Definition of done
+
+A change is complete only when its behavior is implemented, relevant tests pass, `make check` passes, safety degradation is explicit in the GUI, documentation is current, and any requested artifact is rebuilt. Do not mark destructive functionality complete if its backup, crash recovery, or post-operation verification path is missing.

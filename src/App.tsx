@@ -1,0 +1,903 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  Archive,
+  Bot,
+  Boxes,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  Database,
+  FolderCode,
+  GitBranch,
+  HardDrive,
+  Image,
+  Languages,
+  List,
+  LoaderCircle,
+  LockKeyhole,
+  Menu,
+  MemoryStick,
+  Moon,
+  Pin,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Sun,
+  Trash2,
+  X,
+} from "lucide-react";
+import { api } from "./api";
+import i18n from "./i18n";
+import type {
+  AppSettings,
+  BackupRecord,
+  CleanupItem,
+  CleanupPlan,
+  ContentBlock,
+  InventorySnapshot,
+  ItemContentDetail,
+  ProjectGroup,
+  SessionRecord,
+  StorageCategory,
+  ViewId,
+} from "./types";
+
+const categoryColors: Record<StorageCategory, string> = {
+  session: "#7868ee",
+  archivedSession: "#a596ff",
+  memory: "#e07098",
+  attachment: "#ebae52",
+  generatedImage: "#dc7a66",
+  log: "#55a3ce",
+  cache: "#38b99b",
+  temporary: "#91b759",
+  protected: "#84909f",
+};
+
+const categoryTranslation: Record<StorageCategory, string> = {
+  session: "categorySession",
+  archivedSession: "categoryArchivedSession",
+  memory: "categoryMemory",
+  attachment: "categoryAttachment",
+  generatedImage: "categoryGeneratedImage",
+  log: "categoryLog",
+  cache: "categoryCache",
+  temporary: "categoryTemporary",
+  protected: "categoryProtected",
+};
+
+const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
+  { id: "overview", icon: HardDrive, label: "overview" },
+  { id: "sessions", icon: Bot, label: "sessions" },
+  { id: "memory", icon: MemoryStick, label: "memory" },
+  { id: "generated", icon: Image, label: "generated" },
+  { id: "logs", icon: Database, label: "logs" },
+  { id: "backups", icon: Archive, label: "backups" },
+  { id: "settings", icon: Settings, label: "settings" },
+];
+
+export default function App() {
+  const { t } = useTranslation();
+  const [view, setView] = useState<ViewId>("overview");
+  const [snapshot, setSnapshot] = useState<InventorySnapshot>();
+  const [backups, setBackups] = useState<BackupRecord[]>([]);
+  const [settings, setSettings] = useState<AppSettings>();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [plan, setPlan] = useState<CleanupPlan>();
+  const [createBackup, setCreateBackup] = useState(true);
+  const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | null>("scan");
+  const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  const [detailItemId, setDetailItemId] = useState<string>();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const loaded = useRef(false);
+
+  const scan = useCallback(async () => {
+    setBusy("scan");
+    setError(undefined);
+    try {
+      const result = await api.scanStorage();
+      setSnapshot(result);
+      setSelected((current) => new Set(
+        [...current].filter((id) => result.items.some((item) => item.id === id && isItemSelectable(item, result))),
+      ));
+      setNotice(t("scanComplete"));
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    if (loaded.current) return;
+    loaded.current = true;
+    void Promise.all([api.getSettings(), api.listBackups()])
+      .then(([nextSettings, nextBackups]) => {
+        setSettings(nextSettings);
+        setBackups(nextBackups);
+        applyPreferences(nextSettings);
+      })
+      .catch((reason) => setError(messageOf(reason)));
+    void scan();
+  }, [scan]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(undefined), 2800);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        void scan();
+      }
+      if (event.key === "Escape") {
+        setPlan(undefined);
+        setDetailItemId(undefined);
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [scan]);
+
+  const selectedItems = useMemo(
+    () => snapshot?.items.filter((item) => selected.has(item.id)) ?? [],
+    [selected, snapshot],
+  );
+  const selectedBytes = selectedItems.reduce((sum, item) => sum + item.sizeBytes, 0);
+
+  const toggleItem = (item: CleanupItem) => {
+    if (!snapshot || !isItemSelectable(item, snapshot)) return;
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  };
+
+  const selectMany = useCallback((items: CleanupItem[], shouldSelect: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      items.forEach((item) => {
+        if (!snapshot || !isItemSelectable(item, snapshot)) return;
+        if (shouldSelect) next.add(item.id); else next.delete(item.id);
+      });
+      return next;
+    });
+  }, [snapshot]);
+
+  const reviewPlan = async () => {
+    setBusy("plan");
+    setError(undefined);
+    try {
+      const nextPlan = await api.planCleanup([...selected]);
+      setPlan(nextPlan);
+      setCreateBackup(nextPlan.estimatedBackupBytes > 0);
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const executePlan = async () => {
+    if (!plan || plan.blockers.length) return;
+    setBusy("execute");
+    setError(undefined);
+    try {
+      const result = await api.executeCleanup(plan.id, createBackup);
+      setPlan(undefined);
+      setSelected(new Set());
+      setNotice(`${t("cleanupComplete")} · ${formatBytes(result.reclaimedBytes)}`);
+      await scan();
+      setBackups(await api.listBackups());
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restore = async (backupId: string) => {
+    setBusy("restore");
+    setError(undefined);
+    try {
+      await api.restoreBackup(backupId);
+      setNotice(t("restore"));
+      await scan();
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const purge = async (backupId: string) => {
+    if (!window.confirm(t("deleteForever"))) return;
+    try {
+      await api.purgeBackup(backupId);
+      setBackups(await api.listBackups());
+    } catch (reason) {
+      setError(messageOf(reason));
+    }
+  };
+
+  const saveSettings = async (next: AppSettings) => {
+    try {
+      const saved = await api.updateSettings(next);
+      setSettings(saved);
+      applyPreferences(saved);
+      setNotice(t("save"));
+    } catch (reason) {
+      setError(messageOf(reason));
+    }
+  };
+
+  const storageView = view === "overview" || view === "sessions" || view === "memory" || view === "generated" || view === "logs";
+  const detailItem = snapshot?.items.find((item) => item.id === detailItemId);
+
+  return (
+    <div className="app-shell">
+      <button
+        className="mobile-menu icon-button"
+        aria-label="Menu"
+        onClick={() => setSidebarOpen((open) => !open)}
+      >
+        <Menu size={19} />
+      </button>
+      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+        <div className="brand">
+          <div className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></div>
+          <strong>{t("appName")}</strong>
+        </div>
+        <nav aria-label="Primary navigation">
+          {navItems.map(({ id, icon: Icon, label }) => (
+            <button
+              key={id}
+              className={view === id ? "nav-active" : ""}
+              onClick={() => { setView(id); setSidebarOpen(false); }}
+            >
+              <Icon size={17} />
+              <span>{t(label)}</span>
+              {id === "sessions" && snapshot && <small>{snapshot.sessions.length}</small>}
+              {id === "backups" && backups.length > 0 && <small>{backups.length}</small>}
+            </button>
+          ))}
+        </nav>
+        <div className="agent-card">
+          <div className="agent-logo">C</div>
+          <div className="agent-copy">
+            <strong>Codex</strong>
+            <span>{snapshot?.installation.version?.replace("codex-cli ", "") ?? "—"}</span>
+          </div>
+          <span className={`status-dot ${snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
+        </div>
+      </aside>
+
+      <main className="main-panel">
+        <header className="topbar">
+          <div>
+            <span className="eyebrow">CODEX / LOCAL STORAGE</span>
+            <h1>{t(navItems.find((item) => item.id === view)?.label ?? "overview")}</h1>
+          </div>
+          <div className="topbar-actions">
+            {storageView && snapshot && (
+              <span className="last-scan">
+                <span className="status-dot" />
+                {t("lastScan")} {relativeTime(snapshot.scannedAt, i18n.language)}
+              </span>
+            )}
+            {storageView && <button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>
+              <RefreshCw size={15} className={busy === "scan" ? "spinning" : ""} />
+              {busy === "scan" ? t("scanning") : t("scan")}
+            </button>}
+          </div>
+        </header>
+
+        <div className="content">
+          {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
+          {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice")}</strong><span>{t("reportOnlyHelp")}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
+          {view === "settings" ? (
+            settings ? <SettingsView value={settings} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
+          ) : view === "backups" ? (
+            <BackupsView backups={backups} restore={restore} purge={purge} busy={busy !== null} />
+          ) : !snapshot ? (
+            <StorageLoadingView view={view} failed={busy !== "scan"} />
+          ) : (
+            <>
+              {view === "overview" && <Overview snapshot={snapshot} />}
+              {view === "sessions" && <SessionsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+              {view === "memory" && <MemoryView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+              {view === "generated" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["attachment", "generatedImage"]} />}
+              {view === "logs" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["log", "cache", "temporary", "protected"]} />}
+            </>
+          )}
+        </div>
+      </main>
+
+      {selected.size > 0 && !plan && (
+        <div className="selection-bar" role="status">
+          <div className="selection-icon"><Check size={16} /></div>
+          <div><strong>{selected.size} {t("selected")}</strong><span>{formatBytes(selectedBytes)}</span></div>
+          <button className="text-button" onClick={() => setSelected(new Set())}>{t("clearSelection")}</button>
+          <button className="primary-button" onClick={() => void reviewPlan()} disabled={busy !== null}>
+            {busy === "plan" && <LoaderCircle size={16} className="spinning" />}
+            {t("reviewCleanup")}<ChevronRight size={16} />
+          </button>
+        </div>
+      )}
+
+      {plan && (
+        <ReviewDialog
+          plan={plan}
+          snapshot={snapshot!}
+          createBackup={createBackup}
+          setCreateBackup={setCreateBackup}
+          close={() => setPlan(undefined)}
+          execute={() => void executePlan()}
+          executing={busy === "execute"}
+        />
+      )}
+      {detailItem && snapshot && <ItemDetailDialog item={detailItem} snapshot={snapshot} selected={selected.has(detailItem.id)} toggle={() => toggleItem(detailItem)} close={() => setDetailItemId(undefined)} />}
+      {notice && <div className="toast"><Check size={16} />{notice}</div>}
+    </div>
+  );
+}
+
+function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
+  const { t } = useTranslation();
+  const categories = snapshot.categories.filter((item) => item.category !== "protected" && item.sizeBytes > 0);
+  return (
+    <div className="page-stack">
+      <section className="metric-grid overview-metrics">
+        <Metric icon={HardDrive} tone="neutral" value={formatBytes(snapshot.totalBytes)} label={t("totalManaged")} detail={`${snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0)} ${t("items")}`} />
+        <Metric icon={FolderCode} tone="purple" value={String(snapshot.projects.length)} label={t("projectsCount")} detail={snapshot.projects.slice(0, 2).map((item) => item.name).join(" · ")} />
+        <Metric icon={Bot} tone="blue" value={String(snapshot.sessions.length)} label={t("sessionsCount")} detail={`${snapshot.sessions.filter((session) => session.archived).length} ${t("archived")}`} />
+      </section>
+      <section className="panel-card">
+        <div className="panel-heading"><div><h3>{t("storageBreakdown")}</h3><p>{snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0)} {t("items")}</p></div></div>
+        <div className="category-list">
+          {categories.map((category) => (
+            <div className="category-row" key={category.category}>
+              <span className="category-swatch" style={{ background: categoryColors[category.category] }} />
+              <div><strong>{t(categoryTranslation[category.category])}</strong><span>{category.itemCount} {t("items")}</span></div>
+              <div className="category-track"><span style={{ width: `${Math.max(4, category.sizeBytes / snapshot.totalBytes * 100)}%`, background: categoryColors[category.category] }} /></div>
+              <strong>{formatBytes(category.sizeBytes)}</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, tone, value, label, detail }: { icon: typeof Sparkles; tone: string; value: string; label: string; detail: string }) {
+  return <div className="metric-card"><div className={`metric-icon ${tone}`}><Icon size={19} /></div><div><span>{label}</span><strong>{value}</strong><small>{detail || "—"}</small></div></div>;
+}
+
+interface SelectionProps {
+  snapshot: InventorySnapshot;
+  selected: Set<string>;
+  toggle: (item: CleanupItem) => void;
+  selectMany: (items: CleanupItem[], shouldSelect: boolean) => void;
+  inspect: (item: CleanupItem) => void;
+}
+
+function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const [project, setProject] = useState("all");
+  const [source, setSource] = useState("all");
+  const [state, setState] = useState("all");
+  const [displayMode, setDisplayMode] = useState<"tree" | "list">("tree");
+  const rows = snapshot.sessions.filter((session) => {
+    const item = snapshot.items.find((candidate) => candidate.threadId === session.id);
+    const matchesQuery = `${session.name} ${session.cwd}`.toLowerCase().includes(query.toLowerCase());
+    const matchesProject = project === "all" || item?.projectId === project;
+    const matchesSource = source === "all" || session.source === source;
+    const matchesState = state === "all" || (state === "archived" ? session.archived : !session.archived);
+    return matchesQuery && matchesProject && matchesSource && matchesState;
+  });
+  const rowItems = rows
+    .map((session) => snapshot.items.find((candidate) => candidate.threadId === session.id))
+    .filter((item): item is CleanupItem => Boolean(item));
+  const matchingSessionIds = new Set(rows.map((session) => session.id));
+  const visibleSessionIds = includeSessionAncestors(snapshot.sessions, matchingSessionIds);
+  useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
+  return <section className="panel-card table-panel">
+    <div className="filter-row">
+      <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
+      <select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      <select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item}>{item}</option>)}</select>
+      <select value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
+      <div className="view-switcher" aria-label={t("viewMode")}>
+        <button type="button" className={displayMode === "tree" ? "active" : ""} aria-pressed={displayMode === "tree"} onClick={() => setDisplayMode("tree")}><GitBranch size={14} />{t("treeView")}</button>
+        <button type="button" className={displayMode === "list" ? "active" : ""} aria-pressed={displayMode === "list"} onClick={() => setDisplayMode("list")}><List size={14} />{t("listView")}</button>
+      </div>
+    </div>
+    <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut />
+    {displayMode === "tree" ? (
+      <SessionTreeTable snapshot={snapshot} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />
+    ) : <SessionListTable snapshot={snapshot} rows={rows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
+    {!rows.length && <EmptyState />}
+  </section>;
+}
+
+function SessionListTable({ snapshot, rows, selected, toggle, inspect }: SelectionProps & { rows: SessionRecord[] }) {
+  const { t } = useTranslation();
+  return <div className="table-scroll"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th>{t("project")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead><tbody>
+      {rows.map((session) => {
+        const item = snapshot.items.find((candidate) => candidate.threadId === session.id)!;
+        const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name;
+        return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
+          <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
+          <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
+          <td><span className="pill">{projectName ?? "—"}</span></td><td><span className="source-label">{session.source}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+        </tr>;
+      })}
+    </tbody></table></div>;
+}
+
+function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect }: SelectionProps & { visibleSessionIds: Set<string>; matchingSessionIds: Set<string> }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([
+    ...snapshot.projects.map((project) => `project:${project.id}`),
+    ...snapshot.sessions.filter((session) => session.descendantIds.length > 0).map((session) => `session:${session.id}`),
+  ]));
+  const sessionById = new Map(snapshot.sessions.map((session) => [session.id, session]));
+  const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
+  const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
+  const ungroupedIds = [...visibleSessionIds].filter((id) => !assigned.has(id));
+  const projects: ProjectGroup[] = [
+    ...snapshot.projects,
+    ...(ungroupedIds.length ? [{ id: "__ungrouped", name: t("ungrouped"), roots: [], sessionIds: ungroupedIds, sizeBytes: ungroupedIds.reduce((sum, id) => sum + (sessionById.get(id)?.sizeBytes ?? 0), 0) }] : []),
+  ];
+
+  const toggleExpanded = (key: string) => setExpanded((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const renderSession = (session: SessionRecord, projectIds: Set<string>, depth: number): ReactNode[] => {
+    const item = itemByThread.get(session.id);
+    if (!item) return [];
+    const children = snapshot.sessions
+      .filter((candidate) => candidate.parentThreadId === session.id && projectIds.has(candidate.id) && visibleSessionIds.has(candidate.id))
+      .sort(sortSessions);
+    const key = `session:${session.id}`;
+    const isExpanded = expanded.has(key);
+    const contextOnly = !matchingSessionIds.has(session.id);
+    const rows: ReactNode[] = [<tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""} ${contextOnly ? "tree-context-row" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
+        <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason || contextOnly)} onChange={() => toggle(item)} label={session.name} /></td>
+        <td>
+          <div className={`tree-session-cell ${depth > 0 ? "nested" : ""}`} style={{ "--tree-depth": depth } as CSSProperties}>
+            {children.length ? <button type="button" className="tree-disclosure" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${session.name}`} onClick={() => toggleExpanded(key)}>{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="tree-spacer" />}
+            <div className="tree-session-detail">
+              <span className={`session-glyph ${depth > 0 ? "child-session-glyph" : ""}`}>{depth > 0 ? <GitBranch size={15} /> : <Bot size={16} />}</span>
+              <span className="session-copy"><strong>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{contextOnly ? t("ancestorContext") : session.archived ? t("archived") : statusLabel(session.status, t)}{children.length > 0 && <> · {children.length} {t("childSessions")}</>}</span></span>
+            </div>
+          </div>
+        </td>
+        <td><span className="source-label">{session.source}</span></td>
+        <td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td>
+        <td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+      </tr>];
+    if (isExpanded) rows.push(...children.flatMap((child) => renderSession(child, projectIds, depth + 1)));
+    return rows;
+  };
+
+  const projectBodies = projects.flatMap((project) => {
+    const projectIds = new Set(project.sessionIds.filter((id) => visibleSessionIds.has(id)));
+    if (!projectIds.size) return [];
+    const sessions = [...projectIds].map((id) => sessionById.get(id)).filter((session): session is SessionRecord => Boolean(session));
+    const roots = sessions.filter((session) => !session.parentThreadId || !projectIds.has(session.parentThreadId)).sort(sortSessions);
+    const projectKey = `project:${project.id}`;
+    const isExpanded = expanded.has(projectKey);
+    const projectItems = sessions.map((session) => itemByThread.get(session.id)).filter((item): item is CleanupItem => Boolean(item));
+    const selectableItems = projectItems.filter((item) => !item.blockedReason && matchingSessionIds.has(item.threadId!));
+    const allSelected = selectableItems.length > 0 && selectableItems.every((item) => selected.has(item.id));
+    const toggleProject = () => selectMany(selectableItems, !allSelected);
+    return [<tbody className="tree-project" key={project.id}>
+      <tr className="tree-project-row">
+        <td><CheckBox checked={allSelected} disabled={!selectableItems.length} onChange={toggleProject} label={`${t("selectProject")} ${project.name}`} /></td>
+        <td colSpan={4}>
+          <button type="button" className="project-tree-toggle" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${project.name}`} onClick={() => toggleExpanded(projectKey)}>
+            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            <span className="project-icon compact"><FolderCode size={16} /></span>
+            <span className="project-tree-copy"><strong>{project.name}</strong><code>{project.roots[0] ?? t("ungrouped")}</code></span>
+            <span className="project-tree-stats"><span><Bot size={13} />{sessions.length}</span><strong>{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></span>
+          </button>
+        </td>
+      </tr>
+      {isExpanded && roots.flatMap((session) => renderSession(session, projectIds, 0))}
+    </tbody>];
+  });
+
+  if (!projectBodies.length) return null;
+  const expansionKeys = [
+    ...projects.filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id))).map((project) => `project:${project.id}`),
+    ...snapshot.sessions.filter((session) => visibleSessionIds.has(session.id) && snapshot.sessions.some((candidate) => candidate.parentThreadId === session.id && visibleSessionIds.has(candidate.id))).map((session) => `session:${session.id}`),
+  ];
+  return <>
+    <div className="tree-controls"><span>{t("treeNavigationHint")}</span><button type="button" className="text-button" onClick={() => setExpanded(new Set(expansionKeys))}>{t("expandAll")}</button><button type="button" className="text-button" onClick={() => setExpanded(new Set())}>{t("collapseAll")}</button></div>
+    <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead>{projectBodies}</table></div>
+  </>;
+}
+
+function includeSessionAncestors(sessions: SessionRecord[], matchingIds: Set<string>) {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const visible = new Set(matchingIds);
+  matchingIds.forEach((id) => {
+    let cursor = byId.get(id)?.parentThreadId;
+    const visited = new Set<string>();
+    while (cursor && !visited.has(cursor)) {
+      visited.add(cursor);
+      visible.add(cursor);
+      cursor = byId.get(cursor)?.parentThreadId;
+    }
+  });
+  return visible;
+}
+
+function sortSessions(left: SessionRecord, right: SessionRecord) {
+  return new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime();
+}
+
+function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
+  const { t } = useTranslation();
+  const item = snapshot.items.find((candidate) => candidate.category === "memory");
+  useToggleAllShortcut(item ? [item] : [], snapshot, selected, selectMany);
+  return <div className="memory-layout">
+    <header className="memory-heading"><div className="memory-orb"><MemoryStick size={24} /></div><div><span className="section-kicker">GLOBAL · HIGH RISK</span><h2>{t("globalMemory")}</h2><p>{t("memoryNotice")}</p></div></header>
+    {item ? <section className="panel-card detail-card clickable-card" tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}><div className="item-select-row"><CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} /><div><h3>{item.title}</h3><p>{item.subtitle}</p></div><div className="item-select-actions"><strong>{formatBytes(item.sizeBytes)}</strong></div></div><div className="detail-lines"><span><LockKeyhole size={15} />{t("recoverable")}</span><code>{item.paths[0]}</code></div></section> : <EmptyState />}
+  </div>;
+}
+
+function ItemsView({ snapshot, selected, toggle, selectMany, inspect, categories }: SelectionProps & { categories: StorageCategory[] }) {
+  const { t } = useTranslation();
+  const items = snapshot.items.filter((item) => categories.includes(item.category));
+  useToggleAllShortcut(items, snapshot, selected, selectMany);
+  if (!items.length) return <EmptyState />;
+  return <div className="page-stack"><BulkActions items={items} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut /><div className="items-grid">{items.map((item) => <article className={`item-card clickable-card ${item.protected ? "protected-item" : ""}`} key={item.id} tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
+    <CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} />
+    <div className="item-category" style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</div>
+    <div className="item-copy"><span>{t(categoryTranslation[item.category])}</span><h3>{item.title}</h3>{item.subtitle && <p>{item.subtitle}</p>}<code title={item.paths[0]}>{item.paths[0]}</code>{item.blockedReason && <small className="blocked-copy"><CircleAlert size={13} />{item.blockedReason}</small>}</div>
+    <div className="item-size"><strong>{formatBytes(item.sizeBytes)}</strong><span className={`risk-badge ${item.risk}`}>{t(`risk${capitalize(item.risk)}`)}</span></div>
+  </article>)}</div></div>;
+}
+
+function BackupsView({ backups, restore, purge, busy }: { backups: BackupRecord[]; restore: (id: string) => void; purge: (id: string) => void; busy: boolean }) {
+  const { t } = useTranslation();
+  return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="icon-button danger" disabled={busy} onClick={() => purge(backup.id)} aria-label={t("deleteForever")}><Trash2 size={16} /></button></article>)}</div>}</div>;
+}
+
+function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => void }) {
+  const { t } = useTranslation();
+  const [form, setForm] = useState(value);
+  useEffect(() => setForm(value), [value]);
+  return <form className="settings-form panel-card" onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
+    <div className="settings-heading"><div className="settings-icon"><Settings size={21} /></div><h2>{t("cleanerSettings")}</h2></div>
+    <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
+    <Setting label={t("language")}><div className="segmented"><button type="button" className={form.locale === "system" ? "active" : ""} onClick={() => setForm({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} onClick={() => setForm({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} onClick={() => setForm({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
+    <Setting label={t("appearance")}><div className="segmented"><button type="button" className={form.theme === "system" ? "active" : ""} onClick={() => setForm({ ...form, theme: "system" })}><Sun size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} onClick={() => setForm({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} onClick={() => setForm({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
+    <div className="retention-grid"><Setting label={t("backupRetention")}><input type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
+    <div className="settings-footer"><button className="primary-button" type="submit">{t("save")}</button></div>
+  </form>;
+}
+
+function Setting({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return <label className="setting-row"><div><strong>{label}</strong>{hint && <span>{hint}</span>}</div>{children}</label>;
+}
+
+function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: CleanupItem; snapshot: InventorySnapshot; selected: boolean; toggle: () => void; close: () => void }) {
+  const { t } = useTranslation();
+  const [content, setContent] = useState<ItemContentDetail>();
+  const [contentError, setContentError] = useState<string>();
+  const [contentLoading, setContentLoading] = useState(true);
+  const session = item.threadId ? snapshot.sessions.find((candidate) => candidate.id === item.threadId) : undefined;
+  const project = item.projectId ? snapshot.projects.find((candidate) => candidate.id === item.projectId) : undefined;
+  const selectable = isItemSelectable(item, snapshot);
+  const metadata = Object.entries(item.metadata).filter(([key]) => !["source", "status", "pinned"].includes(key));
+  useEffect(() => {
+    let active = true;
+    setContent(undefined);
+    setContentError(undefined);
+    setContentLoading(true);
+    void api.getItemContent(item.id)
+      .then((result) => { if (active) setContent(result); })
+      .catch((reason) => { if (active) setContentError(messageOf(reason)); })
+      .finally(() => { if (active) setContentLoading(false); });
+    return () => { active = false; };
+  }, [item.id]);
+  return <div className="detail-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <aside className="item-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="item-detail-title">
+      <header className="item-detail-header">
+        <div className="item-detail-category" style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</div>
+        <div><span>{t(categoryTranslation[item.category])}</span><h2 id="item-detail-title">{item.title}</h2></div>
+        <button type="button" className="icon-button" onClick={close} aria-label={t("closeDetails")}><X size={18} /></button>
+      </header>
+      <div className="item-detail-scroll">
+        {item.subtitle && <p className="item-detail-lead">{item.subtitle}</p>}
+        <div className="detail-summary-grid">
+          <DetailFact label={t("size")} value={formatBytes(item.sizeBytes)} />
+          <DetailFact label={t("detailsRisk")} value={t(`risk${capitalize(item.risk)}`)} tone={item.risk} />
+          <DetailFact label={t("detailsRecovery")} value={item.recoverable ? t("yes") : t("no")} />
+        </div>
+
+        <section className="detail-section">
+          <h3>{t("detailsItem")}</h3>
+          <dl className="detail-facts">
+            <div><dt>{t("detailsIdentifier")}</dt><dd><code>{item.id}</code></dd></div>
+            <div><dt>{t("detailsModified")}</dt><dd>{item.modifiedAt ? formatDate(item.modifiedAt, i18n.language) : "—"}</dd></div>
+            <div><dt>{t("detailsSelection")}</dt><dd>{selected ? t("selectedState") : selectable ? t("notSelectedState") : t("unavailableState")}</dd></div>
+          </dl>
+        </section>
+
+        {session && <section className="detail-section">
+          <h3>{t("detailsSession")}</h3>
+          <dl className="detail-facts">
+            <div><dt>{t("detailsSessionId")}</dt><dd><code>{session.id}</code></dd></div>
+            <div><dt>{t("project")}</dt><dd>{project?.name ?? t("ungrouped")}</dd></div>
+            <div><dt>{t("source")}</dt><dd>{session.source}</dd></div>
+            <div><dt>{t("detailsStatus")}</dt><dd>{session.archived ? t("archived") : statusLabel(session.status, t)}{session.pinned ? ` · ${t("pinned")}` : ""}</dd></div>
+            <div><dt>{t("detailsCreated")}</dt><dd>{session.createdAt ? formatDate(session.createdAt, i18n.language) : "—"}</dd></div>
+            <div><dt>{t("updated")}</dt><dd>{session.updatedAt ? formatDate(session.updatedAt, i18n.language) : "—"}</dd></div>
+            <div><dt>{t("detailsParent")}</dt><dd><code>{session.parentThreadId ?? "—"}</code></dd></div>
+            <div><dt>{t("detailsChildren")}</dt><dd>{session.descendantIds.length}</dd></div>
+            <div className="detail-fact-wide"><dt>{t("detailsWorkingDirectory")}</dt><dd><code>{session.cwd}</code></dd></div>
+            {project?.roots[0] && <div className="detail-fact-wide"><dt>{t("detailsProjectRoot")}</dt><dd><code>{project.roots[0]}</code></dd></div>}
+          </dl>
+        </section>}
+
+        <section className="detail-section content-preview-section" aria-busy={contentLoading}>
+          <div className="content-preview-heading">
+            <h3>{t("detailsContent")}</h3>
+            {content && <span>{t("contentSource")}: {contentSourceLabel(content.source, t)}</span>}
+          </div>
+          {contentLoading ? <ContentPreviewSkeleton /> : contentError ? (
+            <div className="detail-blocker"><CircleAlert size={17} /><div><strong>{t("contentLoadFailed")}</strong><span>{contentError}</span></div></div>
+          ) : content ? <ContentPreview detail={content} /> : null}
+        </section>
+
+        <section className="detail-section">
+          <h3>{t("detailsPaths")}</h3>
+          {item.paths.length ? <div className="detail-paths">{item.paths.map((path) => <code key={path}>{path}</code>)}</div> : <p className="detail-empty">{t("noPaths")}</p>}
+        </section>
+
+        {metadata.length > 0 && <section className="detail-section">
+          <h3>{t("detailsMetadata")}</h3>
+          <dl className="detail-facts">{metadata.map(([key, value]) => <div key={key}><dt>{metadataLabel(key, t)}</dt><dd>{metadataValue(key, value, t)}</dd></div>)}</dl>
+        </section>}
+
+        {item.blockedReason && <div className="detail-blocker"><CircleAlert size={17} /><div><strong>{t("blocked")}</strong><span>{item.blockedReason}</span></div></div>}
+      </div>
+      <footer className="item-detail-footer">
+        <button type="button" className="secondary-button" onClick={close}>{t("close")}</button>
+        {selectable && <button type="button" className={selected ? "secondary-button" : "primary-button"} onClick={toggle}>{selected ? t("deselectItem") : t("selectItem")}</button>}
+      </footer>
+    </aside>
+  </div>;
+}
+
+function DetailFact({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return <div><span>{label}</span><strong className={tone ? `detail-tone ${tone}` : undefined}>{value}</strong></div>;
+}
+
+function ContentPreview({ detail }: { detail: ItemContentDetail }) {
+  const { t } = useTranslation();
+  return <div className="content-preview">
+    {detail.warning && <div className="content-warning"><CircleAlert size={15} /><span>{detail.warning}</span></div>}
+    {detail.blocks.map((block, index) => <ContentBlockView block={block} key={`${block.kind}:${index}`} />)}
+    {detail.truncated && <div className="content-limit"><span>{t("contentTruncated")}</span><strong>{formatBytes(detail.bytesRead)}</strong></div>}
+  </div>;
+}
+
+function ContentBlockView({ block }: { block: ContentBlock }) {
+  const { t } = useTranslation();
+  if (block.kind === "message") return <article className={`content-message role-${block.role}`}>
+    <header><strong>{roleLabel(block.role, t)}</strong>{block.phase && <span>{block.phase.replace("final_answer", "final")}</span>}</header>
+    <div className="rendered-text">{block.text}</div>
+  </article>;
+  if (block.kind === "image") return <figure className="content-image"><img src={block.dataUrl} alt={block.title} /><figcaption>{block.title}</figcaption></figure>;
+  if (block.kind === "log") return <article className="content-log">
+    <header>{block.level && <strong className={`log-${block.level.toLowerCase()}`}>{block.level}</strong>}<span>{block.target}</span><time>{block.timestamp ? formatDate(block.timestamp, i18n.language) : ""}</time></header>
+    <div className="rendered-text mono-text">{block.text}</div>
+  </article>;
+  if (block.kind === "notice") return <div className="content-notice">{block.text}</div>;
+  return <article className="content-text-block"><strong>{block.title}</strong><div className="rendered-text mono-text">{block.text}</div></article>;
+}
+
+function ContentPreviewSkeleton() {
+  const { t } = useTranslation();
+  return <div className="content-preview-skeleton" aria-label={t("loadingContent")}>
+    <div className="skeleton skeleton-line skeleton-short" />
+    <div className="skeleton skeleton-line" />
+    <div className="skeleton skeleton-line skeleton-medium" />
+  </div>;
+}
+
+function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, execute, executing }: { plan: CleanupPlan; snapshot: InventorySnapshot; createBackup: boolean; setCreateBackup: (value: boolean) => void; close: () => void; execute: () => void; executing: boolean }) {
+  const { t } = useTranslation();
+  const selected = snapshot.items.filter((item) => plan.selectedItemIds.includes(item.id));
+  const descendantCount = Math.max(0, plan.expandedSessionIds.length - selected.filter((item) => item.threadId).length);
+  const canBackup = plan.estimatedBackupBytes > 0;
+  const displayedBackupBytes = createBackup ? plan.estimatedBackupBytes : 0;
+  const backupRequired = canBackup && !createBackup;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !executing) close(); }}><section className="review-dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
+    <button className="icon-button modal-close" onClick={close} disabled={executing}><X size={18} /></button>
+    <div className="review-icon"><ShieldCheck size={26} /></div><h2 id="review-title">{t("reviewTitle")}</h2><p className="review-lead">{t("reviewLead")}</p>
+    <div className="review-metrics"><div><span>{t("affected")}</span><strong>{selected.length}</strong></div><div><span>{t("descendants")}</span><strong>{descendantCount}</strong></div><div><span>{t("backupSize")}</span><strong>{formatBytes(displayedBackupBytes)}</strong></div><div><span>{t("netGain")}</span><strong>{formatBytes(Math.max(0, plan.estimatedBytes - displayedBackupBytes * 0.62))}</strong></div></div>
+    <div className="impact-list">{selected.slice(0, 6).map((item) => <div key={item.id}><span style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</span><div><strong>{item.title}</strong><span>{t(categoryTranslation[item.category])}</span></div><strong>{formatBytes(item.sizeBytes)}</strong></div>)}</div>
+    {plan.blockers.length > 0 && <div className="blocker-box"><CircleAlert size={18} /><div><strong>{t("blockers")}</strong>{plan.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}</div></div>}
+    <label className={`backup-option ${!canBackup ? "disabled" : ""}`}><input type="checkbox" checked={createBackup && canBackup} disabled={!canBackup || executing} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><span><strong>{t("createBackupOption")}</strong><small>{canBackup ? t("createBackupHint") : t("noBackupNeeded")}</small></span></label>
+    {backupRequired && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t("backupRequiredWarning")}</span></div>}
+    <div className="modal-actions"><button className="secondary-button" onClick={close} disabled={executing}>{t("cancel")}</button><button className="primary-button danger-primary" onClick={execute} disabled={plan.blockers.length > 0 || executing || backupRequired}>{executing && <LoaderCircle size={16} className="spinning" />}{executing ? t("executing") : backupRequired ? t("backupRequiredAction") : createBackup && canBackup ? t("backupAndExecute") : t("executeWithoutBackup")}</button></div>
+  </section></div>;
+}
+
+function BulkActions({ items, snapshot, selected, selectMany, shortcut = false }: { items: CleanupItem[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: CleanupItem[], shouldSelect: boolean) => void; shortcut?: boolean }) {
+  const { t } = useTranslation();
+  const selectable = items.filter((item) => isItemSelectable(item, snapshot));
+  const selectedCount = selectable.filter((item) => selected.has(item.id)).length;
+  const allSelected = selectable.length > 0 && selectedCount === selectable.length;
+  return <div className="bulk-actions" role="toolbar" aria-label={t("bulkSelection")}>
+    <span>{t("selectionScope", { selected: selectedCount, total: selectable.length })}{shortcut && <kbd>⌘/Ctrl A</kbd>}</span>
+    <button type="button" className="text-button" disabled={!selectable.length || allSelected} onClick={() => selectMany(selectable, true)}><Check size={14} />{t("selectAllResults")}</button>
+    <button type="button" className="text-button" disabled={!selectedCount} onClick={() => selectMany(selectable, false)}><X size={14} />{t("clearCurrentSelection")}</button>
+  </div>;
+}
+
+function CheckBox({ checked, disabled, onChange, label }: { checked: boolean; disabled?: boolean; onChange: () => void; label: string }) {
+  return <label className={`checkbox ${disabled ? "disabled" : ""}`} title={disabled ? label : undefined}><input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} aria-label={label} /><span><Check size={12} /></span></label>;
+}
+
+function StorageLoadingView({ view, failed }: { view: ViewId; failed: boolean }) {
+  const { t } = useTranslation();
+  const status = <div className={`scan-placeholder-status ${failed ? "scan-placeholder-failed" : ""}`} role="status">
+    {failed ? <CircleAlert size={16} /> : <LoaderCircle size={16} className="spinning" />}
+    <span>{failed ? t("scanFailed") : t("waitingForScanData")}</span>
+  </div>;
+  if (view === "overview") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
+    {status}
+    <section className="metric-grid overview-metrics">{[0, 1, 2].map((index) => <div className="metric-card" key={index}><div className="skeleton skeleton-icon" /><div className="skeleton-copy"><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line skeleton-medium" /></div></div>)}</section>
+    <section className="panel-card skeleton-panel"><div className="panel-heading"><div><h3>{t("storageBreakdown")}</h3><p>{t("waitingForScanData")}</p></div></div><div className="category-list">{[0, 1, 2, 3].map((index) => <div className="category-row" key={index}><span className="skeleton skeleton-dot" /><div><span className="skeleton skeleton-line skeleton-medium" /><span className="skeleton skeleton-line skeleton-short" /></div><div className="skeleton skeleton-track" /><span className="skeleton skeleton-line" /></div>)}</div></section>
+  </div>;
+  if (view === "sessions") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
+    {status}
+    <section className="panel-card table-panel"><div className="filter-row"><div className="search-box skeleton-control"><Search size={16} /><span>{t("filterSessions")}</span></div>{[0, 1, 2].map((index) => <div className="skeleton-control compact" key={index}><span className="skeleton skeleton-line" /></div>)}</div><div className="bulk-actions"><span>{t("waitingForScanData")}</span></div><div className="skeleton-table">{[0, 1, 2, 3, 4].map((index) => <div key={index}><span className="skeleton skeleton-dot" /><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-line skeleton-short" /></div>)}</div></section>
+  </div>;
+  if (view === "memory") return <div className="memory-layout storage-skeleton" aria-busy={!failed}>
+    {status}
+    <header className="memory-heading"><div className="memory-orb"><MemoryStick size={24} /></div><div><span className="section-kicker">GLOBAL · HIGH RISK</span><h2>{t("globalMemory")}</h2><p>{t("memoryNotice")}</p></div></header>
+    <section className="panel-card detail-card skeleton-detail-card"><span className="skeleton skeleton-dot" /><div><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line skeleton-medium" /></div><span className="skeleton skeleton-line skeleton-short" /></section>
+  </div>;
+  return <div className="page-stack storage-skeleton" aria-busy={!failed}>
+    {status}
+    <div className="bulk-actions"><span>{t("waitingForScanData")}</span></div>
+    <div className="items-grid">{[0, 1, 2].map((index) => <article className="item-card" key={index}><span className="skeleton skeleton-dot" /><span className="skeleton skeleton-icon" /><div className="skeleton-copy"><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line" /></div><span className="skeleton skeleton-line skeleton-short" /></article>)}</div>
+  </div>;
+}
+
+function LoadingState({ label, icon: Icon }: { label: string; icon?: typeof Settings }) { return <div className="loading-state">{Icon ? <Icon /> : <LoaderCircle className="spinning" />}<strong>{label}</strong></div>; }
+function EmptyState({ icon: Icon = Boxes, label }: { icon?: typeof Boxes; label?: string }) { const { t } = useTranslation(); return <div className="empty-state"><Icon size={28} /><strong>{label ?? t("noItems")}</strong></div>; }
+
+function categoryIcon(category: StorageCategory) {
+  const props = { size: 18 };
+  if (category === "memory") return <MemoryStick {...props} />;
+  if (category === "attachment" || category === "generatedImage") return <Image {...props} />;
+  if (category === "session") return <Bot {...props} />;
+  if (category === "archivedSession") return <Archive {...props} />;
+  if (category === "protected") return <LockKeyhole {...props} />;
+  return <Database {...props} />;
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unit = units[0];
+  for (let index = 1; amount >= 1024 && index < units.length; index += 1) { amount /= 1024; unit = units[index]; }
+  return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${unit}`;
+}
+
+function formatDate(value: string, language: string) {
+  return new Intl.DateTimeFormat(language.startsWith("zh") ? "zh-CN" : "en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function capitalize(value: string) { return `${value.charAt(0).toUpperCase()}${value.slice(1)}`; }
+
+function isItemSelectable(item: CleanupItem, snapshot: InventorySnapshot) {
+  if (item.protected || item.blockedReason) return false;
+  return item.category !== "memory" || snapshot.installation.capabilities.memoryReset;
+}
+
+function isInteractiveTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest("button, input, label, select, textarea, a, [contenteditable='true']"));
+}
+
+function useToggleAllShortcut(items: CleanupItem[], snapshot: InventorySnapshot, selected: Set<string>, selectMany: (items: CleanupItem[], shouldSelect: boolean) => void) {
+  const selectable = items.filter((item) => isItemSelectable(item, snapshot));
+  const allSelected = selectable.length > 0 && selectable.every((item) => selected.has(item.id));
+  useEffect(() => {
+    const toggleFiltered = (event: KeyboardEvent) => {
+      const target = event.target;
+      const isEditing = target instanceof HTMLElement && Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+      const modalOpen = Boolean(document.querySelector("[aria-modal='true']"));
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && !event.repeat && !isEditing && !modalOpen && selectable.length > 0) {
+        event.preventDefault();
+        selectMany(selectable, !allSelected);
+      }
+    };
+    window.addEventListener("keydown", toggleFiltered);
+    return () => window.removeEventListener("keydown", toggleFiltered);
+  }, [allSelected, selectMany, selectable]);
+}
+
+function metadataLabel(key: string, t: (key: string) => string) {
+  const labels: Record<string, string> = {
+    retentionDays: "detailsRetentionDays",
+    olderThanHours: "detailsOlderThanHours",
+    requiresCodexExit: "detailsRequiresCodexExit",
+    regenerable: "detailsRegenerable",
+    scope: "detailsScope",
+    files: "detailsFiles",
+    entries: "detailsEntries",
+    association: "detailsAssociation",
+    entryType: "detailsEntryType",
+    protection: "detailsProtection",
+  };
+  if (labels[key]) return t(labels[key]);
+  return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase());
+}
+
+function metadataValue(key: string, value: string, t: (key: string) => string) {
+  if (["regenerable", "requiresCodexExit"].includes(key)) return value === "true" ? t("yes") : t("no");
+  if (key === "scope" && value === "global") return t("globalScope");
+  if (key === "association" && value === "orphaned") return t("orphanedAssociation");
+  if (key === "entryType" && value === "directory") return t("directoryEntry");
+  if (key === "entryType" && value === "file") return t("fileEntry");
+  if (key === "protection" && value === "always") return t("alwaysProtected");
+  return value;
+}
+
+function relativeTime(value: string, language: string) {
+  const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
+  const formatter = new Intl.RelativeTimeFormat(language.startsWith("zh") ? "zh-CN" : "en", { numeric: "auto" });
+  if (Math.abs(seconds) < 60) return formatter.format(seconds, "second");
+  if (Math.abs(seconds) < 3600) return formatter.format(Math.round(seconds / 60), "minute");
+  if (Math.abs(seconds) < 86_400) return formatter.format(Math.round(seconds / 3600), "hour");
+  return formatter.format(Math.round(seconds / 86_400), "day");
+}
+
+function statusLabel(status: string, t: (key: string) => string) { const normalized = status.toLowerCase(); return normalized === "active" || normalized === "loaded" ? t("active") : t("notLoaded"); }
+function roleLabel(role: string, t: (key: string) => string) {
+  if (role === "user") return t("contentRoleUser");
+  if (role === "assistant") return t("contentRoleAssistant");
+  if (role === "system") return t("contentRoleSystem");
+  if (role === "tool") return t("contentRoleTool");
+  return role;
+}
+function contentSourceLabel(source: string, t: (key: string) => string) {
+  if (source === "appServer.thread/read") return t("contentSourceAppServer");
+  if (source === "rollout.readOnlyFallback") return t("contentSourceRollout");
+  if (source === "recognizedMemoryDb.readOnly" || source === "recognizedLogDb.readOnly") return t("contentSourceDatabase");
+  if (source === "filesystem.readOnly") return t("contentSourceFilesystem");
+  return source;
+}
+function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function applyPreferences(settings: AppSettings) {
+  const language = settings.locale === "system" ? (navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en") : settings.locale;
+  void i18n.changeLanguage(language);
+  document.documentElement.dataset.theme = settings.theme;
+}
