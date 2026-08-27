@@ -16,7 +16,6 @@ import {
   Boxes,
   Check,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
@@ -133,7 +132,7 @@ export default function App() {
   const [backupToPurge, setBackupToPurge] = useState<BackupRecord>();
   const loaded = useRef(false);
   const tabsRef = useRef<HTMLElement>(null);
-  const [tabOverflow, setTabOverflow] = useState({ left: false, right: false });
+  const [tabScroll, setTabScroll] = useState({ max: 0, value: 0, thumbWidth: 32 });
 
   const scan = useCallback(async (targetAgent: AgentKind = activeAgent) => {
     setBusy("scan");
@@ -170,33 +169,40 @@ export default function App() {
       .finally(() => setDetectingAgents(false));
   }, [scan]);
 
-  const updateTabOverflow = useCallback(() => {
+  const updateTabScroll = useCallback(() => {
     const tabs = tabsRef.current;
     if (!tabs) return;
-    const maxScroll = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
-    setTabOverflow({ left: tabs.scrollLeft > 1, right: tabs.scrollLeft < maxScroll - 1 });
+    const max = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
+    const value = Math.min(max, tabs.scrollLeft);
+    const thumbWidth = max > 0 ? Math.max(32, tabs.clientWidth * tabs.clientWidth / tabs.scrollWidth) : 32;
+    setTabScroll((current) => current.max === max && current.value === value && current.thumbWidth === thumbWidth
+      ? current
+      : { max, value, thumbWidth });
   }, []);
 
   useEffect(() => {
     const tabs = tabsRef.current;
     if (!tabs) return;
-    updateTabOverflow();
-    tabs.addEventListener("scroll", updateTabOverflow, { passive: true });
-    window.addEventListener("resize", updateTabOverflow);
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateTabOverflow);
+    updateTabScroll();
+    tabs.addEventListener("scroll", updateTabScroll, { passive: true });
+    window.addEventListener("resize", updateTabScroll);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateTabScroll);
     observer?.observe(tabs);
+    tabs.querySelectorAll("button").forEach((button) => observer?.observe(button));
     return () => {
-      tabs.removeEventListener("scroll", updateTabOverflow);
-      window.removeEventListener("resize", updateTabOverflow);
+      tabs.removeEventListener("scroll", updateTabScroll);
+      window.removeEventListener("resize", updateTabScroll);
       observer?.disconnect();
     };
-  }, [updateTabOverflow]);
+  }, [updateTabScroll]);
 
   useEffect(() => {
-    const activeTab = tabsRef.current?.querySelector<HTMLElement>(`[data-view-id="${view}"]`);
-    activeTab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    window.requestAnimationFrame(updateTabOverflow);
-  }, [updateTabOverflow, view]);
+    const frame = window.requestAnimationFrame(() => {
+      tabsRef.current?.querySelector<HTMLElement>(`[data-view-id="${view}"]`)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      updateTabScroll();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [updateTabScroll, view]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -420,13 +426,6 @@ export default function App() {
       label: agent.label,
     }] : [];
   });
-  const scrollTabs = (direction: -1 | 1) => {
-    const tabs = tabsRef.current;
-    if (!tabs) return;
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    tabs.scrollBy({ left: direction * Math.max(160, tabs.clientWidth * 0.7), behavior: reducedMotion ? "auto" : "smooth" });
-  };
-
   return (
     <div className="app-shell">
       <header className="app-toolbar">
@@ -451,14 +450,27 @@ export default function App() {
               </button>
             ))}
           </nav>
-          {tabOverflow.left && <button type="button" className="tab-scroll-control tab-scroll-left" aria-label={t("scrollTabsLeft")} onClick={() => scrollTabs(-1)}><ChevronLeft size={15} /></button>}
-          {tabOverflow.right && <button type="button" className="tab-scroll-control tab-scroll-right" aria-label={t("scrollTabsRight")} onClick={() => scrollTabs(1)}><ChevronRight size={15} /></button>}
+          {tabScroll.max > 0 && <input
+            className="view-tabs-scrollbar"
+            type="range"
+            min="0"
+            max={tabScroll.max}
+            step="1"
+            value={tabScroll.value}
+            aria-label={t("scrollTabs")}
+            style={{ "--scroll-thumb-width": `${tabScroll.thumbWidth}px` } as CSSProperties}
+            onInput={(event) => {
+              const value = Number(event.currentTarget.value);
+              if (tabsRef.current) tabsRef.current.scrollLeft = value;
+              setTabScroll((current) => ({ ...current, value }));
+            }}
+          />}
         </div>
         <div className="toolbar-actions">
-          {storageView && <button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>
+          <button className="secondary-button toolbar-scan-button" aria-label={busy === "scan" ? t("scanning") : t("scan")} onClick={() => void scan()} disabled={busy !== null}>
             <RefreshCw size={14} className={busy === "scan" ? "spinning" : ""} />
-            {busy === "scan" ? t("scanning") : t("scan")}
-          </button>}
+            <span className="toolbar-scan-label">{busy === "scan" ? t("scanning") : t("scan")}</span>
+          </button>
         </div>
       </header>
 

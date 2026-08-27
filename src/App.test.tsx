@@ -154,25 +154,24 @@ describe("CleanerX GUI", () => {
     }
   });
 
-  it("shows explicit controls when the top view tabs overflow", async () => {
+  it("shows a draggable scrollbar only when the top view tabs overflow", () => {
     const view = render(<App />);
-    try {
-      const tabs = view.container.querySelector<HTMLElement>(".view-tabs")!;
-      Object.defineProperties(tabs, {
-        clientWidth: { configurable: true, value: 240 },
-        scrollWidth: { configurable: true, value: 760 },
-        scrollLeft: { configurable: true, writable: true, value: 0 },
-      });
-      const scrollBy = vi.fn();
-      Object.defineProperty(tabs, "scrollBy", { configurable: true, value: scrollBy });
-      fireEvent(window, new Event("resize"));
+    const shell = view.container.querySelector<HTMLElement>(".view-tabs-shell")!;
+    const tabs = view.container.querySelector<HTMLElement>(".view-tabs")!;
+    expect(shell).toContainElement(tabs);
+    expect(tabs).toHaveAttribute("aria-label", "Primary navigation");
+    expect(screen.queryByRole("slider", { name: "Scroll page menu" })).not.toBeInTheDocument();
 
-      const more = await screen.findByRole("button", { name: "Show more pages" });
-      fireEvent.click(more);
-      expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ left: 168 }));
-    } finally {
-      view.unmount();
-    }
+    Object.defineProperties(tabs, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: 760 },
+      scrollLeft: { configurable: true, writable: true, value: 0 },
+    });
+    fireEvent(window, new Event("resize"));
+    const scrollbar = screen.getByRole("slider", { name: "Scroll page menu" });
+    expect(scrollbar).toHaveAttribute("max", "520");
+    fireEvent.input(scrollbar, { target: { value: "130" } });
+    expect(tabs.scrollLeft).toBe(130);
   });
 
   it("previews pi session files through the bounded read-only detail command", async () => {
@@ -234,7 +233,16 @@ describe("CleanerX GUI", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("button", { name: "Save settings" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Scanning…" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Scanning…" })).toBeDisabled();
+  });
+
+  it("keeps the scan action available outside storage views", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("button", { name: "Scan again" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Backups/ }));
+    expect(screen.getByRole("button", { name: "Scan again" })).toBeVisible();
   });
 
   it("previews and persists interface language, appearance, and text size", async () => {

@@ -150,24 +150,25 @@ code { font-family: var(--mono); font-size: 0.92em; }
 /* ---------- Window chrome frame ---------- */
 
 .app-shell { display: flex; height: 100vh; flex-direction: column; }
-.app-toolbar { display: grid; height: 46px; flex: 0 0 auto; grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: stretch; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--chrome); -webkit-app-region: drag; }
-.toolbar-brand { display: flex; align-items: center; gap: 9px; }
+.app-toolbar { display: grid; height: 46px; min-width: 0; flex: 0 0 auto; grid-template-columns: minmax(max-content, 1fr) minmax(0, max-content) minmax(max-content, 1fr); align-items: stretch; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--chrome); -webkit-app-region: drag; }
+.toolbar-brand { display: flex; min-width: 0; align-items: center; gap: 9px; }
 .brand-mark { display: block; width: 26px; height: 26px; flex: 0 0 auto; overflow: hidden; border-radius: var(--radius-m); }
 .brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .toolbar-brand strong { font-size: var(--font-13); font-weight: 700; letter-spacing: -0.01em; }
-.view-tabs-shell { position: relative; display: flex; max-width: 100%; min-width: 0; justify-self: center; overflow: hidden; -webkit-app-region: no-drag; }
-.view-tabs { display: flex; max-width: 100%; min-width: 0; flex: 1; align-items: stretch; gap: 2px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; }
+.view-tabs-shell { display: flex; width: fit-content; max-width: 100%; height: 40px; min-width: 0; align-self: center; flex-direction: column; justify-self: center; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-m); background: var(--surface); -webkit-app-region: no-drag; }
+.view-tabs { display: flex; max-width: 100%; min-width: 0; flex: 1; align-items: stretch; gap: 2px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .view-tabs::-webkit-scrollbar { display: none; }
 .view-tabs button { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 11px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-size: var(--font-12); white-space: nowrap; transition: color 120ms, border-color 120ms; }
 .view-tabs button:hover { color: var(--text); }
 .view-tabs button.tab-active { border-bottom-color: var(--ink); color: var(--text); font-weight: 600; }
 .view-tabs small { display: inline-flex; min-width: 18px; min-height: 16px; align-items: center; justify-content: center; padding: 2px 4px 3px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); color: var(--muted-2); font-family: var(--mono); font-size: var(--font-10); font-variant-numeric: tabular-nums; line-height: 1; }
 .tab-active small { border-color: var(--border-strong); color: var(--text); }
-.tab-scroll-control { position: absolute; z-index: 3; top: 5px; bottom: 5px; display: grid; width: 26px; place-items: center; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-s); background: var(--chrome); color: var(--text); cursor: pointer; }
-.tab-scroll-control:hover { background: var(--surface-soft); }
-.tab-scroll-left { left: 0; }
-.tab-scroll-right { right: 0; }
-.toolbar-actions { display: flex; align-items: center; justify-self: end; gap: 8px; -webkit-app-region: no-drag; }
+.view-tabs-scrollbar { width: 100%; height: 7px; flex: 0 0 7px; margin: 0; padding: 0; appearance: none; border: 0; border-top: 1px solid var(--border); border-radius: 0; outline-offset: -1px; background: var(--surface-soft); cursor: ew-resize; }
+.view-tabs-scrollbar::-webkit-slider-runnable-track { height: 6px; background: var(--surface-soft); }
+.view-tabs-scrollbar::-webkit-slider-thumb { width: var(--scroll-thumb-width); height: 4px; margin-top: 1px; appearance: none; border: 0; border-radius: 1px; background: var(--border-strong); }
+.view-tabs-scrollbar::-moz-range-track { height: 6px; background: var(--surface-soft); }
+.view-tabs-scrollbar::-moz-range-thumb { width: var(--scroll-thumb-width); height: 4px; border: 0; border-radius: 1px; background: var(--border-strong); }
+.toolbar-actions { display: flex; min-width: 0; align-items: center; justify-self: end; gap: 8px; -webkit-app-region: no-drag; }
 .content-scroll { flex: 1; overflow-y: auto; padding: 18px 22px 24px; }
 .page-stack { display: flex; flex-direction: column; gap: 14px; }
 
@@ -697,6 +698,10 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
   .detail-facts { grid-template-columns: 1fr; }
   .detail-facts > div, .detail-facts > div:nth-child(2n) { border-right: 0; border-bottom: 1px solid var(--border); }
   .detail-facts > div:last-child { border-bottom: 0; }
+}
+@media (max-width: 480px) {
+  .toolbar-scan-button { width: 34px; padding: 0; }
+  .toolbar-scan-label { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
