@@ -103,8 +103,39 @@ export interface ProjectGroup {
   id: string;
   name: string;
   roots: string[];
-  sessionIds: string[];
+  sessionCount: number;
   sizeBytes: number;
+  sessionIds?: string[];
+}
+
+export interface SessionFilter {
+  snapshotId: string;
+  projectId?: string;
+  query: string;
+  source?: string;
+  state?: "active" | "archived";
+  updatedWithinDays?: number;
+}
+
+export interface SessionProjectResult {
+  projects: ProjectGroup[];
+  unassignedSessionCount: number;
+  unassignedSessionSizeBytes: number;
+}
+
+export interface SessionPageRequest extends SessionFilter {
+  cursor: number;
+  limit: number;
+  includeAncestors: boolean;
+}
+
+export interface SessionPage {
+  snapshotId: string;
+  sessions: SessionRecord[];
+  items: CleanupItem[];
+  matchingSessionIds: string[];
+  totalCount: number;
+  nextCursor?: number;
 }
 
 export interface CategorySummary {
@@ -125,6 +156,11 @@ export interface InventorySnapshot {
   projects: ProjectGroup[];
   categories: CategorySummary[];
   warnings: string[];
+  sessionCount: number;
+  archivedSessionCount: number;
+  sessionSources: string[];
+  unassignedSessionCount: number;
+  unassignedSessionSizeBytes: number;
 }
 
 export interface PlannedOperation {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
@@ -120,7 +120,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
     const search = screen.getByRole("textbox", { name: "Search sessions or paths…" });
     fireEvent.change(search, { target: { value: "pulse-api" } });
-    expect(screen.getByText("Fix flaky integration tests")).toBeVisible();
+    expect(await screen.findByText("Fix flaky integration tests")).toBeVisible();
     expect(screen.getByText("Database indexing review")).toBeVisible();
     expect(screen.queryByText("Design token migration")).not.toBeInTheDocument();
   });
@@ -129,7 +129,7 @@ describe("CleanerX GUI", () => {
     render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Design token migration" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Design token migration" }));
     fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
     expect(await screen.findByRole("dialog", { name: "Review cleanup plan" })).toBeVisible();
     const backup = screen.getByRole("checkbox", { name: /Create an encrypted backup first/ });
@@ -145,7 +145,7 @@ describe("CleanerX GUI", () => {
     render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
-    expect(screen.getByRole("checkbox", { name: "CleanerX" })).toBeDisabled();
+    expect(await screen.findByRole("checkbox", { name: "CleanerX" })).toBeDisabled();
   });
 
   it("uses a project/session tree by default and preserves filtered ancestors", async () => {
@@ -155,7 +155,7 @@ describe("CleanerX GUI", () => {
 
     expect(screen.queryByRole("button", { name: "Projects" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse atlas-web" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Collapse Design token migration" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Collapse Design token migration" })).toBeVisible();
     const sessionTitle = screen.getByText("Design token migration");
     expect(sessionTitle).toHaveAttribute("title", "Design token migration");
     const sessionRow = sessionTitle.closest("tr")!;
@@ -174,7 +174,7 @@ describe("CleanerX GUI", () => {
     expect(screen.getByText("Release checklist")).toBeVisible();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search sessions or paths…" }), { target: { value: "Release checklist" } });
-    expect(screen.getByText("Design token migration")).toBeVisible();
+    expect(await screen.findByText("Design token migration")).toBeVisible();
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeDisabled();
     expect(screen.getByText(/Ancestor of a filtered result/)).toBeVisible();
   });
@@ -192,12 +192,12 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("option", { name: "No project" }));
     expect(projectFilter).toHaveAttribute("data-value", "__no_project");
-    expect(screen.getByRole("checkbox", { name: "CleanerX" })).toBeVisible();
+    expect(await screen.findByRole("checkbox", { name: "CleanerX" })).toBeVisible();
     expect(screen.queryByText("Design token migration")).not.toBeInTheDocument();
 
     chooseMenuOption("Filter by project", "All projects");
     chooseMenuOption("Filter by updated time", "Last 7 days");
-    expect(screen.getByText("Design token migration")).toBeVisible();
+    expect(await screen.findByText("Design token migration")).toBeVisible();
     expect(screen.queryByText("Fix flaky integration tests")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Open details CleanerX"));
@@ -211,7 +211,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "List" }));
     expect(screen.getByRole("columnheader", { name: "Project" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Collapse atlas-web" })).not.toBeInTheDocument();
-    expect(screen.getByText("Design token migration")).toHaveAttribute("title", "Design token migration");
+    expect(await screen.findByText("Design token migration")).toHaveAttribute("title", "Design token migration");
     expect(screen.getAllByText("Desktop / IDE")[1]).toHaveAttribute("title", "Desktop / IDE");
   });
 
@@ -222,6 +222,7 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by source" }));
     expect(screen.getByRole("option", { name: "Desktop / IDE" })).toHaveAttribute("aria-selected", "false");
+    await screen.findByText("Design token migration");
     expect(screen.getAllByText("Desktop / IDE").length).toBeGreaterThan(1);
   });
 
@@ -238,34 +239,72 @@ describe("CleanerX GUI", () => {
 
     expect(projectFilter).toHaveAttribute("data-value", "atlas");
     expect(projectFilter).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("Design token migration")).toBeVisible();
+    expect(await screen.findByText("Design token migration")).toBeVisible();
     expect(screen.queryByText("Fix flaky integration tests")).not.toBeInTheDocument();
   });
 
-  it("loads large session inventories in bounded batches", async () => {
+  it("offers an in-place retry when filtered session groups fail to load", async () => {
+    const getProjects = vi.spyOn(api, "getSessionProjects").mockRejectedValue(new Error("temporary read failure"));
+    const view = render(<App />);
+    try {
+      await screen.findByText("Managed data");
+      fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Search sessions or paths…" }), { target: { value: "atlas" } });
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Could not load session groups: temporary read failure");
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(getProjects).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      getProjects.mockRestore();
+    }
+  });
+
+  it("keeps every project summary visible while lazily requesting bounded session pages", async () => {
     const base = await api.scanStorage("codex");
-    const largeSnapshot = createLargeSessionSnapshot(base, 161);
-    const scan = vi.spyOn(api, "scanStorage").mockResolvedValue(largeSnapshot);
+    const seed = await api.getSessionPage({ snapshotId: base.id, query: "", cursor: 0, limit: 100, includeAncestors: false });
+    const large = createLargeSessionInventory(base, seed.sessions, seed.items, 161);
+    const scan = vi.spyOn(api, "scanStorage").mockResolvedValue(large.report);
+    const getPage = vi.spyOn(api, "getSessionPage").mockImplementation(async (request) => {
+      const pageSessions = large.sessions.slice(request.cursor, request.cursor + request.limit);
+      const includedIds = new Set(pageSessions.map((session) => session.id));
+      const end = request.cursor + pageSessions.length;
+      return {
+        snapshotId: large.report.id,
+        sessions: pageSessions,
+        items: large.items.filter((item) => item.threadId && includedIds.has(item.threadId)),
+        matchingSessionIds: pageSessions.map((session) => session.id),
+        totalCount: large.sessions.length,
+        nextCursor: end < large.sessions.length ? end : undefined,
+      };
+    });
+    const intersection = installControllableIntersectionObserver();
 
     const view = render(<App />);
     try {
       await screen.findByText("Managed data");
       fireEvent.click(screen.getByRole("button", { name: /Sessions 161/ }));
 
-      expect(screen.getByText("Showing 80 of 161 sessions")).toBeVisible();
-      expect(screen.getByText("Bulk session 079")).toBeVisible();
-      expect(screen.queryByText("Bulk session 080")).not.toBeInTheDocument();
+      expect(screen.getByText("161 sessions")).toBeVisible();
+      expect(getPage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+      expect(screen.getByText("161 sessions")).toBeVisible();
+      expect(getPage).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByRole("button", { name: "Show 80 more" }));
-      expect(screen.getByText("Showing 160 of 161 sessions")).toBeVisible();
-      expect(screen.getByText("Bulk session 159")).toBeVisible();
-      expect(screen.queryByText("Bulk session 160")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+      act(() => intersection.triggerVisible());
+      expect(await screen.findByText("Bulk session 049")).toBeVisible();
+      expect(screen.queryByText("Bulk session 050")).not.toBeInTheDocument();
+      expect(getPage).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 0, limit: 50, projectId: "__no_project" }));
 
-      fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
-      expect(screen.getByText("Bulk session 160")).toBeVisible();
-      expect(screen.queryByText(/Showing \d+ of 161 sessions/)).not.toBeInTheDocument();
+      act(() => intersection.triggerVisible());
+      expect(await screen.findByText("Bulk session 099")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      expect(getPage).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 50, limit: 50 }));
     } finally {
       view.unmount();
+      intersection.restore();
+      getPage.mockRestore();
       scan.mockRestore();
     }
   });
@@ -276,6 +315,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "Search sessions or paths…" }), { target: { value: "atlas-web" } });
 
+    await screen.findByRole("checkbox", { name: "Design token migration" });
     fireEvent.click(screen.getByRole("button", { name: "Select all results" }));
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).toBeChecked();
@@ -292,6 +332,7 @@ describe("CleanerX GUI", () => {
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
 
+    await screen.findByRole("checkbox", { name: "Design token migration" });
     fireEvent.click(screen.getByRole("checkbox", { name: "Select project data atlas-web" }));
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).toBeChecked();
@@ -303,6 +344,7 @@ describe("CleanerX GUI", () => {
     render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    await screen.findByRole("checkbox", { name: "Design token migration" });
     fireEvent.keyDown(window, { key: "a", ctrlKey: true });
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Fix flaky integration tests" })).toBeChecked();
@@ -331,7 +373,7 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
     expect(screen.queryByRole("button", { name: /View details/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Open details Design token migration"));
+    fireEvent.click(await screen.findByLabelText("Open details Design token migration"));
     let dialog = screen.getByRole("dialog", { name: "Design token migration" });
     expect(within(dialog).getByText("Session information")).toBeVisible();
     expect(within(dialog).getAllByText("/Users/demo/Developer/atlas-web", { selector: "code" }).length).toBeGreaterThan(0);
@@ -401,9 +443,9 @@ describe("CleanerX GUI", () => {
   });
 });
 
-function createLargeSessionSnapshot(base: InventorySnapshot, count: number): InventorySnapshot {
-  const sessionTemplate = base.sessions[1];
-  const itemTemplate = base.items.find((item) => item.threadId === sessionTemplate.id)!;
+function createLargeSessionInventory(base: InventorySnapshot, seedSessions: SessionRecord[], seedItems: CleanupItem[], count: number) {
+  const sessionTemplate = seedSessions.find((session) => !session.parentThreadId)!;
+  const itemTemplate = seedItems.find((item) => item.threadId === sessionTemplate.id)!;
   const sessions: SessionRecord[] = Array.from({ length: count }, (_, index) => ({
     ...sessionTemplate,
     id: `bulk-session-${index.toString().padStart(3, "0")}`,
@@ -429,17 +471,52 @@ function createLargeSessionSnapshot(base: InventorySnapshot, count: number): Inv
     blockedReason: undefined,
   }));
   const otherItems = base.items.filter((item) => !item.threadId);
-  const items = [...sessionItems, ...otherItems];
   const sessionBytes = sessionItems.reduce((sum, item) => sum + item.sizeBytes, 0);
-  return {
+  const report: InventorySnapshot = {
     ...base,
     id: crypto.randomUUID(),
-    sessions,
+    sessions: [],
     projects: [],
-    items,
+    items: otherItems,
     totalBytes: sessionBytes + otherItems.filter((item) => item.category !== "protected").reduce((sum, item) => sum + item.sizeBytes, 0),
+    sessionCount: count,
+    archivedSessionCount: 0,
+    unassignedSessionCount: count,
+    unassignedSessionSizeBytes: sessionBytes,
     categories: base.categories
       .filter((category) => category.category !== "archivedSession")
       .map((category) => category.category === "session" ? { ...category, itemCount: count, sizeBytes: sessionBytes } : category),
+  };
+  return { report, sessions, items: sessionItems };
+}
+
+function installControllableIntersectionObserver() {
+  const original = window.IntersectionObserver;
+  const observers = new Set<TestIntersectionObserver>();
+  class TestIntersectionObserver {
+    active = true;
+    callback: IntersectionObserverCallback;
+
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback;
+      observers.add(this);
+    }
+
+    observe() {}
+    unobserve() {}
+    takeRecords() { return []; }
+    disconnect() { this.active = false; }
+  }
+  window.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
+  return {
+    triggerVisible() {
+      [...observers].filter((observer) => observer.active).forEach((observer) => {
+        observer.callback([{ isIntersecting: true } as IntersectionObserverEntry], observer as unknown as IntersectionObserver);
+      });
+    },
+    restore() {
+      if (original) window.IntersectionObserver = original;
+      else delete (window as Window & { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+    },
   };
 }

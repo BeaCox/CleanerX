@@ -4,6 +4,8 @@
 
 CleanerX persists one active target Agent and exposes the selector in the left side of the bottom status deck. Switching targets atomically saves the preference, clears the old selection/detail state, and creates a fresh Agent-specific snapshot. A cleanup plan is bound to that snapshot, and execution dispatches from the snapshot's `AgentKind`; paths and backups from different Agents cannot be mixed.
 
+The complete metadata-only inventory snapshot remains behind the Rust boundary. The initial scan response contains non-session cleanup items, aggregate session counts, source values, and per-project count/size summaries, but no session records or session cleanup items. The Sessions view requests pages of at most 100 direct matches only for an expanded visible project or the visible flat-list range. Tree pages may additionally include the already-inventoried ancestors required to preserve hierarchy, while separately identifying the actual filtered matches so context rows remain non-selectable. Every page and project-summary request is bound to the current snapshot ID and validated filters; cleanup planning still resolves selected IDs against the complete backend snapshot.
+
 ### Codex
 
 Codex Home resolution order is user override, `CODEX_HOME`, then `~/.codex`. The executable is resolved from `PATH`, known macOS application resources, and common Homebrew/NVM/Volta/asdf/Bun/pnpm user locations so Finder launches do not depend on an interactive shell PATH. Application Support is a separate optional allowlisted root.

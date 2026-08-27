@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use adapter_claude::ClaudeCodeAdapter;
 use adapter_codex::CodexAdapter;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use cleanerx_core::{
     AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
-    BackupStore, CleanerError, CleanupPlan, CleanupResult, FileIdentity, InventorySnapshot,
-    ItemContentDetail, ItemThumbnail, OperationKind, OperationStatus, PathPolicy, StorageCategory,
-    create_cleanup_plan, safe_remove,
+    BackupStore, CategorySummary, CleanerError, CleanupItem, CleanupPlan, CleanupResult,
+    FileIdentity, InventorySnapshot, ItemContentDetail, ItemThumbnail, OperationKind,
+    OperationStatus, PathPolicy, SessionRecord, StorageCategory, create_cleanup_plan, safe_remove,
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -47,6 +47,82 @@ struct OperationJournal {
     message: Option<String>,
 }
 
+const UNASSIGNED_PROJECT_ID: &str = "__no_project";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionProjectSummary {
+    id: String,
+    name: String,
+    roots: Vec<String>,
+    session_count: usize,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionProjectResult {
+    projects: Vec<SessionProjectSummary>,
+    unassigned_session_count: usize,
+    unassigned_session_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryReport {
+    id: Uuid,
+    scanned_at: DateTime<Utc>,
+    installation: AgentInstallation,
+    total_bytes: u64,
+    reclaimable_bytes: u64,
+    items: Vec<CleanupItem>,
+    projects: Vec<SessionProjectSummary>,
+    categories: Vec<CategorySummary>,
+    warnings: Vec<String>,
+    session_count: usize,
+    archived_session_count: usize,
+    session_sources: Vec<String>,
+    unassigned_session_count: usize,
+    unassigned_session_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFilter {
+    snapshot_id: Uuid,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    updated_within_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionPageRequest {
+    #[serde(flatten)]
+    filter: SessionFilter,
+    cursor: usize,
+    limit: usize,
+    include_ancestors: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionPage {
+    snapshot_id: Uuid,
+    sessions: Vec<SessionRecord>,
+    items: Vec<CleanupItem>,
+    matching_session_ids: Vec<String>,
+    total_count: usize,
+    next_cursor: Option<usize>,
+}
+
 type CommandResult<T> = Result<T, String>;
 
 #[tauri::command]
@@ -70,7 +146,7 @@ async fn detect_agents(state: State<'_, AppState>) -> CommandResult<Vec<AgentIns
 async fn scan_storage(
     target_agent: Option<AgentKind>,
     state: State<'_, AppState>,
-) -> CommandResult<InventorySnapshot> {
+) -> CommandResult<InventoryReport> {
     let settings = state.settings.lock().clone();
     let kind = target_agent.unwrap_or(settings.active_agent);
     let snapshot = state
@@ -78,8 +154,299 @@ async fn scan_storage(
         .scan(custom_home(&settings, kind))
         .await
         .map_err(error_message)?;
-    *state.snapshot.lock() = Some(snapshot.clone());
-    Ok(snapshot)
+    let report = inventory_report(&snapshot);
+    *state.snapshot.lock() = Some(snapshot);
+    Ok(report)
+}
+
+#[tauri::command]
+fn get_session_projects(
+    filter: SessionFilter,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionProjectResult> {
+    with_current_snapshot(&state, filter.snapshot_id, |snapshot| {
+        session_project_result(snapshot, &filter)
+    })
+}
+
+#[tauri::command]
+fn get_session_page(
+    request: SessionPageRequest,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionPage> {
+    with_current_snapshot(&state, request.filter.snapshot_id, |snapshot| {
+        session_page(snapshot, &request)
+    })
+}
+
+fn with_current_snapshot<T>(
+    state: &AppState,
+    snapshot_id: Uuid,
+    read: impl FnOnce(&InventorySnapshot) -> CommandResult<T>,
+) -> CommandResult<T> {
+    let snapshot_guard = state.snapshot.lock();
+    let snapshot = snapshot_guard
+        .as_ref()
+        .ok_or_else(|| "Scan storage before loading sessions".to_owned())?;
+    if snapshot.id != snapshot_id {
+        return Err("The requested session page does not match the current scan".into());
+    }
+    read(snapshot)
+}
+
+fn inventory_report(snapshot: &InventorySnapshot) -> InventoryReport {
+    let filter = SessionFilter {
+        snapshot_id: snapshot.id,
+        ..SessionFilter::default()
+    };
+    let project_result = session_project_result(snapshot, &filter)
+        .expect("an unfiltered inventory snapshot always has a valid session query");
+    let session_sources = snapshot
+        .sessions
+        .iter()
+        .map(|session| session.source.clone())
+        .collect::<BTreeSet<_>>();
+    InventoryReport {
+        id: snapshot.id,
+        scanned_at: snapshot.scanned_at,
+        installation: snapshot.installation.clone(),
+        total_bytes: snapshot.total_bytes,
+        reclaimable_bytes: snapshot.reclaimable_bytes,
+        items: snapshot
+            .items
+            .iter()
+            .filter(|item| item.thread_id.is_none())
+            .cloned()
+            .collect(),
+        projects: project_result.projects,
+        categories: snapshot.categories.clone(),
+        warnings: snapshot.warnings.clone(),
+        session_count: snapshot.sessions.len(),
+        archived_session_count: snapshot
+            .sessions
+            .iter()
+            .filter(|session| session.archived)
+            .count(),
+        session_sources: session_sources.into_iter().collect(),
+        unassigned_session_count: project_result.unassigned_session_count,
+        unassigned_session_size_bytes: project_result.unassigned_session_size_bytes,
+    }
+}
+
+fn session_project_result(
+    snapshot: &InventorySnapshot,
+    filter: &SessionFilter,
+) -> CommandResult<SessionProjectResult> {
+    let matching = matching_sessions(snapshot, filter)?;
+    let item_by_thread: HashMap<&str, &CleanupItem> = snapshot
+        .items
+        .iter()
+        .filter_map(|item| item.thread_id.as_deref().map(|id| (id, item)))
+        .collect();
+    let mut counts: HashMap<&str, (usize, u64)> = HashMap::new();
+    let mut unassigned_session_count = 0;
+    let mut unassigned_session_size_bytes = 0u64;
+    for session in matching {
+        match item_by_thread
+            .get(session.id.as_str())
+            .and_then(|item| item.project_id.as_deref())
+        {
+            Some(project_id) => {
+                let summary = counts.entry(project_id).or_default();
+                summary.0 += 1;
+                summary.1 = summary.1.saturating_add(session.size_bytes);
+            }
+            None => {
+                unassigned_session_count += 1;
+                unassigned_session_size_bytes =
+                    unassigned_session_size_bytes.saturating_add(session.size_bytes);
+            }
+        }
+    }
+    let projects = snapshot
+        .projects
+        .iter()
+        .filter_map(|project| {
+            let (session_count, size_bytes) = counts.get(project.id.as_str()).copied()?;
+            Some(SessionProjectSummary {
+                id: project.id.clone(),
+                name: project.name.clone(),
+                roots: project.roots.clone(),
+                session_count,
+                size_bytes,
+            })
+        })
+        .collect();
+    Ok(SessionProjectResult {
+        projects,
+        unassigned_session_count,
+        unassigned_session_size_bytes,
+    })
+}
+
+fn session_page(
+    snapshot: &InventorySnapshot,
+    request: &SessionPageRequest,
+) -> CommandResult<SessionPage> {
+    if request.limit == 0 || request.limit > 100 {
+        return Err("Session page size must be between 1 and 100".into());
+    }
+    let matching = matching_sessions(snapshot, &request.filter)?;
+    let total_count = matching.len();
+    if request.cursor > total_count {
+        return Err("Session page cursor is outside the filtered result".into());
+    }
+    let end = request
+        .cursor
+        .saturating_add(request.limit)
+        .min(total_count);
+    let page = &matching[request.cursor..end];
+    let matching_session_ids: Vec<String> = page.iter().map(|session| session.id.clone()).collect();
+    let mut included: HashSet<&str> = page.iter().map(|session| session.id.as_str()).collect();
+    if request.include_ancestors {
+        let session_by_id: HashMap<&str, &SessionRecord> = snapshot
+            .sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session))
+            .collect();
+        for session in page {
+            let mut parent_id = session.parent_thread_id.as_deref();
+            let mut visited = HashSet::new();
+            while let Some(id) = parent_id {
+                if !visited.insert(id) {
+                    break;
+                }
+                let Some(parent) = session_by_id.get(id) else {
+                    break;
+                };
+                included.insert(parent.id.as_str());
+                parent_id = parent.parent_thread_id.as_deref();
+            }
+        }
+    }
+    let sessions: Vec<SessionRecord> = snapshot
+        .sessions
+        .iter()
+        .filter(|session| included.contains(session.id.as_str()))
+        .cloned()
+        .collect();
+    let items = snapshot
+        .items
+        .iter()
+        .filter(|item| {
+            item.thread_id
+                .as_deref()
+                .is_some_and(|id| included.contains(id))
+        })
+        .cloned()
+        .collect();
+    Ok(SessionPage {
+        snapshot_id: snapshot.id,
+        sessions,
+        items,
+        matching_session_ids,
+        total_count,
+        next_cursor: (end < total_count).then_some(end),
+    })
+}
+
+fn matching_sessions<'a>(
+    snapshot: &'a InventorySnapshot,
+    filter: &SessionFilter,
+) -> CommandResult<Vec<&'a SessionRecord>> {
+    validate_session_filter(snapshot, filter)?;
+    let item_by_thread: HashMap<&str, &CleanupItem> = snapshot
+        .items
+        .iter()
+        .filter_map(|item| item.thread_id.as_deref().map(|id| (id, item)))
+        .collect();
+    let query = filter.query.trim().to_lowercase();
+    let cutoff = filter
+        .updated_within_days
+        .map(|days| Utc::now() - Duration::days(i64::from(days)));
+    let mut sessions: Vec<_> = snapshot
+        .sessions
+        .iter()
+        .filter(|session| {
+            let item = item_by_thread.get(session.id.as_str());
+            let matches_project = match filter.project_id.as_deref() {
+                None => true,
+                Some(UNASSIGNED_PROJECT_ID) => item.is_some_and(|item| item.project_id.is_none()),
+                Some(project_id) => item
+                    .and_then(|item| item.project_id.as_deref())
+                    .is_some_and(|id| id == project_id),
+            };
+            let matches_query = query.is_empty()
+                || session.name.to_lowercase().contains(&query)
+                || session.cwd.to_lowercase().contains(&query);
+            let matches_source = filter
+                .source
+                .as_deref()
+                .is_none_or(|source| session.source == source);
+            let matches_state = match filter.state.as_deref() {
+                None => true,
+                Some("archived") => session.archived,
+                Some("active") => !session.archived,
+                Some(_) => false,
+            };
+            let matches_updated = cutoff.as_ref().is_none_or(|cutoff| {
+                session
+                    .updated_at
+                    .as_ref()
+                    .is_some_and(|updated_at| updated_at >= cutoff)
+            });
+            matches_project && matches_query && matches_source && matches_state && matches_updated
+        })
+        .collect();
+    sessions.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(sessions)
+}
+
+fn validate_session_filter(
+    snapshot: &InventorySnapshot,
+    filter: &SessionFilter,
+) -> CommandResult<()> {
+    if snapshot.id != filter.snapshot_id {
+        return Err("The session filter does not match the current scan".into());
+    }
+    if filter.query.len() > 512 {
+        return Err("Session search is too long".into());
+    }
+    if filter
+        .source
+        .as_ref()
+        .is_some_and(|source| source.len() > 128)
+    {
+        return Err("Session source filter is too long".into());
+    }
+    if filter
+        .updated_within_days
+        .is_some_and(|days| days == 0 || days > 3650)
+    {
+        return Err("Session updated-time filter is outside the supported range".into());
+    }
+    if filter
+        .state
+        .as_deref()
+        .is_some_and(|state| state != "active" && state != "archived")
+    {
+        return Err("Session state filter is not recognized".into());
+    }
+    if let Some(project_id) = filter.project_id.as_deref()
+        && project_id != UNASSIGNED_PROJECT_ID
+        && !snapshot
+            .projects
+            .iter()
+            .any(|project| project.id == project_id)
+    {
+        return Err("Session project filter is not part of the current scan".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -801,6 +1168,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             detect_agents,
             scan_storage,
+            get_session_projects,
+            get_session_page,
             get_item_content,
             get_item_thumbnail,
             plan_cleanup,
@@ -818,16 +1187,68 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_mutation_identities, load_settings, remove_operation_paths, validate_settings,
+        SessionFilter, SessionPageRequest, capture_mutation_identities, inventory_report,
+        load_settings, remove_operation_paths, session_page, validate_settings,
         validate_source_revision,
     };
+    use chrono::Utc;
     use cleanerx_core::{
-        AgentKind, AppSettings, CleanupItem, OperationKind, PathPolicy, PlannedOperation,
-        RiskLevel, StorageCategory, metadata_revision,
+        AgentCapabilities, AgentInstallation, AgentKind, AppSettings, CleanupItem,
+        InventorySnapshot, OperationKind, PathPolicy, PlannedOperation, ProjectGroup, RiskLevel,
+        SessionRecord, StorageCategory, metadata_revision,
     };
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
+    use uuid::Uuid;
+
+    #[test]
+    fn inventory_report_keeps_session_data_backend_only() {
+        let snapshot = session_inventory_fixture();
+        let report = inventory_report(&snapshot);
+
+        assert!(report.items.iter().all(|item| item.thread_id.is_none()));
+        assert_eq!(report.session_count, 3);
+        assert_eq!(report.projects.len(), 1);
+        assert_eq!(report.projects[0].session_count, 2);
+        assert_eq!(report.projects[0].size_bytes, 20);
+        assert_eq!(report.unassigned_session_count, 1);
+        assert_eq!(report.unassigned_session_size_bytes, 10);
+    }
+
+    #[test]
+    fn session_pages_are_bounded_and_retain_filtered_ancestors() {
+        let snapshot = session_inventory_fixture();
+        let request = SessionPageRequest {
+            filter: SessionFilter {
+                snapshot_id: snapshot.id,
+                project_id: Some("project".into()),
+                query: "matching child".into(),
+                ..SessionFilter::default()
+            },
+            cursor: 0,
+            limit: 1,
+            include_ancestors: true,
+        };
+        let page = session_page(&snapshot, &request).expect("bounded session page");
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.matching_session_ids, vec!["child"]);
+        assert_eq!(
+            page.sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root", "child"]
+        );
+        assert_eq!(page.items.len(), 2);
+
+        let invalid = SessionPageRequest {
+            limit: 101,
+            ..request
+        };
+        assert!(session_page(&snapshot, &invalid).is_err());
+    }
 
     #[test]
     fn validates_locale_and_theme_settings() {
@@ -859,6 +1280,83 @@ mod tests {
         let loaded = load_settings(directory.path());
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
+    }
+
+    fn session_inventory_fixture() -> InventorySnapshot {
+        let sessions = vec![
+            test_session("root", "project root", None),
+            test_session("child", "matching child", Some("root")),
+            test_session("orphan", "unassigned", None),
+        ];
+        let items = sessions
+            .iter()
+            .map(|session| CleanupItem {
+                id: format!("session:{}", session.id),
+                category: StorageCategory::Session,
+                title: session.name.clone(),
+                subtitle: None,
+                paths: session.path.clone().into_iter().collect(),
+                project_id: (session.id != "orphan").then(|| "project".into()),
+                thread_id: Some(session.id.clone()),
+                size_bytes: session.size_bytes,
+                modified_at: session.updated_at,
+                risk: RiskLevel::High,
+                recoverable: true,
+                default_selected: false,
+                protected: false,
+                blocked_reason: None,
+                metadata: BTreeMap::new(),
+            })
+            .collect();
+        InventorySnapshot {
+            id: Uuid::new_v4(),
+            scanned_at: Utc::now(),
+            installation: AgentInstallation {
+                kind: AgentKind::Codex,
+                home: "/tmp/.codex".into(),
+                binary: None,
+                version: Some("test".into()),
+                app_support: None,
+                running: false,
+                capabilities: AgentCapabilities::default(),
+                warnings: vec![],
+            },
+            total_bytes: 30,
+            reclaimable_bytes: 0,
+            items,
+            sessions,
+            projects: vec![ProjectGroup {
+                id: "project".into(),
+                name: "project".into(),
+                roots: vec!["/tmp/project".into()],
+                session_ids: vec!["root".into(), "child".into()],
+                size_bytes: 20,
+            }],
+            categories: vec![],
+            warnings: vec![],
+        }
+    }
+
+    fn test_session(id: &str, name: &str, parent: Option<&str>) -> SessionRecord {
+        SessionRecord {
+            id: id.into(),
+            name: name.into(),
+            cwd: if id == "orphan" {
+                String::new()
+            } else {
+                "/tmp/project".into()
+            },
+            path: Some(format!("/tmp/{id}.jsonl")),
+            source: "cli".into(),
+            archived: false,
+            pinned: false,
+            status: "notLoaded".into(),
+            created_at: None,
+            updated_at: None,
+            size_bytes: 10,
+            parent_thread_id: parent.map(str::to_owned),
+            descendant_ids: vec![],
+        }
     }
 
     #[test]

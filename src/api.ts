@@ -10,6 +10,10 @@ import type {
   InventorySnapshot,
   ItemContentDetail,
   ItemThumbnail,
+  SessionFilter,
+  SessionPage,
+  SessionPageRequest,
+  SessionProjectResult,
   SessionRecord,
   StorageCategory,
 } from "./types";
@@ -67,13 +71,28 @@ export const api = {
   },
 
   async scanStorage(targetAgent?: AgentKind): Promise<InventorySnapshot> {
-    if (inTauri()) return invoke("scan_storage", { targetAgent });
+    if (inTauri()) {
+      const report = await invoke<Omit<InventorySnapshot, "sessions">>("scan_storage", { targetAgent });
+      return { ...report, sessions: [] };
+    }
     await delay(420);
     if (targetAgent && mockSnapshot.installation.kind !== targetAgent) {
       mockSnapshot = createMockSnapshot(targetAgent);
     }
     mockSnapshot = { ...mockSnapshot, scannedAt: new Date().toISOString() };
-    return structuredClone(mockSnapshot);
+    return structuredClone(inventoryReport(mockSnapshot));
+  },
+
+  async getSessionProjects(filter: SessionFilter): Promise<SessionProjectResult> {
+    if (inTauri()) return invoke("get_session_projects", { filter });
+    await delay(45);
+    return structuredClone(sessionProjectResult(mockSnapshot, filter));
+  },
+
+  async getSessionPage(request: SessionPageRequest): Promise<SessionPage> {
+    if (inTauri()) return invoke("get_session_page", { request });
+    await delay(65);
+    return structuredClone(sessionPage(mockSnapshot, request));
   },
 
   async planCleanup(selectedItemIds: string[]): Promise<CleanupPlan> {
@@ -253,6 +272,93 @@ function readMockSettings(): AppSettings {
   } catch {
     return structuredClone(defaultMockSettings);
   }
+}
+
+function inventoryReport(snapshot: InventorySnapshot): InventorySnapshot {
+  return {
+    ...snapshot,
+    items: snapshot.items.filter((item) => !item.threadId),
+    sessions: [],
+    projects: snapshot.projects.map(({ sessionIds, ...project }) => ({
+      ...project,
+      sessionCount: sessionIds?.length ?? project.sessionCount,
+    })),
+  };
+}
+
+function sessionProjectResult(snapshot: InventorySnapshot, filter: SessionFilter): SessionProjectResult {
+  const matching = matchingSessions(snapshot, filter);
+  const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
+  const projectCounts = new Map<string, { count: number; sizeBytes: number }>();
+  let unassignedSessionCount = 0;
+  let unassignedSessionSizeBytes = 0;
+  matching.forEach((session) => {
+    const projectId = itemByThread.get(session.id)?.projectId;
+    if (!projectId) {
+      unassignedSessionCount += 1;
+      unassignedSessionSizeBytes += session.sizeBytes;
+      return;
+    }
+    const summary = projectCounts.get(projectId) ?? { count: 0, sizeBytes: 0 };
+    summary.count += 1;
+    summary.sizeBytes += session.sizeBytes;
+    projectCounts.set(projectId, summary);
+  });
+  return {
+    projects: snapshot.projects.flatMap((project) => {
+      const summary = projectCounts.get(project.id);
+      return summary ? [{ ...project, sessionCount: summary.count, sizeBytes: summary.sizeBytes, sessionIds: undefined }] : [];
+    }),
+    unassignedSessionCount,
+    unassignedSessionSizeBytes,
+  };
+}
+
+function sessionPage(snapshot: InventorySnapshot, request: SessionPageRequest): SessionPage {
+  const matching = matchingSessions(snapshot, request);
+  const page = matching.slice(request.cursor, request.cursor + request.limit);
+  const includedIds = new Set(page.map((session) => session.id));
+  if (request.includeAncestors) {
+    const sessionById = new Map(snapshot.sessions.map((session) => [session.id, session]));
+    page.forEach((session) => {
+      let parentId = session.parentThreadId;
+      const visited = new Set<string>();
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        const parent = sessionById.get(parentId);
+        if (!parent) break;
+        includedIds.add(parent.id);
+        parentId = parent.parentThreadId;
+      }
+    });
+  }
+  const end = Math.min(matching.length, request.cursor + request.limit);
+  return {
+    snapshotId: snapshot.id,
+    sessions: snapshot.sessions.filter((session) => includedIds.has(session.id)),
+    items: snapshot.items.filter((item) => Boolean(item.threadId && includedIds.has(item.threadId))),
+    matchingSessionIds: page.map((session) => session.id),
+    totalCount: matching.length,
+    nextCursor: end < matching.length ? end : undefined,
+  };
+}
+
+function matchingSessions(snapshot: InventorySnapshot, filter: SessionFilter) {
+  if (filter.snapshotId !== snapshot.id) throw new Error("Session filter does not match the current scan");
+  const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
+  const normalizedQuery = filter.query.trim().toLowerCase();
+  return snapshot.sessions.filter((session) => {
+    const item = itemByThread.get(session.id);
+    const matchesProject = !filter.projectId
+      || (filter.projectId === "__no_project" ? !item?.projectId : item?.projectId === filter.projectId);
+    const matchesQuery = !normalizedQuery || `${session.name} ${session.cwd}`.toLowerCase().includes(normalizedQuery);
+    const matchesSource = !filter.source || session.source === filter.source;
+    const matchesState = !filter.state || (filter.state === "archived" ? session.archived : !session.archived);
+    const matchesUpdated = !filter.updatedWithinDays || Boolean(
+      session.updatedAt && new Date(session.updatedAt).getTime() >= Date.now() - filter.updatedWithinDays * 86_400_000,
+    );
+    return matchesProject && matchesQuery && matchesSource && matchesState && matchesUpdated;
+  }).sort((left, right) => new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime());
 }
 
 function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
@@ -483,11 +589,16 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
     items,
     sessions,
     projects: [
-      { id: "atlas", name: "atlas-web", roots: ["/Users/demo/Developer/atlas-web"], sessionIds: [sessions[1].id, sessions[3].id], sizeBytes: sessions[1].sizeBytes + sessions[3].sizeBytes },
-      { id: "pulse", name: "pulse-api", roots: ["/Users/demo/Developer/pulse-api"], sessionIds: [sessions[2].id, sessions[4].id], sizeBytes: sessions[2].sizeBytes + sessions[4].sizeBytes },
+      { id: "atlas", name: "atlas-web", roots: ["/Users/demo/Developer/atlas-web"], sessionIds: [sessions[1].id, sessions[3].id], sessionCount: 2, sizeBytes: sessions[1].sizeBytes + sessions[3].sizeBytes },
+      { id: "pulse", name: "pulse-api", roots: ["/Users/demo/Developer/pulse-api"], sessionIds: [sessions[2].id, sessions[4].id], sessionCount: 2, sizeBytes: sessions[2].sizeBytes + sessions[4].sizeBytes },
     ],
     categories,
     warnings: [],
+    sessionCount: sessions.length,
+    archivedSessionCount: sessions.filter((session) => session.archived).length,
+    sessionSources: [...new Set(sessions.map((session) => session.source))],
+    unassignedSessionCount: 1,
+    unassignedSessionSizeBytes: sessions[0].sizeBytes,
   };
 }
 

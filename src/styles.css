@@ -319,9 +319,14 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
 .session-list-table th:nth-child(4) { width: 128px; }
 .session-list-table th:nth-child(5) { width: 112px; }
 .session-list-table th:nth-child(6) { width: 96px; }
-.session-progressive-footer { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface-soft); }
-.session-progressive-footer > span { color: var(--muted-2); font-family: var(--mono); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.session-progressive-footer .secondary-button { background: var(--surface); font-family: var(--mono); font-size: 10.5px; }
+.session-lazy-row td { height: 42px; padding: 5px 12px; background: var(--surface-soft); color: var(--muted-2); text-align: center; }
+.session-lazy-row td > span:not(.session-lazy-marker), .session-lazy-row td > svg { display: inline-block; vertical-align: middle; }
+.session-lazy-row td > svg { margin-right: 7px; }
+.session-lazy-row td > span:not(.session-lazy-marker) { font-family: var(--mono); font-size: 10.5px; }
+.session-lazy-marker { display: block; width: 100%; height: 1px; }
+.session-groups-loading { display: flex; min-height: 112px; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.session-groups-error { flex-wrap: wrap; padding: 18px; color: var(--red); }
+.session-groups-error span { color: var(--muted); }
 .session-list-table th:nth-child(6), .session-list-table td:nth-child(6) { text-align: right; }
 .session-list-table td { overflow: hidden; text-overflow: ellipsis; }
 .session-list-table .session-name { width: 100%; min-width: 0; }

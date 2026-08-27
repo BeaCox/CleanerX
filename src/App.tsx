@@ -55,6 +55,9 @@ import type {
   InventorySnapshot,
   ItemContentDetail,
   ProjectGroup,
+  SessionFilter,
+  SessionPage,
+  SessionProjectResult,
   SessionRecord,
   StorageCategory,
   ViewId,
@@ -85,7 +88,7 @@ const categoryTranslation: Record<StorageCategory, string> = {
 };
 
 const NO_PROJECT_ID = "__no_project";
-const SESSION_BATCH_SIZE = 80;
+const SESSION_PAGE_SIZE = 50;
 
 const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
   { id: "overview", icon: HardDrive, label: "overview" },
@@ -200,6 +203,17 @@ export default function App() {
       return next;
     });
   }, [snapshot]);
+
+  const mergeSessionPage = useCallback((page: SessionPage) => {
+    setSnapshot((current) => {
+      if (!current || current.id !== page.snapshotId) return current;
+      const sessions = new Map(current.sessions.map((session) => [session.id, session]));
+      page.sessions.forEach((session) => sessions.set(session.id, session));
+      const items = new Map(current.items.map((item) => [item.id, item]));
+      page.items.forEach((item) => items.set(item.id, item));
+      return { ...current, sessions: [...sessions.values()], items: [...items.values()] };
+    });
+  }, []);
 
   const reviewPlan = async () => {
     setBusy("plan");
@@ -327,7 +341,7 @@ export default function App() {
             >
               <Icon size={14} />
               <span>{t(label)}</span>
-              {id === "sessions" && snapshot && <small>{snapshot.sessions.length}</small>}
+              {id === "sessions" && snapshot && <small>{snapshot.sessionCount}</small>}
               {id === "backups" && backups.length > 0 && <small>{backups.length}</small>}
             </button>
           ))}
@@ -353,7 +367,7 @@ export default function App() {
         ) : (
           <>
             {view === "overview" && <Overview snapshot={snapshot} />}
-            {view === "sessions" && <SessionsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+            {view === "sessions" && <SessionsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} mergeSessionPage={mergeSessionPage} />}
             {view === "memory" && <MemoryView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
             {view === "generated" && <MediaView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
             {view === "logs" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["log", "cache", "temporary", "protected"]} />}
@@ -424,7 +438,7 @@ function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
       <section className="stat-strip">
         <Stat value={formatBytes(snapshot.totalBytes)} label={t("totalManaged")} detail={`${itemCount} ${t("items")}`} />
         <Stat value={String(snapshot.projects.length)} label={t("projectsCount")} />
-        <Stat value={String(snapshot.sessions.length)} label={t("sessionsCount")} detail={`${snapshot.sessions.filter((session) => session.archived).length} ${t("archived")}`} />
+        <Stat value={String(snapshot.sessionCount)} label={t("sessionsCount")} detail={`${snapshot.archivedSessionCount} ${t("archived")}`} />
       </section>
       <section className="panel-card">
         <div className="panel-heading"><h3>{t("storageBreakdown")}</h3><span>{itemCount} {t("items")}</span></div>
@@ -489,7 +503,17 @@ interface SelectionProps {
   inspect: (item: CleanupItem) => void;
 }
 
-function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
+interface LoadedSessionScope {
+  sessionIds: string[];
+  matchingSessionIds: string[];
+  totalCount: number;
+  nextCursor?: number;
+  loading: boolean;
+  loaded: boolean;
+  error?: string;
+}
+
+function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSessionPage }: SelectionProps & { mergeSessionPage: (page: SessionPage) => void }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("all");
@@ -497,8 +521,76 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   const [state, setState] = useState("all");
   const [updatedWithin, setUpdatedWithin] = useState("all");
   const [displayMode, setDisplayMode] = useState<"tree" | "list">("tree");
-  const [visibleCount, setVisibleCount] = useState(SESSION_BATCH_SIZE);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(sessionTreeExpansionKeys(snapshot, new Set(snapshot.sessions.map((session) => session.id)))));
+  const initialProjectResult = useMemo<SessionProjectResult>(() => ({
+    projects: snapshot.projects,
+    unassignedSessionCount: snapshot.unassignedSessionCount,
+    unassignedSessionSizeBytes: snapshot.unassignedSessionSizeBytes,
+  }), [snapshot.projects, snapshot.unassignedSessionCount, snapshot.unassignedSessionSizeBytes]);
+  const [projectResult, setProjectResult] = useState(initialProjectResult);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState<string>();
+  const [projectLoadAttempt, setProjectLoadAttempt] = useState(0);
+  const [pages, setPages] = useState<Map<string, LoadedSessionScope>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([
+    ...snapshot.projects.map((item) => `project:${item.id}`),
+    ...(snapshot.unassignedSessionCount ? [`project:${NO_PROJECT_ID}`] : []),
+  ]));
+  const requestGeneration = useRef(0);
+  const loadingScopes = useRef(new Map<string, number>());
+  const autoExpandedKeys = useRef(new Set(expanded));
+  const sessionFilter = useMemo<SessionFilter>(() => ({
+    snapshotId: snapshot.id,
+    projectId: project === "all" ? undefined : project,
+    query,
+    source: source === "all" ? undefined : source,
+    state: state === "all" ? undefined : state as "active" | "archived",
+    updatedWithinDays: updatedWithin === "all" ? undefined : Number(updatedWithin),
+  }), [project, query, snapshot.id, source, state, updatedWithin]);
+  const filterKey = JSON.stringify(sessionFilter);
+  const pristineFilter = !sessionFilter.projectId && !sessionFilter.query.trim() && !sessionFilter.source && !sessionFilter.state && !sessionFilter.updatedWithinDays;
+
+  useEffect(() => {
+    const generation = requestGeneration.current + 1;
+    requestGeneration.current = generation;
+    loadingScopes.current.clear();
+    autoExpandedKeys.current.clear();
+    setPages(new Map());
+    setProjectsError(undefined);
+    setProjectsLoading(!pristineFilter);
+    if (pristineFilter) {
+      setProjectResult(initialProjectResult);
+      return;
+    }
+    setProjectResult({ projects: [], unassignedSessionCount: 0, unassignedSessionSizeBytes: 0 });
+    void api.getSessionProjects(sessionFilter)
+      .then((result) => {
+        if (requestGeneration.current === generation) setProjectResult(result);
+      })
+      .catch((reason) => {
+        if (requestGeneration.current === generation) setProjectsError(messageOf(reason));
+      })
+      .finally(() => {
+        if (requestGeneration.current === generation) setProjectsLoading(false);
+      });
+  }, [filterKey, initialProjectResult, pristineFilter, projectLoadAttempt, sessionFilter]);
+
+  const projects = useMemo<ProjectGroup[]>(() => [
+    ...projectResult.projects,
+    ...(projectResult.unassignedSessionCount ? [{
+      id: NO_PROJECT_ID,
+      name: t("noProject"),
+      roots: [],
+      sessionCount: projectResult.unassignedSessionCount,
+      sizeBytes: projectResult.unassignedSessionSizeBytes,
+    }] : []),
+  ], [projectResult, t]);
+
+  useEffect(() => {
+    const projectKeys = projects.map((item) => `project:${item.id}`);
+    setExpanded(new Set(projectKeys));
+    autoExpandedKeys.current = new Set(projectKeys);
+  }, [filterKey, projects]);
+
   const itemByThread = useMemo(
     () => new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item])),
     [snapshot.items],
@@ -515,41 +607,80 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
     result.forEach((children) => children.sort(sortSessions));
     return result;
   }, [snapshot.sessions]);
-  const hasNoProjectSessions = useMemo(
-    () => snapshot.sessions.some((session) => !itemByThread.get(session.id)?.projectId),
-    [itemByThread, snapshot.sessions],
-  );
   const sourceOptions = useMemo(
-    () => [...new Set(snapshot.sessions.map((item) => item.source))].map((value) => ({ value, label: sourceLabel(value) })),
-    [snapshot.sessions],
+    () => snapshot.sessionSources.map((value) => ({ value, label: sourceLabel(value) })),
+    [snapshot.sessionSources],
   );
-  const rows = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return snapshot.sessions.filter((session) => {
-      const item = itemByThread.get(session.id);
-      const matchesQuery = !normalizedQuery || `${session.name} ${session.cwd}`.toLowerCase().includes(normalizedQuery);
-      const matchesProject = project === "all" || (project === NO_PROJECT_ID ? Boolean(item && !item.projectId) : item?.projectId === project);
-      const matchesSource = source === "all" || session.source === source;
-      const matchesState = state === "all" || (state === "archived" ? session.archived : !session.archived);
-      const matchesUpdated = updatedWithin === "all" || isWithinDays(session.updatedAt, Number(updatedWithin));
-      return matchesQuery && matchesProject && matchesSource && matchesState && matchesUpdated;
-    }).sort(sortSessions);
-  }, [itemByThread, project, query, snapshot.sessions, source, state, updatedWithin]);
-  useEffect(() => setVisibleCount(SESSION_BATCH_SIZE), [displayMode, project, query, snapshot.id, source, state, updatedWithin]);
-  const displayedRows = useMemo(() => rows.slice(0, visibleCount), [rows, visibleCount]);
-  const rowItems = displayedRows
-    .map((session) => itemByThread.get(session.id))
-    .filter((item): item is CleanupItem => Boolean(item));
-  const matchingSessionIds = new Set(displayedRows.map((session) => session.id));
-  const visibleSessionIds = includeSessionAncestors(snapshot.sessions, matchingSessionIds);
-  const expansionKeys = sessionTreeExpansionKeys(snapshot, visibleSessionIds);
+
+  const loadSessionPage = useCallback((scopeKey: string, projectId: string | undefined, includeAncestors: boolean, cursor: number) => {
+    const generation = requestGeneration.current;
+    if (loadingScopes.current.get(scopeKey) === generation) return;
+    loadingScopes.current.set(scopeKey, generation);
+    setPages((current) => {
+      const next = new Map(current);
+      const existing = next.get(scopeKey);
+      next.set(scopeKey, existing ? { ...existing, loading: true, error: undefined } : {
+        sessionIds: [], matchingSessionIds: [], totalCount: 0, loading: true, loaded: false,
+      });
+      return next;
+    });
+    void api.getSessionPage({
+      ...sessionFilter,
+      projectId,
+      cursor,
+      limit: SESSION_PAGE_SIZE,
+      includeAncestors,
+    }).then((page) => {
+      if (requestGeneration.current !== generation) return;
+      mergeSessionPage(page);
+      setPages((current) => {
+        const next = new Map(current);
+        const existing = next.get(scopeKey);
+        next.set(scopeKey, {
+          sessionIds: mergeIds(existing?.sessionIds, page.sessions.map((session) => session.id)),
+          matchingSessionIds: mergeIds(existing?.matchingSessionIds, page.matchingSessionIds),
+          totalCount: page.totalCount,
+          nextCursor: page.nextCursor,
+          loading: false,
+          loaded: true,
+        });
+        return next;
+      });
+    }).catch((reason) => {
+      if (requestGeneration.current === generation) setErrorScope(setPages, scopeKey, messageOf(reason));
+    }).finally(() => {
+      if (loadingScopes.current.get(scopeKey) === generation) loadingScopes.current.delete(scopeKey);
+    });
+  }, [mergeSessionPage, sessionFilter]);
+
+  const currentSessionIds = useMemo(() => new Set([...pages.values()].flatMap((page) => page.sessionIds)), [pages]);
+  const expansionKeys = useMemo(() => {
+    const keys = projects.map((item) => `project:${item.id}`);
+    const parentIds = new Set(snapshot.sessions
+      .filter((session) => currentSessionIds.has(session.id) && session.parentThreadId && currentSessionIds.has(session.parentThreadId))
+      .map((session) => session.parentThreadId!));
+    keys.push(...[...parentIds].map((id) => `session:${id}`));
+    return keys;
+  }, [currentSessionIds, projects, snapshot.sessions]);
+  useEffect(() => {
+    const newKeys = expansionKeys.filter((key) => !autoExpandedKeys.current.has(key));
+    if (!newKeys.length) return;
+    newKeys.forEach((key) => autoExpandedKeys.current.add(key));
+    setExpanded((current) => new Set([...current, ...newKeys]));
+  }, [expansionKeys]);
   const allExpanded = expansionKeys.length > 0 && expansionKeys.every((key) => expanded.has(key));
-  const remainingCount = Math.max(0, rows.length - displayedRows.length);
+  const listPage = pages.get("list");
+  const listRows = (listPage?.matchingSessionIds ?? []).map((id) => sessionById.get(id)).filter((session): session is SessionRecord => Boolean(session));
+  const rowItems = (displayMode === "list"
+    ? listPage?.matchingSessionIds ?? []
+    : [...pages.entries()].filter(([key]) => key.startsWith("tree:")).flatMap(([, page]) => page.matchingSessionIds))
+    .map((id) => itemByThread.get(id))
+    .filter((item): item is CleanupItem => Boolean(item));
   useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
   return <section className="panel-card table-panel session-panel">
     <div className="filter-row session-filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
-      <SelectMenu label={t("projectFilter")} value={project} onChange={setProject} options={[{ value: "all", label: t("allProjects") }, ...snapshot.projects.map((item) => ({ value: item.id, label: item.name })), ...(hasNoProjectSessions ? [{ value: NO_PROJECT_ID, label: t("noProject") }] : [])]} />
+      <SelectMenu label={t("projectFilter")} value={project} onChange={setProject} options={[{ value: "all", label: t("allProjects") }, ...snapshot.projects.map((item) => ({ value: item.id, label: item.name })), ...(snapshot.unassignedSessionCount ? [{ value: NO_PROJECT_ID, label: t("noProject") }] : [])]} />
       <SelectMenu label={t("sourceFilter")} value={source} onChange={setSource} options={[{ value: "all", label: t("allSources") }, ...sourceOptions]} />
       <SelectMenu label={t("stateFilter")} value={state} onChange={setState} options={[{ value: "all", label: t("allStates") }, { value: "active", label: t("activeOnly") }, { value: "archived", label: t("archivedOnly") }]} />
       <SelectMenu label={t("updatedFilter")} value={updatedWithin} onChange={setUpdatedWithin} options={[{ value: "all", label: t("allTime") }, { value: "7", label: t("last7Days") }, { value: "30", label: t("last30Days") }]} />
@@ -562,45 +693,35 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
       {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? <ChevronsUp size={14} /> : <ChevronsDown size={14} />}{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
     </BulkActions>
     {displayMode === "tree" ? (
-      <SessionTreeTable snapshot={snapshot} sessionById={sessionById} itemByThread={itemByThread} childrenByParent={childrenByParent} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />
-    ) : <SessionListTable snapshot={snapshot} itemByThread={itemByThread} rows={displayedRows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
-    {remainingCount > 0 && <div className="session-progressive-footer">
-      <span>{t("sessionsShown", { shown: displayedRows.length, total: rows.length })}</span>
-      <button type="button" className="secondary-button" onClick={() => setVisibleCount((count) => Math.min(rows.length, count + SESSION_BATCH_SIZE))}>{t("loadMoreSessions", { count: Math.min(SESSION_BATCH_SIZE, remainingCount) })}<ChevronDown size={14} /></button>
-    </div>}
-    {!rows.length && <EmptyState />}
+      projectsLoading ? <SessionGroupsLoading /> : projectsError ? <SessionGroupsError error={projectsError} retry={() => setProjectLoadAttempt((current) => current + 1)} /> : <SessionTreeTable snapshot={snapshot} projects={projects} pages={pages} sessionById={sessionById} itemByThread={itemByThread} childrenByParent={childrenByParent} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} loadProject={(projectId, cursor) => loadSessionPage(`tree:${projectId}`, projectId, true, cursor)} />
+    ) : <SessionListTable snapshot={snapshot} itemByThread={itemByThread} rows={listRows} page={listPage} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} loadNext={(cursor) => loadSessionPage("list", sessionFilter.projectId, false, cursor)} />}
+    {!projectsLoading && !projectsError && displayMode === "tree" && !projects.length && <EmptyState />}
+    {displayMode === "list" && listPage?.loaded && listPage.totalCount === 0 && <EmptyState />}
   </section>;
 }
 
-function SessionListTable({ snapshot, itemByThread, rows, selected, toggle, inspect }: SelectionProps & { itemByThread: Map<string, CleanupItem>; rows: SessionRecord[] }) {
+function SessionListTable({ snapshot, itemByThread, rows, page, selected, toggle, inspect, loadNext }: SelectionProps & { itemByThread: Map<string, CleanupItem>; rows: SessionRecord[]; page?: LoadedSessionScope; loadNext: (cursor: number) => void }) {
   const { t } = useTranslation();
   return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
         const item = itemByThread.get(session.id)!;
-        const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name ?? t("noProject");
+        const projectName = snapshot.projects.find((candidate) => candidate.id === item.projectId)?.name ?? t("noProject");
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
-          <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
+          <td><CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={session.name} /></td>
           <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong title={session.name}>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
           <td className="session-col-project"><span className="pill" title={projectName}>{projectName}</span></td><td className="session-col-source"><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
         </tr>;
       })}
+      {(!page?.loaded || page.nextCursor !== undefined || page.loading || page.error) && <LazySessionRow colSpan={6} initial={!page?.loaded} loading={Boolean(page?.loading)} error={page?.error} onVisible={() => loadNext(page?.nextCursor ?? 0)} />}
     </tbody></table></div>;
 }
 
-function SessionTreeTable({ snapshot, sessionById, itemByThread, childrenByParent, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect, expanded, toggleExpanded }: SelectionProps & { sessionById: Map<string, SessionRecord>; itemByThread: Map<string, CleanupItem>; childrenByParent: Map<string, SessionRecord[]>; visibleSessionIds: Set<string>; matchingSessionIds: Set<string>; expanded: Set<string>; toggleExpanded: (key: string) => void }) {
+function SessionTreeTable({ snapshot, projects, pages, sessionById, itemByThread, childrenByParent, selected, toggle, selectMany, inspect, expanded, toggleExpanded, loadProject }: SelectionProps & { projects: ProjectGroup[]; pages: Map<string, LoadedSessionScope>; sessionById: Map<string, SessionRecord>; itemByThread: Map<string, CleanupItem>; childrenByParent: Map<string, SessionRecord[]>; expanded: Set<string>; toggleExpanded: (key: string) => void; loadProject: (projectId: string, cursor: number) => void }) {
   const { t } = useTranslation();
-  const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
-  const noProjectIds = [...visibleSessionIds].filter((id) => !assigned.has(id));
-  const projects: ProjectGroup[] = [
-    ...snapshot.projects,
-    ...(noProjectIds.length ? [{ id: NO_PROJECT_ID, name: t("noProject"), roots: [], sessionIds: noProjectIds, sizeBytes: noProjectIds.reduce((sum, id) => sum + (sessionById.get(id)?.sizeBytes ?? 0), 0) }] : []),
-  ];
-
-  const renderSession = (session: SessionRecord, projectIds: Set<string>, depth: number): ReactNode[] => {
+  const renderSession = (session: SessionRecord, projectIds: Set<string>, matchingSessionIds: Set<string>, depth: number): ReactNode[] => {
     const item = itemByThread.get(session.id);
     if (!item) return [];
-    const children = (childrenByParent.get(session.id) ?? [])
-      .filter((candidate) => projectIds.has(candidate.id) && visibleSessionIds.has(candidate.id));
+    const children = (childrenByParent.get(session.id) ?? []).filter((candidate) => projectIds.has(candidate.id));
     const key = `session:${session.id}`;
     const isExpanded = expanded.has(key);
     const contextOnly = !matchingSessionIds.has(session.id);
@@ -619,19 +740,20 @@ function SessionTreeTable({ snapshot, sessionById, itemByThread, childrenByParen
         <td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td>
         <td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
       </tr>];
-    if (isExpanded) rows.push(...children.flatMap((child) => renderSession(child, projectIds, depth + 1)));
+    if (isExpanded) rows.push(...children.flatMap((child) => renderSession(child, projectIds, matchingSessionIds, depth + 1)));
     return rows;
   };
 
   const projectBodies = projects.flatMap((project) => {
-    const projectIds = new Set(project.sessionIds.filter((id) => visibleSessionIds.has(id)));
-    if (!projectIds.size) return [];
+    const page = pages.get(`tree:${project.id}`);
+    const projectIds = new Set(page?.sessionIds ?? []);
+    const matchingSessionIds = new Set(page?.matchingSessionIds ?? []);
     const sessions = [...projectIds].map((id) => sessionById.get(id)).filter((session): session is SessionRecord => Boolean(session));
     const roots = sessions.filter((session) => !session.parentThreadId || !projectIds.has(session.parentThreadId)).sort(sortSessions);
     const projectKey = `project:${project.id}`;
     const isExpanded = expanded.has(projectKey);
     const projectItems = sessions.map((session) => itemByThread.get(session.id)).filter((item): item is CleanupItem => Boolean(item));
-    const selectableItems = projectItems.filter((item) => !item.blockedReason && matchingSessionIds.has(item.threadId!));
+    const selectableItems = projectItems.filter((item) => isItemSelectable(item, snapshot) && matchingSessionIds.has(item.threadId!));
     const allSelected = selectableItems.length > 0 && selectableItems.every((item) => selected.has(item.id));
     const toggleProject = () => selectMany(selectableItems, !allSelected);
     const noProject = project.id === NO_PROJECT_ID;
@@ -642,14 +764,15 @@ function SessionTreeTable({ snapshot, sessionById, itemByThread, childrenByParen
           <button type="button" className="project-tree-toggle" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${project.name}`} onClick={() => toggleExpanded(projectKey)}>
             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             <span className="project-icon compact">{noProject ? <Bot size={16} /> : <FolderCode size={16} />}</span>
-            <span className="project-tree-copy"><strong title={project.name}>{project.name}</strong>{noProject ? <span>{t("sessionCount", { count: sessions.length })}</span> : <code title={project.roots[0]}>{project.roots[0]}</code>}</span>
+            <span className="project-tree-copy"><strong title={project.name}>{project.name}</strong>{noProject ? <span>{t("sessionCount", { count: project.sessionCount })}</span> : <code title={project.roots[0]}>{project.roots[0]}</code>}</span>
           </button>
         </td>
         <td className="session-col-source" />
         <td className="session-col-updated" />
-        <td className="session-col-size"><strong className="project-size">{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></td>
+        <td className="session-col-size"><strong className="project-size">{formatBytes(project.sizeBytes)}</strong></td>
       </tr>
-      {isExpanded && roots.flatMap((session) => renderSession(session, projectIds, 0))}
+      {isExpanded && roots.flatMap((session) => renderSession(session, projectIds, matchingSessionIds, 0))}
+      {isExpanded && (!page?.loaded || page.nextCursor !== undefined || page.loading || page.error) && <LazySessionRow colSpan={5} initial={!page?.loaded} loading={Boolean(page?.loading)} error={page?.error} onVisible={() => loadProject(project.id, page?.nextCursor ?? 0)} />}
     </tbody>];
   });
 
@@ -657,45 +780,59 @@ function SessionTreeTable({ snapshot, sessionById, itemByThread, childrenByParen
   return <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead>{projectBodies}</table></div>;
 }
 
-function sessionTreeExpansionKeys(snapshot: InventorySnapshot, visibleSessionIds: Set<string>) {
-  const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
-  const keys = snapshot.projects
-    .filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id)))
-    .map((project) => `project:${project.id}`);
-  if ([...visibleSessionIds].some((id) => !assigned.has(id))) keys.push(`project:${NO_PROJECT_ID}`);
-  const visibleParentIds = new Set(snapshot.sessions
-    .filter((session) => visibleSessionIds.has(session.id) && session.parentThreadId)
-    .map((session) => session.parentThreadId!));
-  keys.push(...snapshot.sessions
-    .filter((session) => visibleSessionIds.has(session.id) && visibleParentIds.has(session.id))
-    .map((session) => `session:${session.id}`));
-  return keys;
+function LazySessionRow({ colSpan, initial, loading, error, onVisible }: { colSpan: number; initial: boolean; loading: boolean; error?: string; onVisible: () => void }) {
+  const { t } = useTranslation();
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    if (loading || error) return;
+    if (!("IntersectionObserver" in window)) {
+      if (initial) onVisible();
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) onVisible();
+    }, { rootMargin: "180px 0px" });
+    if (rowRef.current) observer.observe(rowRef.current);
+    return () => observer.disconnect();
+  }, [error, initial, loading, onVisible]);
+  return <tr ref={rowRef} className="session-lazy-row"><td colSpan={colSpan}>
+    {error ? <button type="button" className="text-button" onClick={onVisible}><CircleAlert size={14} />{t("retrySessionLoad")}</button> : loading ? <><LoaderCircle size={15} className="spinning" /><span>{t("loadingSessions")}</span></> : <span className="session-lazy-marker" aria-hidden="true" />}
+  </td></tr>;
 }
 
-function includeSessionAncestors(sessions: SessionRecord[], matchingIds: Set<string>) {
-  const byId = new Map(sessions.map((session) => [session.id, session]));
-  const visible = new Set(matchingIds);
-  matchingIds.forEach((id) => {
-    let cursor = byId.get(id)?.parentThreadId;
-    const visited = new Set<string>();
-    while (cursor && !visited.has(cursor)) {
-      visited.add(cursor);
-      visible.add(cursor);
-      cursor = byId.get(cursor)?.parentThreadId;
-    }
+function SessionGroupsLoading() {
+  const { t } = useTranslation();
+  return <div className="session-groups-loading" role="status"><LoaderCircle size={16} className="spinning" />{t("loadingSessionGroups")}</div>;
+}
+
+function SessionGroupsError({ error, retry }: { error: string; retry: () => void }) {
+  const { t } = useTranslation();
+  return <div className="session-groups-loading session-groups-error" role="alert">
+    <CircleAlert size={16} />
+    <span>{t("sessionGroupsLoadFailed")}: {error}</span>
+    <button type="button" className="text-button" onClick={retry}>{t("retrySessionLoad")}</button>
+  </div>;
+}
+
+function mergeIds(current: string[] | undefined, incoming: string[]) {
+  return [...new Set([...(current ?? []), ...incoming])];
+}
+
+function setErrorScope(setPages: (updater: (current: Map<string, LoadedSessionScope>) => Map<string, LoadedSessionScope>) => void, scopeKey: string, error: string) {
+  setPages((current) => {
+    const next = new Map(current);
+    const existing = next.get(scopeKey);
+    next.set(scopeKey, existing ? { ...existing, loading: false, error } : {
+      sessionIds: [], matchingSessionIds: [], totalCount: 0, loading: false, loaded: false, error,
+    });
+    return next;
   });
-  return visible;
 }
 
 function sortSessions(left: SessionRecord, right: SessionRecord) {
   return new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime();
 }
 
-function isWithinDays(value: string | undefined, days: number) {
-  if (!value || !Number.isFinite(days) || days <= 0) return false;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) && timestamp >= Date.now() - days * 86_400_000;
-}
 
 function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
   const { t } = useTranslation();
