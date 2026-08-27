@@ -476,14 +476,14 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
 
 function SessionListTable({ snapshot, rows, selected, toggle, inspect }: SelectionProps & { rows: SessionRecord[] }) {
   const { t } = useTranslation();
-  return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th>{t("project")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead><tbody>
+  return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
         const item = snapshot.items.find((candidate) => candidate.threadId === session.id)!;
         const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name;
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
           <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
           <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong title={session.name}>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
-          <td><span className="pill" title={projectName}>{projectName ?? "—"}</span></td><td><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+          <td className="session-col-project"><span className="pill" title={projectName}>{projectName ?? "—"}</span></td><td className="session-col-source"><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
         </tr>;
       })}
     </tbody></table></div>;
@@ -516,13 +516,13 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
             {children.length ? <button type="button" className="tree-disclosure" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${session.name}`} onClick={() => toggleExpanded(key)}>{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="tree-spacer" />}
             <div className="tree-session-detail">
               <span className={`session-glyph ${depth > 0 ? "child-session-glyph" : ""}`}>{depth > 0 ? <GitBranch size={15} /> : <Bot size={16} />}</span>
-              <span className="session-copy"><strong>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{contextOnly ? t("ancestorContext") : session.archived ? t("archived") : statusLabel(session.status, t)}{children.length > 0 && <> · {children.length} {t("childSessions")}</>}</span></span>
+              <span className="session-copy"><strong title={session.name}>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{contextOnly ? t("ancestorContext") : session.archived ? t("archived") : statusLabel(session.status, t)}{children.length > 0 && <> · {children.length} {t("childSessions")}</>}</span></span>
             </div>
           </div>
         </td>
-        <td><span className="source-label">{sourceLabel(session.source)}</span></td>
-        <td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td>
-        <td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+        <td className="session-col-source"><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td>
+        <td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td>
+        <td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
       </tr>];
     if (isExpanded) rows.push(...children.flatMap((child) => renderSession(child, projectIds, depth + 1)));
     return rows;
@@ -546,19 +546,19 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
           <button type="button" className="project-tree-toggle" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${project.name}`} onClick={() => toggleExpanded(projectKey)}>
             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             <span className="project-icon compact"><FolderCode size={16} /></span>
-            <span className="project-tree-copy"><strong>{project.name}</strong><code>{project.roots[0] ?? t("ungrouped")}</code></span>
+            <span className="project-tree-copy"><strong title={project.name}>{project.name}</strong><code title={project.roots[0] ?? t("ungrouped")}>{project.roots[0] ?? t("ungrouped")}</code></span>
           </button>
         </td>
-        <td />
-        <td />
-        <td><strong className="project-size">{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></td>
+        <td className="session-col-source" />
+        <td className="session-col-updated" />
+        <td className="session-col-size"><strong className="project-size">{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></td>
       </tr>
       {isExpanded && roots.flatMap((session) => renderSession(session, projectIds, 0))}
     </tbody>];
   });
 
   if (!projectBodies.length) return null;
-  return <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead>{projectBodies}</table></div>;
+  return <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead>{projectBodies}</table></div>;
 }
 
 function sessionTreeExpansionKeys(snapshot: InventorySnapshot, visibleSessionIds: Set<string>) {

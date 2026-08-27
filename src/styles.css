@@ -256,7 +256,7 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
 
 /* ---------- Session tree ---------- */
 
-.tree-table table { min-width: 780px; table-layout: fixed; }
+.tree-table table { min-width: 620px; table-layout: fixed; }
 .tree-table th:first-child, .tree-table td:first-child { width: 46px; text-align: center; }
 .tree-table th:nth-child(2) { width: auto; }
 .tree-table th:nth-child(3) { width: 128px; }
@@ -268,26 +268,27 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
 .project-tree-toggle { display: flex; width: 100%; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
 .project-tree-toggle > svg { flex: 0 0 auto; color: var(--muted); }
 .project-icon.compact { display: grid; width: 24px; height: 24px; flex: 0 0 auto; place-items: center; color: var(--muted); }
-.project-tree-copy { min-width: 0; flex: 1; }
+.project-tree-copy { min-width: 0; flex: 1; overflow: hidden; }
 .project-tree-copy strong, .project-tree-copy code { display: block; }
-.project-tree-copy strong { font-size: 12.5px; font-weight: 650; }
-.project-tree-copy code { max-width: 520px; margin-top: 1px; overflow: hidden; color: var(--muted-2); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.project-tree-copy strong { overflow: hidden; font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.project-tree-copy code { width: 100%; margin-top: 1px; overflow: hidden; color: var(--muted-2); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .project-size { color: var(--text); font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.tree-session-cell { position: relative; display: flex; min-width: 280px; align-items: center; gap: 8px; padding-left: calc(var(--tree-depth) * 24px); }
+.tree-session-cell { position: relative; display: flex; width: 100%; min-width: 0; align-items: center; gap: 8px; padding-left: calc(var(--tree-depth) * 24px); }
 .tree-session-cell.nested::before { position: absolute; top: -12px; bottom: -12px; left: calc(var(--tree-depth) * 24px + 6px); border-left: 1px solid var(--border-strong); content: ""; }
 .tree-disclosure { position: relative; z-index: 1; display: grid; width: 16px; height: 20px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .tree-disclosure:hover { color: var(--text); }
 .tree-spacer { width: 16px; flex: 0 0 auto; }
 .tree-session-cell .session-glyph { width: 24px; height: 24px; border: 0; background: transparent; }
 .child-session-glyph { background: transparent; }
-.tree-session-detail { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; }
-.tree-session-detail strong { max-width: 400px; overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.tree-session-detail { display: flex; width: 100%; min-width: 0; flex: 1; align-items: center; gap: 8px; overflow: hidden; }
+.tree-session-detail .session-copy { overflow: hidden; }
+.tree-session-detail strong { display: block; width: 100%; min-width: 0; overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .tree-context-row { opacity: 0.6; }
 .tree-context-row td { background: var(--surface); }
 
 .session-list-table table { min-width: 900px; table-layout: fixed; }
 .session-list-table th:first-child, .session-list-table td:first-child { width: 46px; text-align: center; }
-.session-list-table th:nth-child(2) { width: 32%; }
+.session-list-table th:nth-child(2) { width: auto; }
 .session-list-table th:nth-child(3) { width: 180px; }
 .session-list-table th:nth-child(4) { width: 128px; }
 .session-list-table th:nth-child(5) { width: 112px; }
@@ -542,6 +543,9 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
   .settings-footer { grid-column: 1; }
   .session-filter-row { grid-template-columns: 1fr 1fr 1fr; }
   .session-filter-row .search-box { grid-column: 1 / -1; }
+  .tree-table .session-col-source,
+  .session-list-table .session-col-project { display: none; }
+  .session-list-table table { min-width: 680px; }
 }
 @media (max-width: 680px) {
   .app-toolbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 0 10px; }
@@ -564,6 +568,10 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
   .session-panel .bulk-actions > span { grid-column: 1 / -1; grid-row: 2; }
   .session-panel .view-switcher { grid-column: 3; grid-row: 1; margin-left: 0; }
   .session-panel .tree-expansion-button { grid-column: 4; grid-row: 1; }
+  .tree-table .session-col-updated,
+  .session-list-table .session-col-source { display: none; }
+  .tree-table table { min-width: 440px; }
+  .session-list-table table { min-width: 540px; }
   .item-card { grid-template-columns: auto auto 1fr; }
   .item-size { grid-column: 3; text-align: left; }
   .item-select-row { align-items: flex-start; }

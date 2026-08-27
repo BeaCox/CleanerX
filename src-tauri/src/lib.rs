@@ -13,6 +13,8 @@ use cleanerx_core::{
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use tauri::menu::Menu;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -633,6 +635,9 @@ fn error_message(error: CleanerError) -> String {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_menu(Menu::default(app.handle())?)?;
+
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let settings = load_settings(&data_dir);

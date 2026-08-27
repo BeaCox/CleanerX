@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/cleanerx-wordmark.png" width="900" alt="CleanerX — Clean storage. Clear mind. Better code.">
+</p>
+
 # CleanerX
 
 CleanerX 是一个本地优先的 coding agent 存储清理器。MVP 使用 Rust、Tauri 2 和 React 构建，专注于 macOS 13+ 上的 Codex 本地数据。
@@ -84,4 +88,4 @@ CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.co
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Copyright © 2026 BeaCOx. Licensed under Apache-2.0; see [LICENSE](LICENSE).

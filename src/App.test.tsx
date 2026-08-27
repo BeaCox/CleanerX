@@ -114,6 +114,11 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByRole("button", { name: "Projects" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse atlas-web" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Collapse Design token migration" })).toBeVisible();
+    const sessionTitle = screen.getByText("Design token migration");
+    expect(sessionTitle).toHaveAttribute("title", "Design token migration");
+    const sessionRow = sessionTitle.closest("tr")!;
+    expect(within(sessionRow).getByText("Desktop / IDE").closest("td")).toHaveClass("session-col-source");
+    expect(sessionRow.querySelector("td.session-col-updated")).toBeInTheDocument();
     expect(screen.getByText("Release checklist")).toBeVisible();
     expect(screen.queryByText("Expansion only changes the view, not cleanup selection.")).not.toBeInTheDocument();
 

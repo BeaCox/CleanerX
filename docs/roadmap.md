@@ -11,6 +11,7 @@ CleanerX currently has:
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
 - a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
 - persisted Chinese/English and system-aware light/dark appearance preferences with immediate preview;
+- branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCOx copyright metadata;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
