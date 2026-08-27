@@ -2,6 +2,8 @@
 
 This plan orders work by data-safety risk. A later milestone may be explored early, but it must not delay an unresolved safety requirement in an earlier milestone.
 
+The [open-source release plan](open-source-release-plan.md) separates public source availability from mutation-capable binary releases. The repository may be published as a source preview before M1 is complete, but any promoted binary with cleanup mutations enabled must pass the M1 safety gate. Signing and notarization are explicitly optional and do not replace that gate.
+
 ## Current baseline
 
 CleanerX currently has:
@@ -23,7 +25,7 @@ This is an engineering MVP, not yet a promise that every Codex storage revision 
 
 ## M1 — Codex safety hardening
 
-Priority: required before a broad public MVP release.
+Priority: required before promoting a public mutation-capable binary. Source code may be published earlier under the source-preview conditions in the [open-source release plan](open-source-release-plan.md).
 
 ### Storage compatibility
 
@@ -63,6 +65,8 @@ Priority: public source release and repeatable unsigned artifacts.
 - Verify accessibility: keyboard-only navigation, focus order, contrast, system Chinese/English switching, dark mode, and reduced motion.
 - Add a release checklist covering version synchronization, changelog, dependency/license review, fixtures, `make check`, bundle smoke tests, and Gatekeeper instructions.
 - Document reproducible local commands for both architectures and keep signing/notarization optional until a release identity is available.
+- Mark artifact names and release notes as unsigned, explain the limits of checksum verification, and never instruct users to disable Gatekeeper globally.
+- Follow the staged source-preview, alpha, pilot, and `v0.1.0` gates in the [open-source release plan](open-source-release-plan.md).
 
 ### Exit criteria
 

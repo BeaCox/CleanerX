@@ -1,6 +1,7 @@
 # CleanerX documentation
 
 - [Development plan](roadmap.md): milestones, priorities, exit criteria, and non-goals.
+- [Open-source release plan](open-source-release-plan.md): source publication, mutation-safety gates, unsigned artifacts, pilot validation, and maintenance policy.
 - [Storage and transaction model](storage-model.md): discovery, data categories, cleanup transactions, and restore rules.
 - [Agent session hierarchy](agent-session-hierarchy.md): the cross-Agent project/session tree model and supporting evidence.
 - [Agent memory research](memory-management.md): native memory capabilities, editing boundaries, and the multi-Agent delivery plan.
