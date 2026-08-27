@@ -11,6 +11,7 @@ CleanerX operates on private local Agent data, so destructive behavior is treate
 - CleanerX never writes OpenCode SQLite rows, deletes its database/WAL files, or treats OpenCode project/worktree paths as cleanup roots.
 - Symbolic links, lexical traversal, paths outside allowlisted roots and changed file identities are rejected.
 - CleanerX does not force-quit Codex or another writer.
+- Inventory may retain one normalized, 96-character first-user-message excerpt only as an unnamed Pi session title, matching Pi's own selector; no additional transcript content is retained by the scan.
 - There is no telemetry, crash upload, cloud connection, updater, background daemon or general shell/filesystem command exposed to the GUI.
 
 ## Reporting a vulnerability

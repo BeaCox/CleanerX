@@ -374,7 +374,7 @@ export default function App() {
         {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
         {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice", { agent: agentName(activeAgent) })}</strong><span>{t("reportOnlyHelp", { agent: agentName(activeAgent) })}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
         {view === "settings" ? (
-          settings ? <SettingsView value={settings} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
+          settings ? <SettingsView value={settings} activeAgent={activeAgent} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
         ) : view === "backups" ? (
           <BackupsView backups={backups} restore={restore} requestPurge={setBackupToPurge} busy={busy !== null} />
         ) : !snapshot ? (
@@ -944,7 +944,7 @@ function BackupsView({ backups, restore, requestPurge, busy }: { backups: Backup
   return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{agentName(backup.agent)} · {backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
-function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => Promise<void> }) {
+function SettingsView({ value, activeAgent, onSave }: { value: AppSettings; activeAgent: AgentKind; onSave: (settings: AppSettings) => Promise<void> }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -959,19 +959,30 @@ function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings
     setForm(next);
     void applyPreferences(next);
   };
+  const agentPath = activeAgent === "codex" ? {
+    key: "customCodexHome" as const,
+    placeholder: "~/.codex",
+  } : activeAgent === "claudeCode" ? {
+    key: "customClaudeHome" as const,
+    placeholder: "~/.claude",
+  } : activeAgent === "openCode" ? {
+    key: "customOpencodeHome" as const,
+    placeholder: "~/.local/share/opencode",
+  } : {
+    key: "customPiHome" as const,
+    placeholder: "~/.pi/agent",
+  };
+  const agentPathLabel = t("agentPathOverride", { agent: agentName(activeAgent) });
   return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); setSaving(true); void onSave(form).finally(() => setSaving(false)); }}>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsInterface")}</h3>
       <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
       <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
-      <Setting label={t("textSize")} hint={t("textSizeHint")}><div className="segmented" role="group" aria-label={t("textSize")}><button type="button" className={form.textSize === "standard" ? "active" : ""} aria-pressed={form.textSize === "standard"} onClick={() => preview({ ...form, textSize: "standard" })}>{t("textSizeStandard")}</button><button type="button" className={form.textSize === "large" ? "active" : ""} aria-pressed={form.textSize === "large"} onClick={() => preview({ ...form, textSize: "large" })}>{t("textSizeLarge")}</button><button type="button" className={form.textSize === "extraLarge" ? "active" : ""} aria-pressed={form.textSize === "extraLarge"} onClick={() => preview({ ...form, textSize: "extraLarge" })}>{t("textSizeExtraLarge")}</button></div></Setting>
+      <Setting label={t("textSize")}><div className="segmented" role="group" aria-label={t("textSize")}><button type="button" className={form.textSize === "standard" ? "active" : ""} aria-pressed={form.textSize === "standard"} onClick={() => preview({ ...form, textSize: "standard" })}>{t("textSizeStandard")}</button><button type="button" className={form.textSize === "large" ? "active" : ""} aria-pressed={form.textSize === "large"} onClick={() => preview({ ...form, textSize: "large" })}>{t("textSizeLarge")}</button><button type="button" className={form.textSize === "extraLarge" ? "active" : ""} aria-pressed={form.textSize === "extraLarge"} onClick={() => preview({ ...form, textSize: "extraLarge" })}>{t("textSizeExtraLarge")}</button></div></Setting>
     </section>
-    <section className="settings-group">
-      <h3 className="settings-group-label">{t("settingsAgentPaths")}</h3>
-      <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
-      <Setting label={t("claudeHome")} hint={t("claudeHomeHint")}><input aria-label={t("claudeHome")} value={form.customClaudeHome ?? ""} onChange={(event) => setForm({ ...form, customClaudeHome: event.target.value || undefined })} placeholder="~/.claude" /></Setting>
-      <Setting label={t("opencodeHome")} hint={t("opencodeHomeHint")}><input aria-label={t("opencodeHome")} value={form.customOpencodeHome ?? ""} onChange={(event) => setForm({ ...form, customOpencodeHome: event.target.value || undefined })} placeholder="~/.local/share/opencode" /></Setting>
-      <Setting label={t("piHome")} hint={t("piHomeHint")}><input aria-label={t("piHome")} value={form.customPiHome ?? ""} onChange={(event) => setForm({ ...form, customPiHome: event.target.value || undefined })} placeholder="~/.pi/agent" /></Setting>
+    <section className="settings-group settings-path-group">
+      <h3 className="settings-group-label">{t("settingsAgentPath")}</h3>
+      <Setting label={agentPathLabel}><input aria-label={agentPathLabel} value={form[agentPath.key] ?? ""} onChange={(event) => setForm({ ...form, [agentPath.key]: event.target.value || undefined })} placeholder={agentPath.placeholder} /></Setting>
     </section>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>

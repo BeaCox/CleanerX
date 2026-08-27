@@ -389,7 +389,7 @@ impl Default for AppSettings {
             custom_pi_home: None,
             locale: "system".into(),
             theme: "system".into(),
-            text_size: "large".into(),
+            text_size: "standard".into(),
             backup_retention_days: 30,
             log_retention_days: 7,
             temp_retention_hours: 24,

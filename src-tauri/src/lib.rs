@@ -1516,7 +1516,7 @@ mod tests {
         let loaded = load_settings(directory.path());
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
-        assert_eq!(loaded.text_size, "large");
+        assert_eq!(loaded.text_size, "standard");
     }
 
     #[test]

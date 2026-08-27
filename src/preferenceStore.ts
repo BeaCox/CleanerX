@@ -5,7 +5,7 @@ export type UiPreferences = Pick<AppSettings, "locale" | "theme" | "textSize">;
 export const defaultUiPreferences: UiPreferences = {
   locale: "system",
   theme: "system",
-  textSize: "large",
+  textSize: "standard",
 };
 
 const storageKey = "cleanerx.ui-preferences.v1";

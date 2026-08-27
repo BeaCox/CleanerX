@@ -32,7 +32,7 @@ const defaultMockSettings: AppSettings = {
   activeAgent: "codex",
   locale: "system",
   theme: "system",
-  textSize: "large",
+  textSize: "standard",
   backupRetentionDays: 30,
   logRetentionDays: 7,
   tempRetentionHours: 24,

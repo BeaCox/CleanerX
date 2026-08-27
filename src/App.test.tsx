@@ -70,7 +70,8 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByText(/Reset clears|auto memory is project-scoped/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByRole("textbox", { name: "OpenCode data directory override" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "OpenCode custom directory" })).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Codex custom directory" })).not.toBeInTheDocument();
   });
 
   it("exposes pi as a target with file-backed sessions and no memory cleanup", async () => {
@@ -90,7 +91,8 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByText(/Reset clears|auto memory is project-scoped/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(screen.getByRole("textbox", { name: "pi agent directory override" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "pi custom directory" })).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Codex custom directory" })).not.toBeInTheDocument();
   });
 
   it("previews pi session files through the bounded read-only detail command", async () => {

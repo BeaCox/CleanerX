@@ -20,6 +20,7 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 const METADATA_SCAN_LIMIT: u64 = 2 * 1024 * 1024;
+const SESSION_TITLE_CHAR_LIMIT: usize = 96;
 const CONTENT_TEXT_LIMIT: usize = 512 * 1024;
 const CONTENT_BLOCK_LIMIT: usize = 200;
 const TOOL_TEXT_LIMIT: usize = 16 * 1024;
@@ -212,6 +213,7 @@ struct SessionFileMetadata {
     cwd: String,
     created_at: Option<DateTime<Utc>>,
     name: Option<String>,
+    first_user_message: Option<String>,
     parent_session: Option<PathBuf>,
 }
 
@@ -419,14 +421,7 @@ fn scan_sessions(
         let blocked_reason = running
             .then(|| "pi is running; quit it before deleting local session data".to_owned())
             .or(unsafe_reason);
-        let short_id = &session.metadata.id[..session.metadata.id.len().min(8)];
-        let name = session
-            .metadata
-            .name
-            .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("pi session {short_id}"));
+        let name = session_display_name(&session.metadata);
         let record = SessionRecord {
             id: session.metadata.id.clone(),
             name: name.clone(),
@@ -474,8 +469,33 @@ fn scan_sessions(
     Ok(())
 }
 
-/// Reads only the session header and `session_info` display names within a bounded prefix of the
-/// JSONL file. Message, tool, and compaction bodies are parsed transiently but never retained.
+fn session_display_name(metadata: &SessionFileMetadata) -> String {
+    if let Some(name) = metadata
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_owned();
+    }
+    if let Some(first_user_message) = metadata.first_user_message.as_deref() {
+        return first_user_message.to_owned();
+    }
+
+    let short_id = &metadata.id[..metadata.id.len().min(8)];
+    metadata
+        .created_at
+        .map(|created_at| {
+            format!(
+                "pi · {} UTC · {short_id}",
+                created_at.format("%Y-%m-%d %H:%M")
+            )
+        })
+        .unwrap_or_else(|| format!("pi · {short_id}"))
+}
+
+/// Reads the session header, latest `session_info` display name, and one bounded first-user
+/// message title within a bounded prefix of the JSONL file. No other message or tool body is kept.
 fn read_session_metadata(path: &Path) -> Result<Option<SessionFileMetadata>, CleanerError> {
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file).take(METADATA_SCAN_LIMIT);
@@ -506,6 +526,7 @@ fn read_session_metadata(path: &Path) -> Result<Option<SessionFileMetadata>, Cle
             .and_then(Value::as_str)
             .and_then(parse_rfc3339_timestamp),
         name: None,
+        first_user_message: None,
         parent_session: header
             .get("parentSession")
             .and_then(Value::as_str)
@@ -517,22 +538,53 @@ fn read_session_metadata(path: &Path) -> Result<Option<SessionFileMetadata>, Cle
             Ok(line) => line,
             Err(_) => break,
         };
-        if !line.contains("\"session_info\"") {
+        if !line.contains("\"session_info\"") && !line.contains("\"message\"") {
             continue;
         }
         let Ok(entry) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
-        if entry.get("type").and_then(Value::as_str) == Some("session_info")
-            && let Some(name) = entry
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.trim().is_empty())
-        {
-            metadata.name = Some(name.to_owned());
+        match entry.get("type").and_then(Value::as_str) {
+            Some("session_info") => {
+                metadata.name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+            }
+            Some("message") if metadata.first_user_message.is_none() => {
+                let Some(message) = entry.get("message") else {
+                    continue;
+                };
+                if message.get("role").and_then(Value::as_str) == Some("user") {
+                    metadata.first_user_message =
+                        normalized_session_title(&message_text(message.get("content")));
+                }
+            }
+            _ => {}
         }
     }
+    if metadata.name.is_some() {
+        metadata.first_user_message = None;
+    }
     Ok(Some(metadata))
+}
+
+fn normalized_session_title(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().count() <= SESSION_TITLE_CHAR_LIMIT {
+        return Some(normalized);
+    }
+    let mut title = normalized
+        .chars()
+        .take(SESSION_TITLE_CHAR_LIMIT)
+        .collect::<String>();
+    title.push('…');
+    Some(title)
 }
 
 fn scan_application_data(
@@ -1028,6 +1080,53 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| item.category == StorageCategory::Cache)
+        );
+    }
+
+    #[test]
+    fn unnamed_sessions_use_the_bounded_first_user_message_as_their_title() {
+        let metadata = SessionFileMetadata {
+            id: SESSION_ID.into(),
+            cwd: "/tmp/project".into(),
+            created_at: parse_rfc3339_timestamp("2026-08-27T10:00:00.000Z"),
+            name: None,
+            first_user_message: Some("Fix the session title".into()),
+            parent_session: None,
+        };
+
+        assert_eq!(session_display_name(&metadata), "Fix the session title");
+
+        let long_title = format!("{} private suffix", "x".repeat(SESSION_TITLE_CHAR_LIMIT));
+        let bounded = normalized_session_title(&long_title).expect("bounded title");
+        assert_eq!(bounded.chars().count(), SESSION_TITLE_CHAR_LIMIT + 1);
+        assert!(bounded.ends_with('…'));
+        assert!(!bounded.contains("private suffix"));
+    }
+
+    #[test]
+    fn metadata_reader_matches_pi_first_message_fallback_and_latest_name_clear() {
+        let fixture = tempfile::tempdir().expect("pi fixture");
+        let path = fixture.path().join("session.jsonl");
+        let contents = format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"{SESSION_ID}\",\"timestamp\":\"2026-08-27T10:00:00.000Z\",\"cwd\":\"/tmp/project\"}}\n\
+             {{\"type\":\"message\",\"id\":\"a1\",\"parentId\":null,\"timestamp\":\"2026-08-27T10:00:01.000Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"  Fix Pi titles\\nwithout retaining the whole transcript  \"}}],\"timestamp\":1787839200000}}}}\n\
+             {{\"type\":\"session_info\",\"id\":\"b2\",\"parentId\":\"a1\",\"timestamp\":\"2026-08-27T10:00:02.000Z\",\"name\":\"Old name\"}}\n\
+             {{\"type\":\"session_info\",\"id\":\"c3\",\"parentId\":\"b2\",\"timestamp\":\"2026-08-27T10:00:03.000Z\",\"name\":\" \"}}\n"
+        );
+        fs::write(&path, contents).expect("session fixture");
+
+        let metadata = read_session_metadata(&path)
+            .expect("metadata")
+            .expect("recognized session");
+
+        assert_eq!(metadata.name, None);
+        assert_eq!(
+            metadata.first_user_message.as_deref(),
+            Some("Fix Pi titles without retaining the whole transcript")
+        );
+        assert_eq!(
+            session_display_name(&metadata),
+            "Fix Pi titles without retaining the whole transcript"
         );
     }
 
