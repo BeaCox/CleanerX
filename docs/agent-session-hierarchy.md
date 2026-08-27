@@ -40,6 +40,7 @@ Official references:
 - “Recent” is an updated-time filter (currently last 7 or 30 days), not a durable tree node. Its membership changes over time and never creates or changes a project association.
 - Filtering a child keeps its ancestor rows as non-selectable context.
 - Project selection operates only on associated Agent data; it never selects or traverses the source directory.
+- Session title, `cwd`, and project association remain independent. A title is never synthesized from the `cwd` directory name, and a title does not establish project membership.
 - A session `cwd` is shown as recognition metadata but does not by itself create a project association. CleanerX requires a recognized Codex project root or an ancestor Git marker; standalone desktop chat workspaces therefore remain under “No project.”
 - The “No project” virtual root sorts sessions by most recent update. A known `cwd` may be shown only as recognition metadata; an absent `cwd` is displayed explicitly and is never inferred from CleanerX's working directory.
 - A parent cleanup remains explicit. The confirmation plan expands and displays every descendant that the Agent's official delete operation will also remove.

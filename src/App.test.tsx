@@ -10,6 +10,13 @@ describe("CleanerX GUI", () => {
     expect(logo?.getAttribute("src")).toContain("64x64.png");
   });
 
+  it("presents attachments and generated items as file content", () => {
+    render(<App />);
+    const content = screen.getByRole("button", { name: "Content" });
+    expect(content.querySelector(".lucide-file")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Attachments & generated" })).not.toBeInTheDocument();
+  });
+
   it("keeps every cleanup item unselected after scanning", async () => {
     render(<App />);
     expect(await screen.findByText("Managed data")).toBeVisible();
@@ -262,7 +269,7 @@ describe("CleanerX GUI", () => {
     expect(await within(dialog).findByText(/用户偏好简洁的桌面界面/)).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close details" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Attachments & generated" }));
+    fireEvent.click(screen.getByRole("button", { name: "Content" }));
     fireEvent.click(screen.getByLabelText("Open details Generated visuals"));
     dialog = screen.getByRole("dialog", { name: "Generated visuals" });
     expect(within(dialog).getByText("Generated content")).toBeVisible();
@@ -279,7 +286,7 @@ describe("CleanerX GUI", () => {
   it("shows attachment and generated images in a preview card grid", async () => {
     render(<App />);
     await screen.findByText("Managed data");
-    fireEvent.click(screen.getByRole("button", { name: "Attachments & generated" }));
+    fireEvent.click(screen.getByRole("button", { name: "Content" }));
 
     expect(await screen.findByRole("img", { name: "Image preview for Generated visuals" })).toBeVisible();
     expect(await screen.findByLabelText("No image preview available")).toBeVisible();
@@ -290,7 +297,7 @@ describe("CleanerX GUI", () => {
   it("does not open media details when the visual checkbox is clicked", async () => {
     render(<App />);
     await screen.findByText("Managed data");
-    fireEvent.click(screen.getByRole("button", { name: "Attachments & generated" }));
+    fireEvent.click(screen.getByRole("button", { name: "Content" }));
     const checkbox = screen.getByRole("checkbox", { name: "Generated visuals" });
     const checkPath = checkbox.closest("label")?.querySelector("svg path");
     expect(checkPath).not.toBeNull();

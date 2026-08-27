@@ -177,9 +177,29 @@ impl AgentAdapter for CodexAdapter {
         let app_support = installation.app_support.as_deref().map(PathBuf::from);
         let mut warnings = installation.warnings.clone();
 
+        let session_index_names = read_session_index_names(&home).unwrap_or_else(|error| {
+            warnings.push(format!(
+                "Session index titles were ignored because the metadata is not recognized: {error}"
+            ));
+            HashMap::new()
+        });
+        let thread_title_metadata = read_thread_title_metadata(&home).unwrap_or_else(|error| {
+            warnings.push(format!(
+                "State DB title metadata was ignored because its schema is not recognized: {error}"
+            ));
+            HashMap::new()
+        });
+
         let sessions_result = if let Some(binary) = installation.binary.as_deref() {
             match self.app_client(Path::new(binary), &home).await {
-                Ok(mut client) => scan_sessions_from_server(&mut client).await,
+                Ok(mut client) => {
+                    scan_sessions_from_server(
+                        &mut client,
+                        &session_index_names,
+                        &thread_title_metadata,
+                    )
+                    .await
+                }
                 Err(error) => Err(error),
             }
         } else {
@@ -195,7 +215,7 @@ impl AgentAdapter for CodexAdapter {
                     "Session API scan failed; report is read-only and based on a validated state DB: {error}"
                 ));
                 installation.capabilities = AgentCapabilities::default();
-                scan_sessions_from_state_db(&home)?
+                scan_sessions_from_state_db(&home, &session_index_names)?
             }
         };
         augment_pinned_and_parents(&home, &mut sessions, &mut warnings);
@@ -1306,6 +1326,8 @@ impl Drop for AppServerClient {
 
 async fn scan_sessions_from_server(
     client: &mut AppServerClient,
+    session_index_names: &HashMap<String, String>,
+    thread_title_metadata: &HashMap<String, ThreadTitleMetadata>,
 ) -> Result<Vec<SessionRecord>, CleanerError> {
     let mut sessions = Vec::new();
     let loaded = list_loaded(client).await.unwrap_or_default();
@@ -1330,7 +1352,13 @@ async fn scan_sessions_from_server(
                 .and_then(Value::as_array)
                 .ok_or_else(|| CleanerError::Integration("thread/list omitted data".into()))?;
             for thread in page {
-                if let Some(session) = parse_server_thread(thread, archived, &loaded) {
+                if let Some(session) = parse_server_thread(
+                    thread,
+                    archived,
+                    &loaded,
+                    session_index_names,
+                    thread_title_metadata,
+                ) {
                     sessions.push(session);
                 }
             }
@@ -1374,20 +1402,41 @@ fn parse_server_thread(
     thread: &Value,
     archived: bool,
     loaded: &HashSet<String>,
+    session_index_names: &HashMap<String, String>,
+    thread_title_metadata: &HashMap<String, ThreadTitleMetadata>,
 ) -> Option<SessionRecord> {
     let id = thread.get("id")?.as_str()?.to_owned();
+    let stored = thread_title_metadata.get(&id);
     let status = if loaded.contains(&id) {
         "loaded".to_owned()
     } else {
         status_name(thread.get("status"))
     };
     Some(SessionRecord {
-        name: thread
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("Untitled session")
-            .to_owned(),
+        name: display_title(
+            thread
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| stored.and_then(|metadata| metadata.name.as_deref())),
+            session_index_names.get(&id).map(String::as_str),
+            thread
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| stored.and_then(|metadata| metadata.title.as_deref())),
+            thread
+                .get("first_user_message")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    thread
+                        .get("firstUserMessage")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                })
+                .or_else(|| stored.and_then(|metadata| metadata.first_user_message.as_deref())),
+        ),
         cwd: thread
             .get("cwd")
             .and_then(Value::as_str)
@@ -1417,45 +1466,178 @@ fn parse_server_thread(
     })
 }
 
-fn scan_sessions_from_state_db(home: &Path) -> Result<Vec<SessionRecord>, CleanerError> {
+#[derive(Debug, Clone, Default)]
+struct ThreadTitleMetadata {
+    name: Option<String>,
+    title: Option<String>,
+    first_user_message: Option<String>,
+}
+
+fn display_title(
+    thread_name: Option<&str>,
+    session_index_thread_name: Option<&str>,
+    thread_title: Option<&str>,
+    first_user_message: Option<&str>,
+) -> String {
+    [
+        thread_name,
+        session_index_thread_name,
+        thread_title,
+        first_user_message,
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|candidate| !candidate.is_empty())
+    .unwrap_or("未命名会话")
+    .to_owned()
+}
+
+fn read_session_index_names(home: &Path) -> Result<HashMap<String, String>, CleanerError> {
+    let path = home.join("session_index.jsonl");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CleanerError::UnsafePath(
+            path.to_string_lossy().into_owned(),
+        ));
+    }
+
+    let reader = std::io::BufReader::new(fs::File::open(path)?);
+    let mut names = HashMap::new();
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: Value = serde_json::from_str(&line).map_err(|error| {
+            CleanerError::Integration(format!(
+                "unrecognized session_index.jsonl record {}: {error}",
+                index + 1
+            ))
+        })?;
+        let Some(id) = record.get("id").and_then(Value::as_str) else {
+            return Err(CleanerError::Integration(format!(
+                "unrecognized session_index.jsonl record {}",
+                index + 1
+            )));
+        };
+        if let Some(name) = record
+            .get("thread_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            names.insert(id.to_owned(), name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+fn read_thread_title_metadata(
+    home: &Path,
+) -> Result<HashMap<String, ThreadTitleMetadata>, CleanerError> {
+    let Some(database) = latest_state_db(home) else {
+        return Ok(HashMap::new());
+    };
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let columns = table_columns(&connection, "threads")?;
+    if !columns.contains("id") || !columns.contains("title") {
+        return Err(CleanerError::Integration(
+            "unrecognized threads schema".into(),
+        ));
+    }
+    let name_column = if columns.contains("name") {
+        "name"
+    } else {
+        "NULL"
+    };
+    let first_message_column = if columns.contains("first_user_message") {
+        "first_user_message"
+    } else {
+        "NULL"
+    };
+    let query = format!("SELECT id, {name_column}, title, {first_message_column} FROM threads");
+    let mut statement = connection.prepare(&query)?;
+    Ok(statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ThreadTitleMetadata {
+                    name: row.get(1)?,
+                    title: row.get(2)?,
+                    first_user_message: row.get(3)?,
+                },
+            ))
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+fn scan_sessions_from_state_db(
+    home: &Path,
+    session_index_names: &HashMap<String, String>,
+) -> Result<Vec<SessionRecord>, CleanerError> {
     let database = latest_state_db(home)
         .ok_or_else(|| CleanerError::NotFound("validated Codex state database".into()))?;
     let connection = Connection::open_with_flags(
         database,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    require_columns(
-        &connection,
-        "threads",
-        &[
-            "id",
-            "rollout_path",
-            "created_at",
-            "updated_at",
-            "source",
-            "cwd",
-            "title",
-            "archived",
-        ],
-    )?;
-    let mut statement = connection.prepare(
-        "SELECT id, rollout_path, created_at, updated_at, source, cwd, title, archived FROM threads",
-    )?;
+    let columns = table_columns(&connection, "threads")?;
+    let required = [
+        "id",
+        "rollout_path",
+        "created_at",
+        "updated_at",
+        "source",
+        "cwd",
+        "title",
+        "archived",
+    ];
+    if required.iter().any(|column| !columns.contains(*column)) {
+        return Err(CleanerError::Integration(
+            "unrecognized threads schema".into(),
+        ));
+    }
+    let name_column = if columns.contains("name") {
+        "name"
+    } else {
+        "NULL"
+    };
+    let first_message_column = if columns.contains("first_user_message") {
+        "first_user_message"
+    } else {
+        "NULL"
+    };
+    let query = format!(
+        "SELECT id, rollout_path, created_at, updated_at, source, cwd, {name_column}, title, {first_message_column}, archived FROM threads"
+    );
+    let mut statement = connection.prepare(&query)?;
     let records = statement.query_map([], |row| {
-        let title: String = row.get(6)?;
+        let id: String = row.get(0)?;
+        let thread_name: Option<String> = row.get(6)?;
+        let title: Option<String> = row.get(7)?;
+        let first_user_message: Option<String> = row.get(8)?;
         Ok(SessionRecord {
-            id: row.get(0)?,
+            name: display_title(
+                thread_name.as_deref(),
+                session_index_names.get(&id).map(String::as_str),
+                title.as_deref(),
+                first_user_message.as_deref(),
+            ),
+            id,
             path: Some(row.get(1)?),
             created_at: DateTime::from_timestamp(row.get(2)?, 0),
             updated_at: DateTime::from_timestamp(row.get(3)?, 0),
             source: row.get(4)?,
             cwd: row.get(5)?,
-            name: if title.trim().is_empty() {
-                "Untitled session".into()
-            } else {
-                title
-            },
-            archived: row.get::<_, i64>(7)? != 0,
+            archived: row.get::<_, i64>(9)? != 0,
             pinned: false,
             status: "notLoaded".into(),
             size_bytes: 0,
@@ -1966,6 +2148,16 @@ fn require_columns(
     table: &str,
     required: &[&str],
 ) -> Result<(), CleanerError> {
+    let columns = table_columns(connection, table)?;
+    if required.iter().any(|column| !columns.contains(*column)) {
+        return Err(CleanerError::Integration(format!(
+            "unrecognized {table} schema"
+        )));
+    }
+    Ok(())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>, CleanerError> {
     if !table
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_')
@@ -1976,12 +2168,7 @@ fn require_columns(
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<HashSet<_>, _>>()?;
-    if required.iter().any(|column| !columns.contains(*column)) {
-        return Err(CleanerError::Integration(format!(
-            "unrecognized {table} schema"
-        )));
-    }
-    Ok(())
+    Ok(columns)
 }
 
 fn find_codex_binary() -> Option<PathBuf> {
@@ -2209,6 +2396,144 @@ mod tests {
     }
 
     #[test]
+    fn display_title_follows_metadata_priority_and_ignores_blank_values() {
+        assert_eq!(
+            display_title(
+                Some(" Explicit name "),
+                Some("Index"),
+                Some("Title"),
+                Some("First")
+            ),
+            "Explicit name"
+        );
+        assert_eq!(
+            display_title(
+                Some(" \n "),
+                Some(" Index name "),
+                Some("Title"),
+                Some("First")
+            ),
+            "Index name"
+        );
+        assert_eq!(
+            display_title(None, Some(""), Some(" Stored title "), Some("First")),
+            "Stored title"
+        );
+        assert_eq!(
+            display_title(None, None, Some("\t"), Some(" First message ")),
+            "First message"
+        );
+        assert_eq!(display_title(None, None, None, None), "未命名会话");
+    }
+
+    #[test]
+    fn server_blank_name_does_not_hide_the_stored_thread_name() {
+        let thread = json!({ "id": "thread-1", "name": " ", "cwd": "/tmp/work" });
+        let metadata = HashMap::from([(
+            "thread-1".into(),
+            ThreadTitleMetadata {
+                name: Some("Stored name".into()),
+                title: Some("Stored title".into()),
+                first_user_message: Some("First".into()),
+            },
+        )]);
+        let session = parse_server_thread(
+            &thread,
+            false,
+            &HashSet::new(),
+            &HashMap::from([("thread-1".into(), "Index".into())]),
+            &metadata,
+        )
+        .expect("session");
+
+        assert_eq!(session.name, "Stored name");
+    }
+
+    #[test]
+    fn session_index_thread_names_are_loaded_as_read_only_metadata() {
+        let temp = tempfile::tempdir().expect("temp");
+        fs::write(
+            temp.path().join("session_index.jsonl"),
+            "{\"id\":\"thread-1\",\"thread_name\":\" Indexed title \"}\n{\"id\":\"thread-2\",\"thread_name\":\"\"}\n",
+        )
+        .expect("index fixture");
+
+        let names = read_session_index_names(temp.path()).expect("session index");
+
+        assert_eq!(
+            names.get("thread-1").map(String::as_str),
+            Some("Indexed title")
+        );
+        assert!(!names.contains_key("thread-2"));
+    }
+
+    #[test]
+    fn state_db_fallback_resolves_titles_without_requiring_new_optional_columns() {
+        let temp = tempfile::tempdir().expect("temp");
+        let database = temp.path().join("state_5.sqlite");
+        let connection = Connection::open(&database).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    name TEXT,
+                    title TEXT,
+                    first_user_message TEXT,
+                    archived INTEGER NOT NULL
+                );
+                INSERT INTO threads VALUES
+                    ('named', '/tmp/named.jsonl', 1, 2, 'cli', '/tmp/work', 'Name', 'Title', 'First', 0),
+                    ('indexed', '/tmp/indexed.jsonl', 1, 2, 'cli', '/tmp/work', ' ', 'Title', 'First', 0),
+                    ('titled', '/tmp/titled.jsonl', 1, 2, 'cli', '/tmp/work', NULL, 'Title', 'First', 0),
+                    ('message', '/tmp/message.jsonl', 1, 2, 'cli', '/tmp/work', NULL, ' ', 'First', 0),
+                    ('untitled', '/tmp/untitled.jsonl', 1, 2, 'cli', '/tmp/work', NULL, '', '', 0);",
+            )
+            .expect("fixture");
+        drop(connection);
+        let index_names = HashMap::from([("indexed".into(), "Index".into())]);
+
+        let sessions = scan_sessions_from_state_db(temp.path(), &index_names).expect("scan");
+        let names: HashMap<_, _> = sessions
+            .into_iter()
+            .map(|session| (session.id, session.name))
+            .collect();
+
+        assert_eq!(names.get("named").map(String::as_str), Some("Name"));
+        assert_eq!(names.get("indexed").map(String::as_str), Some("Index"));
+        assert_eq!(names.get("titled").map(String::as_str), Some("Title"));
+        assert_eq!(names.get("message").map(String::as_str), Some("First"));
+        assert_eq!(
+            names.get("untitled").map(String::as_str),
+            Some("未命名会话")
+        );
+
+        let connection = Connection::open(&database).expect("database");
+        connection
+            .execute_batch(
+                "ALTER TABLE threads RENAME TO threads_new;
+                 CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    rollout_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    title TEXT,
+                    archived INTEGER NOT NULL
+                 );
+                 INSERT INTO threads SELECT id, rollout_path, created_at, updated_at, source, cwd, title, archived FROM threads_new;",
+            )
+            .expect("legacy fixture");
+        drop(connection);
+        assert!(scan_sessions_from_state_db(temp.path(), &index_names).is_ok());
+    }
+
+    #[test]
     fn thread_read_content_is_rendered_without_raw_protocol_objects() {
         let item = cleanup_item("session:test", StorageCategory::Session, Vec::new());
         let result = json!({
@@ -2384,11 +2709,14 @@ mod tests {
 
         let mut session = record("unlinked", None);
         session.cwd = workspace.to_string_lossy().into_owned();
+        session.name = display_title(None, None, None, None);
         let database_projects = HashMap::new();
         let roots = project_roots_by_session(&[session], &database_projects);
 
         assert!(!roots.contains_key("unlinked"));
         assert!(project_root(&workspace.to_string_lossy(), &database_projects).is_none());
+        assert_eq!(display_title(None, None, None, None), "未命名会话");
+        assert_ne!(display_title(None, None, None, None), "he-l");
     }
 
     #[test]

@@ -11,10 +11,10 @@ import {
   ChevronsUp,
   CircleAlert,
   Database,
+  File,
   FolderCode,
   GitBranch,
   HardDrive,
-  Image,
   List,
   LoaderCircle,
   LockKeyhole,
@@ -79,7 +79,7 @@ const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
   { id: "overview", icon: HardDrive, label: "overview" },
   { id: "sessions", icon: Bot, label: "sessions" },
   { id: "memory", icon: MemoryStick, label: "memory" },
-  { id: "generated", icon: Image, label: "generated" },
+  { id: "generated", icon: File, label: "generated" },
   { id: "logs", icon: Database, label: "logs" },
   { id: "backups", icon: Archive, label: "backups" },
   { id: "settings", icon: Settings, label: "settings" },
@@ -632,7 +632,7 @@ function ItemsView({ snapshot, selected, toggle, selectMany, inspect, categories
 function MediaView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
   const items = snapshot.items.filter((item) => item.category === "attachment" || item.category === "generatedImage");
   useToggleAllShortcut(items, snapshot, selected, selectMany);
-  if (!items.length) return <EmptyState icon={Image} />;
+  if (!items.length) return <EmptyState icon={File} />;
   return <div className="page-stack">
     <BulkActions items={items} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut />
     <div className="media-grid">
@@ -666,7 +666,7 @@ function MediaCard({ item, snapshot, selected, toggle, inspect }: { item: Cleanu
     onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(); }}
   >
     <div className="media-preview" aria-busy={thumbnailState === "loading"}>
-      {thumbnail ? <img src={thumbnail} alt={t("mediaPreviewAlt", { title: item.title })} /> : thumbnailState === "loading" ? <LoaderCircle size={22} className="spinning" /> : <div className="media-preview-empty" aria-label={t("previewUnavailable")}><Image size={30} /></div>}
+      {thumbnail ? <img src={thumbnail} alt={t("mediaPreviewAlt", { title: item.title })} /> : thumbnailState === "loading" ? <LoaderCircle size={22} className="spinning" /> : <div className="media-preview-empty" aria-label={t("previewUnavailable")}><File size={30} /></div>}
       <div className="media-card-select" onClick={(event) => event.stopPropagation()}><CheckBox checked={selected} disabled={!isItemSelectable(item, snapshot)} onChange={toggle} label={item.title} /></div>
       <span className="media-category" style={{ color: categoryColors[item.category] }}>{t(categoryTranslation[item.category])}</span>
     </div>
@@ -932,7 +932,7 @@ function EmptyState({ icon: Icon = Boxes, label }: { icon?: typeof Boxes; label?
 function categoryIcon(category: StorageCategory) {
   const props = { size: 18 };
   if (category === "memory") return <MemoryStick {...props} />;
-  if (category === "attachment" || category === "generatedImage") return <Image {...props} />;
+  if (category === "attachment" || category === "generatedImage") return <File {...props} />;
   if (category === "session") return <Bot {...props} />;
   if (category === "archivedSession") return <Archive {...props} />;
   if (category === "protected") return <LockKeyhole {...props} />;
