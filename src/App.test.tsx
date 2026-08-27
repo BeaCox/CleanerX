@@ -17,9 +17,16 @@ describe("CleanerX GUI", () => {
   });
 
   it("renders storage usage as an accessible statistical chart", async () => {
-    render(<App />);
+    const { container } = render(<App />);
     await screen.findByText("Managed data");
     expect(screen.getByRole("img", { name: /Storage usage donut chart/ })).toBeVisible();
+    const legendColors = new Map([...container.querySelectorAll<HTMLElement>(".category-row")].map((row) => [
+      row.dataset.category,
+      row.style.getPropertyValue("--category-color"),
+    ]));
+    [...container.querySelectorAll<SVGCircleElement>(".storage-donut-segment")].forEach((segment) => {
+      expect(segment.style.getPropertyValue("--category-color")).toBe(legendColors.get(segment.dataset.category));
+    });
     expect(screen.queryByText("Current manageable local storage grouped by data type")).not.toBeInTheDocument();
     expect(screen.queryByText("CleanerX · atlas-web")).not.toBeInTheDocument();
   });
@@ -99,6 +106,8 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "List" }));
     expect(screen.getByRole("columnheader", { name: "Project" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Collapse atlas-web" })).not.toBeInTheDocument();
+    expect(screen.getByText("Design token migration")).toHaveAttribute("title", "Design token migration");
+    expect(screen.getAllByText("Desktop / IDE")[1]).toHaveAttribute("title", "Desktop / IDE");
   });
 
   it("maps the vscode source to Desktop / IDE", async () => {

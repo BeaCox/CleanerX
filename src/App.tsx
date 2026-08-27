@@ -47,14 +47,14 @@ import type {
 } from "./types";
 
 const categoryColors: Record<StorageCategory, string> = {
-  session: "#4f7cae",
-  archivedSession: "#8896ab",
-  memory: "#a46382",
-  attachment: "#b08344",
-  generatedImage: "#8f6fc0",
-  log: "#5b8fb9",
-  cache: "#4a9e8b",
-  temporary: "#7fa054",
+  session: "#3f6f9f",
+  archivedSession: "#7d8794",
+  memory: "#a65d73",
+  attachment: "#b47a36",
+  generatedImage: "#7653a6",
+  log: "#3f8f9d",
+  cache: "#4e8b64",
+  temporary: "#899443",
   protected: "#8a8a84",
 };
 
@@ -347,6 +347,7 @@ export default function App() {
 function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
   const { t } = useTranslation();
   const categories = snapshot.categories.filter((item) => item.category !== "protected" && item.sizeBytes > 0);
+  const chartCategories = categories.map((summary) => ({ summary, color: categoryColors[summary.category] }));
   const itemCount = snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0);
   return (
     <div className="page-stack">
@@ -358,14 +359,14 @@ function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
       <section className="panel-card">
         <div className="panel-heading"><h3>{t("storageBreakdown")}</h3><span>{itemCount} {t("items")}</span></div>
         <div className="overview-chart-layout">
-          <StorageDonut categories={categories} totalBytes={snapshot.totalBytes} />
+          <StorageDonut categories={chartCategories} totalBytes={snapshot.totalBytes} />
           <div className="category-list">
-            {categories.map((category) => (
-              <div className="category-row" key={category.category}>
-                <span className="category-swatch" style={{ background: categoryColors[category.category] }} />
-                <div><strong>{t(categoryTranslation[category.category])}</strong><span>{category.itemCount} {t("items")}</span></div>
-                <div className="category-track"><span style={{ width: `${Math.max(4, category.sizeBytes / snapshot.totalBytes * 100)}%`, background: categoryColors[category.category] }} /></div>
-                <strong>{formatBytes(category.sizeBytes)}</strong>
+            {chartCategories.map(({ summary, color }) => (
+              <div className="category-row" data-category={summary.category} key={summary.category} style={{ "--category-color": color } as CSSProperties}>
+                <span className="category-swatch" />
+                <div><strong>{t(categoryTranslation[summary.category])}</strong><span>{summary.itemCount} {t("items")}</span></div>
+                <div className="category-track"><span style={{ width: `${Math.max(4, summary.sizeBytes / snapshot.totalBytes * 100)}%` }} /></div>
+                <strong>{formatBytes(summary.sizeBytes)}</strong>
               </div>
             ))}
           </div>
@@ -375,7 +376,7 @@ function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
   );
 }
 
-function StorageDonut({ categories, totalBytes }: { categories: InventorySnapshot["categories"]; totalBytes: number }) {
+function StorageDonut({ categories, totalBytes }: { categories: Array<{ summary: InventorySnapshot["categories"][number]; color: string }>; totalBytes: number }) {
   const { t } = useTranslation();
   const radius = 62;
   const circumference = 2 * Math.PI * radius;
@@ -384,15 +385,16 @@ function StorageDonut({ categories, totalBytes }: { categories: InventorySnapsho
     <div className="storage-donut-shell">
       <svg viewBox="0 0 160 160" role="img" aria-label={`${t("storageChartLabel")} · ${formatBytes(totalBytes)}`}>
         <circle className="storage-donut-track" cx="80" cy="80" r={radius} />
-        {categories.map((category) => {
-          const length = totalBytes > 0 ? category.sizeBytes / totalBytes * circumference : 0;
+        {categories.map(({ summary, color }) => {
+          const length = totalBytes > 0 ? summary.sizeBytes / totalBytes * circumference : 0;
           const segment = <circle
             className="storage-donut-segment"
-            key={category.category}
+            data-category={summary.category}
+            key={summary.category}
             cx="80"
             cy="80"
             r={radius}
-            stroke={categoryColors[category.category]}
+            style={{ "--category-color": color } as CSSProperties}
             strokeDasharray={`${length} ${circumference - length}`}
             strokeDashoffset={-offset}
           />;
@@ -470,8 +472,8 @@ function SessionListTable({ snapshot, rows, selected, toggle, inspect }: Selecti
         const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name;
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
           <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
-          <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
-          <td><span className="pill">{projectName ?? "—"}</span></td><td><span className="source-label">{sourceLabel(session.source)}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+          <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong title={session.name}>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
+          <td><span className="pill" title={projectName}>{projectName ?? "—"}</span></td><td><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
         </tr>;
       })}
     </tbody></table></div>;

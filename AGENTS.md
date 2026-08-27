@@ -43,7 +43,7 @@ These instructions apply to the entire repository. CleanerX deletes private loca
 - Keep the filtered flat list as an alternate session view.
 - Filtering a child must retain its ancestors as non-selectable context.
 - Bulk selection applies only to the visible/current scope and must skip blocked or protected items. Present one left-aligned select-all/deselect-all toggle, not separate buttons. Preserve `Cmd/Ctrl+A` inside text inputs for normal text selection.
-- In Sessions, keep search and filters in one aligned row, then place bulk selection, view switching, and expand/collapse controls in one action row. Project group rows must use the same table columns as session rows so source, updated time, and size never drift.
+- In Sessions, keep search and filters in one aligned row, then place bulk selection, view switching, and expand/collapse controls in one action row. Project group rows must use the same table columns as session rows so source, updated time, and size never drift. Long names and metadata must ellipsize within their cell rather than overlap adjacent columns.
 - No cleanup item is automatically selected. Pinned and loaded sessions remain unavailable for selection where required by the mutation safety rules.
 - Backup is optional and off by default. An unchecked backup control must not block cleanup by itself; show one concise irreversible-deletion warning instead.
 - Open item details by activating the row or card itself; do not add a redundant view-details icon or button. Embedded selection and disclosure controls must not open details.
