@@ -73,6 +73,41 @@ describe("CleanerX GUI", () => {
     expect(screen.getByRole("textbox", { name: "OpenCode data directory override" })).toBeVisible();
   });
 
+  it("exposes pi as a target with file-backed sessions and no memory cleanup", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+
+    chooseMenuOption("Target Agent", "pi");
+
+    expect(await screen.findByText("Switched to pi")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveAttribute("data-value", "pi");
+    expect(screen.getByText("0.84.3")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    expect(await screen.findByRole("checkbox", { name: "CleanerX" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    expect(screen.getByText("No manageable data here yet")).toBeVisible();
+    expect(screen.queryByText(/Reset clears|auto memory is project-scoped/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("textbox", { name: "pi agent directory override" })).toBeVisible();
+  });
+
+  it("previews pi session files through the bounded read-only detail command", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    chooseMenuOption("Target Agent", "pi");
+    await screen.findByText("Switched to pi");
+
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    fireEvent.click(await screen.findByLabelText("Open details Design token migration"));
+
+    const dialog = screen.getByRole("dialog", { name: "Design token migration" });
+    expect(await within(dialog).findByText(/pi session file \(read-only\)/)).toBeVisible();
+    expect(within(dialog).getByText("/Users/demo/.pi/agent/sessions/--Users-demo-Developer-atlas-web--/2026-08-26T09-30-00-000Z_019f…a91.jsonl", { selector: "code" })).toBeVisible();
+    expect(within(dialog).getAllByText("pi", { selector: "header strong" }).length).toBeGreaterThan(0);
+  });
+
   it("allows an inactive OpenCode session while keeping online backup unavailable", async () => {
     render(<App />);
     await screen.findByText("Managed data");

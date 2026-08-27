@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use adapter_claude::ClaudeCodeAdapter;
 use adapter_codex::CodexAdapter;
 use adapter_opencode::OpenCodeAdapter;
+use adapter_pi::PiAdapter;
 use chrono::{DateTime, Duration, Utc};
 use cleanerx_core::{
     AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
@@ -24,6 +25,7 @@ struct AppState {
     codex_adapter: CodexAdapter,
     claude_adapter: ClaudeCodeAdapter,
     opencode_adapter: OpenCodeAdapter,
+    pi_adapter: PiAdapter,
     data_dir: PathBuf,
     settings: Mutex<AppSettings>,
     snapshot: Mutex<Option<InventorySnapshot>>,
@@ -36,6 +38,7 @@ impl AppState {
             AgentKind::Codex => &self.codex_adapter,
             AgentKind::ClaudeCode => &self.claude_adapter,
             AgentKind::OpenCode => &self.opencode_adapter,
+            AgentKind::Pi => &self.pi_adapter,
         }
     }
 }
@@ -142,7 +145,7 @@ type CommandResult<T> = Result<T, String>;
 #[tauri::command]
 async fn detect_agents(state: State<'_, AppState>) -> CommandResult<Vec<AgentInstallation>> {
     let settings = state.settings.lock().clone();
-    let (codex, claude, opencode) = tokio::join!(
+    let (codex, claude, opencode, pi) = tokio::join!(
         state
             .codex_adapter
             .detect(settings.custom_codex_home.as_deref()),
@@ -151,12 +154,14 @@ async fn detect_agents(state: State<'_, AppState>) -> CommandResult<Vec<AgentIns
             .detect(settings.custom_claude_home.as_deref()),
         state
             .opencode_adapter
-            .detect(settings.custom_opencode_home.as_deref())
+            .detect(settings.custom_opencode_home.as_deref()),
+        state.pi_adapter.detect(settings.custom_pi_home.as_deref())
     );
     Ok(vec![
         codex.map_err(error_message)?,
         claude.map_err(error_message)?,
         opencode.map_err(error_message)?,
+        pi.map_err(error_message)?,
     ])
 }
 
@@ -744,7 +749,10 @@ async fn execute_plan(
                 deleted_item_ids.extend(operation.item_ids.iter().cloned());
             }
             OperationKind::CleanRegenerable => {
-                if matches!(kind, AgentKind::ClaudeCode | AgentKind::OpenCode) {
+                if matches!(
+                    kind,
+                    AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::Pi
+                ) {
                     remove_operation_paths(
                         operation,
                         &selected_items,
@@ -860,6 +868,7 @@ async fn restore_backup(
         AgentKind::Codex => "codex_home",
         AgentKind::ClaudeCode => "claude_home",
         AgentKind::OpenCode => "opencode_home",
+        AgentKind::Pi => "pi_home",
     };
     let mut roots = BTreeMap::from([(home_label.into(), PathBuf::from(&installation.home))]);
     if let Some(app_support) = &installation.app_support {
@@ -868,6 +877,7 @@ async fn restore_backup(
                 AgentKind::Codex => "codex_app_support",
                 AgentKind::OpenCode => "opencode_cache",
                 AgentKind::ClaudeCode => "claude_app_support",
+                AgentKind::Pi => "pi_home",
             }
             .into(),
             PathBuf::from(app_support),
@@ -972,6 +982,13 @@ fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
             "Custom OpenCode data directory must be an absolute path".into(),
         ));
     }
+    if let Some(home) = &settings.custom_pi_home
+        && !Path::new(home).is_absolute()
+    {
+        return Err(CleanerError::InvalidRequest(
+            "Custom pi agent directory must be an absolute path".into(),
+        ));
+    }
     if !(1..=3650).contains(&settings.backup_retention_days)
         || !(1..=365).contains(&settings.log_retention_days)
         || !(1..=24 * 365).contains(&settings.temp_retention_hours)
@@ -988,6 +1005,7 @@ fn custom_home(settings: &AppSettings, kind: AgentKind) -> Option<&str> {
         AgentKind::Codex => settings.custom_codex_home.as_deref(),
         AgentKind::ClaudeCode => settings.custom_claude_home.as_deref(),
         AgentKind::OpenCode => settings.custom_opencode_home.as_deref(),
+        AgentKind::Pi => settings.custom_pi_home.as_deref(),
     }
 }
 
@@ -1011,6 +1029,7 @@ fn backup_sources(
                         AgentKind::Codex => "codex_home",
                         AgentKind::ClaudeCode => "claude_home",
                         AgentKind::OpenCode => "opencode_home",
+                        AgentKind::Pi => "pi_home",
                     }
                     .into(),
                     root_path: home.clone(),
@@ -1024,6 +1043,7 @@ fn backup_sources(
                         AgentKind::Codex => "codex_app_support",
                         AgentKind::OpenCode => "opencode_cache",
                         AgentKind::ClaudeCode => "claude_app_support",
+                        AgentKind::Pi => "pi_home",
                     }
                     .into(),
                     root_path: app_support.clone(),
@@ -1092,6 +1112,22 @@ fn protected_paths(installation: &AgentInstallation) -> Vec<PathBuf> {
             "rules",
             "opencode.db",
         ],
+        AgentKind::Pi => &[
+            "auth.json",
+            "settings.json",
+            "models.json",
+            "trust.json",
+            "keybindings.json",
+            "AGENTS.md",
+            "SYSTEM.md",
+            "APPEND_SYSTEM.md",
+            "prompts",
+            "skills",
+            "extensions",
+            "themes",
+            "git",
+            "npm",
+        ],
     };
     names.iter().map(|name| home.join(name)).collect()
 }
@@ -1103,7 +1139,11 @@ fn capture_mutation_identities(
 ) -> Result<HashMap<PathBuf, FileIdentity>, CleanerError> {
     let mut identities = HashMap::new();
     for item in items {
-        if matches!(kind, AgentKind::ClaudeCode | AgentKind::OpenCode) && !item.paths.is_empty() {
+        if matches!(
+            kind,
+            AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::Pi
+        ) && !item.paths.is_empty()
+        {
             validate_source_revision(item)?;
         }
         if kind == AgentKind::Codex
@@ -1324,6 +1364,7 @@ pub fn run() {
                 codex_adapter: CodexAdapter::new(),
                 claude_adapter: ClaudeCodeAdapter::new(),
                 opencode_adapter: OpenCodeAdapter::new(),
+                pi_adapter: PiAdapter::new(),
                 data_dir,
                 settings: Mutex::new(settings),
                 snapshot: Mutex::new(None),
@@ -1353,9 +1394,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionFilter, SessionPageRequest, capture_mutation_identities, inventory_report,
-        load_settings, remove_operation_paths, session_page, validate_opencode_session_revisions,
-        validate_settings, validate_source_revision,
+        SessionFilter, SessionPageRequest, allowed_roots, capture_mutation_identities,
+        inventory_report, load_settings, protected_paths, remove_operation_paths, session_page,
+        validate_opencode_session_revisions, validate_settings, validate_source_revision,
     };
     use chrono::Utc;
     use cleanerx_core::{
@@ -1451,6 +1492,12 @@ mod tests {
             ..AppSettings::default()
         };
         assert!(validate_settings(&invalid_opencode_home).is_err());
+
+        let invalid_pi_home = AppSettings {
+            custom_pi_home: Some("relative/pi".into()),
+            ..AppSettings::default()
+        };
+        assert!(validate_settings(&invalid_pi_home).is_err());
     }
 
     #[test]
@@ -1470,6 +1517,37 @@ mod tests {
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
         assert_eq!(loaded.text_size, "large");
+    }
+
+    #[test]
+    fn pi_cleanup_keeps_protected_agent_data_outside_the_path_policy() {
+        let fixture = tempdir().expect("pi fixture");
+        let home = fixture.path().join("agent");
+        let sessions = home.join("sessions/--tmp-project--");
+        fs::create_dir_all(&sessions).expect("session bucket");
+        fs::write(sessions.join("session.jsonl"), "session bytes").expect("session file");
+        fs::write(home.join("auth.json"), "oauth token").expect("credentials");
+        let installation = AgentInstallation {
+            kind: AgentKind::Pi,
+            home: home.to_string_lossy().into_owned(),
+            binary: None,
+            version: Some("test".into()),
+            app_support: None,
+            running: false,
+            capabilities: AgentCapabilities::default(),
+            warnings: vec![],
+        };
+        let policy = PathPolicy::new(allowed_roots(&installation), protected_paths(&installation));
+        assert!(policy.validate_existing(&home.join("auth.json")).is_err());
+        assert!(
+            policy
+                .validate_existing(&sessions.join("session.jsonl"))
+                .is_ok()
+        );
+        assert_eq!(
+            fs::read(home.join("auth.json")).expect("credentials"),
+            b"oauth token"
+        );
     }
 
     fn session_inventory_fixture() -> InventorySnapshot {
@@ -1632,6 +1710,94 @@ mod tests {
             b"fn protected_source() {}"
         );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn pi_session_cleanup_removes_only_the_session_file() {
+        let home = tempdir().expect("pi home");
+        let source = tempdir().expect("source tree");
+        let session = home
+            .path()
+            .join("sessions/--tmp-project--/2026-08-27T10-00-00-000Z_session.jsonl");
+        fs::create_dir_all(session.parent().expect("session parent")).expect("session bucket");
+        fs::write(&session, b"session jsonl bytes").expect("session file");
+        let credentials = home.path().join("auth.json");
+        fs::write(&credentials, b"protected oauth token").expect("credentials");
+        let catalog = home.path().join("models-store.json");
+        fs::write(&catalog, b"{\"providers\":{}}").expect("catalog cache");
+        let source_file = source.path().join("source.rs");
+        fs::write(&source_file, b"fn protected_source() {}").expect("source");
+        let item = pi_item(&session);
+        let selected = vec![&item];
+        let installation = AgentInstallation {
+            kind: AgentKind::Pi,
+            home: home.path().to_string_lossy().into_owned(),
+            binary: None,
+            version: None,
+            app_support: None,
+            running: false,
+            capabilities: AgentCapabilities::default(),
+            warnings: vec![],
+        };
+        let policy = PathPolicy::new(allowed_roots(&installation), protected_paths(&installation));
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::Pi)
+            .expect("preflight identities");
+        let operation = PlannedOperation {
+            kind: OperationKind::DeleteSession,
+            item_ids: vec![item.id.clone()],
+            session_ids: vec!["session".into()],
+            paths: item.paths.clone(),
+            size_bytes: item.size_bytes,
+            backup_eligible: true,
+            requires_agent_exit: true,
+            blockers: vec![],
+        };
+        let mut warnings = Vec::new();
+
+        remove_operation_paths(&operation, &selected, &policy, &identities, &mut warnings)
+            .expect("remove pi session");
+
+        assert!(!session.exists());
+        assert_eq!(
+            fs::read(credentials).expect("credentials bytes"),
+            b"protected oauth token"
+        );
+        assert_eq!(
+            fs::read(catalog).expect("catalog bytes"),
+            b"{\"providers\":{}}"
+        );
+        assert_eq!(
+            fs::read(source_file).expect("source bytes"),
+            b"fn protected_source() {}"
+        );
+        assert!(warnings.is_empty());
+    }
+
+    fn pi_item(path: &std::path::Path) -> CleanupItem {
+        let paths = vec![path.to_path_buf()];
+        CleanupItem {
+            id: "session:session".into(),
+            category: StorageCategory::Session,
+            title: "pi session".into(),
+            subtitle: None,
+            paths: paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            project_id: None,
+            thread_id: Some("session".into()),
+            size_bytes: fs::metadata(path).expect("metadata").len(),
+            modified_at: None,
+            risk: RiskLevel::High,
+            recoverable: true,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::from([(
+                "sourceRevision".into(),
+                metadata_revision(&paths).expect("revision"),
+            )]),
+        }
     }
 
     fn claude_item(path: &std::path::Path) -> CleanupItem {

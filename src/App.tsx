@@ -400,6 +400,7 @@ export default function App() {
               { value: "codex", label: "Codex" },
               { value: "claudeCode", label: "Claude Code" },
               { value: "openCode", label: "OpenCode" },
+              { value: "pi", label: "pi" },
             ]}
             variant="agent"
             disabled={!settings || busy !== null}
@@ -970,6 +971,7 @@ function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings
       <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
       <Setting label={t("claudeHome")} hint={t("claudeHomeHint")}><input aria-label={t("claudeHome")} value={form.customClaudeHome ?? ""} onChange={(event) => setForm({ ...form, customClaudeHome: event.target.value || undefined })} placeholder="~/.claude" /></Setting>
       <Setting label={t("opencodeHome")} hint={t("opencodeHomeHint")}><input aria-label={t("opencodeHome")} value={form.customOpencodeHome ?? ""} onChange={(event) => setForm({ ...form, customOpencodeHome: event.target.value || undefined })} placeholder="~/.local/share/opencode" /></Setting>
+      <Setting label={t("piHome")} hint={t("piHomeHint")}><input aria-label={t("piHome")} value={form.customPiHome ?? ""} onChange={(event) => setForm({ ...form, customPiHome: event.target.value || undefined })} placeholder="~/.pi/agent" /></Setting>
     </section>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>
@@ -1431,10 +1433,11 @@ function contentSourceLabel(source: string, t: (key: string) => string) {
   if (source === "claudeMemoryMarkdown.readOnly") return t("contentSourceClaudeMemory");
   if (source === "opencodeDb.readOnly") return t("contentSourceOpenCodeDatabase");
   if (source === "opencodeLogs.readOnly") return t("contentSourceOpenCodeLogs");
+  if (source === "piSession.readOnly") return t("contentSourcePiSession");
   if (source === "filesystem.metadataOnly") return t("contentSourceMetadataOnly");
   return source;
 }
-function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : "OpenCode"; }
+function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : kind === "pi" ? "pi" : "OpenCode"; }
 function displayAgentVersion(snapshot: InventorySnapshot | undefined) {
   if (!snapshot?.installation.version) return "—";
   return snapshot.installation.version

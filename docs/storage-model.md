@@ -38,17 +38,27 @@ When backup is selected, CleanerX runs the documented `opencode export <sessionI
 
 Protected OpenCode data includes authentication, configuration, plugins, skills, rules, commands, agents, source-managed worktrees/repositories, legacy or unmigrated JSON storage, plans, and the SQLite database/WAL files themselves. These may be shown as protected metadata but are never opened or selected. An explicit session detail action may query bounded message/part projections read-only; an explicit log detail action may read bounded lines and warns that logs can contain prompts, paths, and tool output.
 
+### pi
+
+pi agent-directory resolution uses the user override, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`. The executable is resolved from `PATH` and the same bounded set of common user package-manager locations used by the other CLI adapters; it is used only for version reporting because pi's documented deletion route is file-based. Project-local `.pi/` directories are never visited; a session `cwd` is grouping metadata only.
+
+CleanerX recognizes the documented session layout: one JSONL file per session beneath `sessions/--<working-directory>--/<timestamp>_<uuid>.jsonl`. Inventory reads a bounded 2 MiB prefix of each file and retains only the session header (UUID ID, absolute `cwd`, creation timestamp, optional `parentSession` reference) and the latest `session_info` display name. Message, tool, and compaction bodies are parsed transiently and never enter the snapshot. Files with an unrecognized first line, duplicate session IDs, symbolic links, and unknown entries are skipped or warned about without blocking the rest of the inventory. Sessions forked through `/fork` or `/clone` reference their parent file via `parentSession`; CleanerX shows that lineage in the tree but never treats a fork as a deletion descendant, because removing one pi session file never removes another.
+
+pi's official documentation states that sessions are removed by deleting their `.jsonl` files. CleanerX therefore performs session deletion through its fixed-root preflighted path transaction: capture a metadata-only source revision, block every mutable pi item while a pi process is running, optionally commit and verify an encrypted backup, revalidate the revision and filesystem identity, remove only the snapshot-owned session file, then rescan. The regenerable `models-store.json` provider-catalog cache is the only non-session writable item; it is removed through the same transaction while pi is not running.
+
+Protected pi data includes `auth.json` credentials, `settings.json`, `models.json` provider configuration, `trust.json` project trust decisions, `keybindings.json`, `AGENTS.md`/`SYSTEM.md`/`APPEND_SYSTEM.md` rules and system prompts, and the `prompts`, `skills`, `extensions`, `themes`, `git`, and `npm` extension and package directories. These may be shown as protected metadata but are never opened or selected. pi exposes no supported automatic-memory capability, so CleanerX shows no pi memory cleanup item. An explicit session detail action may read a bounded read-only preview of user/assistant text and tool output blocks from the session JSONL.
+
 ## Categories
 
-| Category | Initial selection | Backup | Codex route | Claude Code route | OpenCode route |
-| --- | --- | --- | --- | --- | --- |
-| Current/archived session | Off | Optional | App Server `thread/delete` | Snapshot-owned session paths beneath Claude Code Home | Official `session delete`; backup/restore through `export` / `import` |
-| Automatic memory | Off | Optional where supported | App Server `memory/reset` (global) | Selected project `memory/` directory | Unsupported; no item shown |
-| Attachment/generated content | Off | Optional | Allowlisted path removal | Session-owned documented attachment/cache paths only | Not independently targeted |
-| Logs/history | Off | Agent-specific | Validated SQLite transaction | Recognized `history.jsonl` path removal | Recognized log-directory path removal while offline |
-| Regenerable cache | Off | No | Allowlisted path removal | Documented cache roots beneath Claude Code Home | Fixed XDG cache root only |
-| Temporary data | Off | No | Allowlisted path removal | Documented temporary roots beneath Claude Code Home | Not currently targeted |
-| Auth/config/rules/skills/plugins/source-managed data | Never | N/A | Protected | Protected | Protected |
+| Category | Initial selection | Backup | Codex route | Claude Code route | OpenCode route | pi route |
+| --- | --- | --- | --- | --- | --- | --- |
+| Current/archived session | Off | Optional | App Server `thread/delete` | Snapshot-owned session paths beneath Claude Code Home | Official `session delete`; backup/restore through `export` / `import` | Documented session-file removal beneath the pi agent directory |
+| Automatic memory | Off | Optional where supported | App Server `memory/reset` (global) | Selected project `memory/` directory | Unsupported; no item shown | Unsupported; no item shown |
+| Attachment/generated content | Off | Optional | Allowlisted path removal | Session-owned documented attachment/cache paths only | Not independently targeted | Not independently targeted |
+| Logs/history | Off | Agent-specific | Validated SQLite transaction | Recognized `history.jsonl` path removal | Recognized log-directory path removal while offline | Not currently targeted |
+| Regenerable cache | Off | No | Allowlisted path removal | Documented cache roots beneath Claude Code Home | Fixed XDG cache root only | `models-store.json` provider-catalog cache |
+| Temporary data | Off | No | Allowlisted path removal | Documented temporary roots beneath Claude Code Home | Not currently targeted | Not currently targeted |
+| Auth/config/rules/skills/plugins/source-managed data | Never | N/A | Protected | Protected | Protected | Protected |
 
 Title, working directory, and project association are three independent fields. Projects require positive association evidence: a non-empty absolute session `cwd` must fall beneath a root in Codex's recognized project registry or beneath an ancestor with a `.git` marker. An arbitrary absolute working directory is recognition metadata, not a project root; in particular, a standalone desktop chat workspace such as `Documents/Codex/<date>/<name>` stays unassigned unless it independently satisfies one of those checks. A child with no recorded `cwd` may inherit an already resolved parent association; CleanerX never resolves an empty or relative `cwd` against its own process directory. Sessions that still have no association remain outside `projects` and are displayed under the UI-only “No project” virtual root. If the project registry schema is unavailable or unrecognized, CleanerX keeps the inventory available and falls back only to verifiable Git roots. Project cleanup selects linked Agent records only. It never makes a project directory an allowed mutation root.
 
@@ -75,6 +85,8 @@ An archive records its `AgentKind` and is decrypted into a private staging direc
 Official Claude Code references: [application data and project purge](https://code.claude.com/docs/en/claude-directory), [sessions and transcript location](https://code.claude.com/docs/en/sessions), and [project auto memory](https://code.claude.com/docs/en/memory).
 
 Official OpenCode references: [storage locations](https://opencode.ai/docs/troubleshooting/), [CLI session/delete/export/import commands](https://opencode.ai/docs/cli/), [server session APIs](https://opencode.ai/docs/server/), and the [official session schema](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/sql.ts).
+
+Official pi references: [session storage and deletion](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/sessions.md), the [session file format](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/session-format.md), [agent directory override via `PI_CODING_AGENT_DIR`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/environment-variables.md), and the [models-store catalog cache](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/providers.md).
 
 ## Permanent backup deletion
 

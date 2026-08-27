@@ -2185,7 +2185,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let fixture = tempfile::tempdir().expect("CLI fixture");
-        let binary = fixture.path().join("opencode");
+        // The mock is deliberately not named `opencode` so a concurrently running process-probe
+        // test never mistakes this short-lived CLI mock for a live OpenCode writer.
+        let binary = fixture.path().join("mock-opencode");
         let database = fixture.path().join("opencode.db");
         fs::write(
             &binary,
@@ -2211,7 +2213,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let fixture = tempfile::tempdir().expect("CLI fixture");
-        let binary = fixture.path().join("opencode");
+        let binary = fixture.path().join("mock-opencode");
         let database = fixture.path().join("opencode.db");
         fs::write(&binary, "#!/bin/sh\necho 'refused' >&2\nexit 23\n").expect("mock binary");
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).expect("executable");

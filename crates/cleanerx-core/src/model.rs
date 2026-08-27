@@ -36,6 +36,7 @@ pub enum AgentKind {
     Codex,
     ClaudeCode,
     OpenCode,
+    Pi,
 }
 
 impl AgentKind {
@@ -44,6 +45,7 @@ impl AgentKind {
             Self::Codex => "Codex",
             Self::ClaudeCode => "Claude Code",
             Self::OpenCode => "OpenCode",
+            Self::Pi => "pi",
         }
     }
 }
@@ -368,6 +370,7 @@ pub struct AppSettings {
     pub custom_codex_home: Option<String>,
     pub custom_claude_home: Option<String>,
     pub custom_opencode_home: Option<String>,
+    pub custom_pi_home: Option<String>,
     pub locale: String,
     pub theme: String,
     pub text_size: String,
@@ -383,6 +386,7 @@ impl Default for AppSettings {
             custom_codex_home: None,
             custom_claude_home: None,
             custom_opencode_home: None,
+            custom_pi_home: None,
             locale: "system".into(),
             theme: "system".into(),
             text_size: "large".into(),

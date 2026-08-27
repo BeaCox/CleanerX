@@ -4,6 +4,7 @@ members = [
   "crates/adapter-codex",
   "crates/adapter-claude",
   "crates/adapter-opencode",
+  "crates/adapter-pi",
   "src-tauri",
 ]
 resolver = "2"

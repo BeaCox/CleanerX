@@ -21,7 +21,7 @@ Deleting a session does not imply that already consolidated memory is forgotten.
 | OpenCode | No native automatic-memory surface documented | Official persistence is instruction files such as project/global `AGENTS.md`; sessions are separate | The open native auto-memory proposal explicitly describes cross-session learning as absent today. | Do not present rules as memory or add a reset/editor. Detect a future native capability before enabling one. |
 | Pi | No native automatic-memory surface documented | Official persistent context is `AGENTS.md`/`CLAUDE.md`, system-prompt files, sessions, and extension-owned data | Extensions can implement arbitrary storage and UI, so there is no single core memory schema to manage safely. | Keep core instruction files protected. Support memory only through a future adapter for a specific, recognized extension and schema. |
 
-The OpenCode and Pi “no native automatic memory” entries are inferences from their current official feature documentation, reinforced for OpenCode by its open native-memory proposal. They must be rechecked when implementing those adapters.
+The OpenCode and Pi “no native automatic memory” entries are inferences from their current official feature documentation, reinforced for OpenCode by its open native-memory proposal. Both adapters have now been implemented against that finding: neither exposes a memory cleanup item, and the inference must be rechecked if a future release documents a native memory surface or a specific, recognized memory extension.
 
 ## Evidence and compatibility notes
 

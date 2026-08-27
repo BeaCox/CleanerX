@@ -10,7 +10,7 @@ export type StorageCategory =
   | "protected";
 
 export type RiskLevel = "safe" | "review" | "high" | "protected";
-export type AgentKind = "codex" | "claudeCode" | "openCode";
+export type AgentKind = "codex" | "claudeCode" | "openCode" | "pi";
 
 export interface MemoryCapabilities {
   canScan: boolean;
@@ -224,6 +224,7 @@ export interface AppSettings {
   customCodexHome?: string;
   customClaudeHome?: string;
   customOpencodeHome?: string;
+  customPiHome?: string;
   locale: "system" | "zh" | "en";
   theme: "system" | "light" | "dark";
   textSize: "standard" | "large" | "extraLarge";
