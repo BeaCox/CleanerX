@@ -55,10 +55,12 @@ import type {
   InventorySnapshot,
   ItemContentDetail,
   ProjectGroup,
+  SelectionCandidate,
   SessionFilter,
   SessionPage,
   SessionProjectResult,
   SessionRecord,
+  SessionSelectionCandidate,
   StorageCategory,
   ViewId,
 } from "./types";
@@ -108,6 +110,7 @@ export default function App() {
   const [backups, setBackups] = useState<BackupRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings>();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedSizes, setSelectedSizes] = useState<Map<string, number>>(new Map());
   const [plan, setPlan] = useState<CleanupPlan>();
   const [createBackup, setCreateBackup] = useState(false);
   const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | "purge" | null>("scan");
@@ -123,9 +126,6 @@ export default function App() {
     try {
       const result = await api.scanStorage(targetAgent);
       setSnapshot(result);
-      setSelected((current) => new Set(
-        [...current].filter((id) => result.items.some((item) => item.id === id && isItemSelectable(item, result))),
-      ));
       setNotice(t("scanComplete"));
     } catch (reason) {
       setError(messageOf(reason));
@@ -147,6 +147,19 @@ export default function App() {
       })
       .catch((reason) => setError(messageOf(reason)));
   }, [scan]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const candidateSizes = new Map<string, number>([
+      ...snapshot.items.filter((item) => isItemSelectable(item, snapshot)).map((item) => [item.id, item.sizeBytes] as const),
+      ...snapshot.sessionSelection.map((item) => [item.id, item.sizeBytes] as const),
+    ]);
+    setSelected((current) => new Set([...current].filter((id) => candidateSizes.has(id))));
+    setSelectedSizes((current) => new Map([...current].flatMap(([id]) => {
+      const size = candidateSizes.get(id);
+      return size === undefined ? [] : [[id, size]];
+    })));
+  }, [snapshot?.id]);
 
   useEffect(() => {
     if (!notice) return;
@@ -177,32 +190,34 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [scan]);
 
-  const selectedItems = useMemo(
-    () => snapshot?.items.filter((item) => selected.has(item.id)) ?? [],
-    [selected, snapshot],
-  );
-  const selectedBytes = selectedItems.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const selectedBytes = [...selected].reduce((sum, id) => sum + (selectedSizes.get(id) ?? 0), 0);
 
-  const toggleItem = (item: CleanupItem) => {
-    if (!snapshot || !isItemSelectable(item, snapshot)) return;
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(item.id)) next.delete(item.id);
-      else next.add(item.id);
-      return next;
-    });
-  };
-
-  const selectMany = useCallback((items: CleanupItem[], shouldSelect: boolean) => {
+  const selectMany = useCallback((items: SelectionCandidate[], shouldSelect: boolean) => {
     setSelected((current) => {
       const next = new Set(current);
       items.forEach((item) => {
-        if (!snapshot || !isItemSelectable(item, snapshot)) return;
         if (shouldSelect) next.add(item.id); else next.delete(item.id);
       });
       return next;
     });
-  }, [snapshot]);
+    setSelectedSizes((current) => {
+      const next = new Map(current);
+      items.forEach((item) => {
+        if (shouldSelect) next.set(item.id, item.sizeBytes); else next.delete(item.id);
+      });
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setSelectedSizes(new Map());
+  }, []);
+
+  const toggleItem = (item: CleanupItem) => {
+    if (!snapshot || !isItemSelectable(item, snapshot)) return;
+    selectMany([item], !selected.has(item.id));
+  };
 
   const mergeSessionPage = useCallback((page: SessionPage) => {
     setSnapshot((current) => {
@@ -236,7 +251,7 @@ export default function App() {
     try {
       const result = await api.executeCleanup(plan.id, createBackup);
       setPlan(undefined);
-      setSelected(new Set());
+      clearSelection();
       setNotice(`${t("cleanupComplete")} · ${formatBytes(result.reclaimedBytes)}`);
       await scan();
       setBackups(await api.listBackups());
@@ -299,7 +314,7 @@ export default function App() {
     setNotice(undefined);
     setActiveAgent(targetAgent);
     setSnapshot(undefined);
-    setSelected(new Set());
+    clearSelection();
     setPlan(undefined);
     setDetailItemId(undefined);
     try {
@@ -395,7 +410,7 @@ export default function App() {
           <span className="status-selection" role="status">
             <strong>{selected.size} {t("selected")}</strong>
             <span>{formatBytes(selectedBytes)}</span>
-            <button className="text-button" onClick={() => setSelected(new Set())}>{t("clearSelection")}</button>
+            <button className="text-button" onClick={clearSelection}>{t("clearSelection")}</button>
             <button className="primary-button status-cta" onClick={() => void reviewPlan()} disabled={busy !== null}>
               {busy === "plan" && <LoaderCircle size={13} className="spinning" />}
               {t("reviewCleanup")}<ChevronRight size={13} />
@@ -499,7 +514,7 @@ interface SelectionProps {
   snapshot: InventorySnapshot;
   selected: Set<string>;
   toggle: (item: CleanupItem) => void;
-  selectMany: (items: CleanupItem[], shouldSelect: boolean) => void;
+  selectMany: (items: SelectionCandidate[], shouldSelect: boolean) => void;
   inspect: (item: CleanupItem) => void;
 }
 
@@ -525,7 +540,8 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
     projects: snapshot.projects,
     unassignedSessionCount: snapshot.unassignedSessionCount,
     unassignedSessionSizeBytes: snapshot.unassignedSessionSizeBytes,
-  }), [snapshot.projects, snapshot.unassignedSessionCount, snapshot.unassignedSessionSizeBytes]);
+    selection: snapshot.sessionSelection,
+  }), [snapshot.projects, snapshot.sessionSelection, snapshot.unassignedSessionCount, snapshot.unassignedSessionSizeBytes]);
   const [projectResult, setProjectResult] = useState(initialProjectResult);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<string>();
@@ -561,7 +577,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
       setProjectResult(initialProjectResult);
       return;
     }
-    setProjectResult({ projects: [], unassignedSessionCount: 0, unassignedSessionSizeBytes: 0 });
+    setProjectResult({ projects: [], unassignedSessionCount: 0, unassignedSessionSizeBytes: 0, selection: [] });
     void api.getSessionProjects(sessionFilter)
       .then((result) => {
         if (requestGeneration.current === generation) setProjectResult(result);
@@ -671,12 +687,17 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
   const allExpanded = expansionKeys.length > 0 && expansionKeys.every((key) => expanded.has(key));
   const listPage = pages.get("list");
   const listRows = (listPage?.matchingSessionIds ?? []).map((id) => sessionById.get(id)).filter((session): session is SessionRecord => Boolean(session));
-  const rowItems = (displayMode === "list"
-    ? listPage?.matchingSessionIds ?? []
-    : [...pages.entries()].filter(([key]) => key.startsWith("tree:")).flatMap(([, page]) => page.matchingSessionIds))
-    .map((id) => itemByThread.get(id))
-    .filter((item): item is CleanupItem => Boolean(item));
-  useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
+  const selectionByProject = useMemo(() => {
+    const result = new Map<string, SessionSelectionCandidate[]>();
+    projectResult.selection.forEach((candidate) => {
+      const key = candidate.projectId ?? NO_PROJECT_ID;
+      const candidates = result.get(key) ?? [];
+      candidates.push(candidate);
+      result.set(key, candidates);
+    });
+    return result;
+  }, [projectResult.selection]);
+  useToggleCandidatesShortcut(projectResult.selection, selected, selectMany);
   return <section className="panel-card table-panel session-panel">
     <div className="filter-row session-filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
@@ -685,7 +706,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
       <SelectMenu label={t("stateFilter")} value={state} onChange={setState} options={[{ value: "all", label: t("allStates") }, { value: "active", label: t("activeOnly") }, { value: "archived", label: t("archivedOnly") }]} />
       <SelectMenu label={t("updatedFilter")} value={updatedWithin} onChange={setUpdatedWithin} options={[{ value: "all", label: t("allTime") }, { value: "7", label: t("last7Days") }, { value: "30", label: t("last30Days") }]} />
     </div>
-    <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut>
+    <BulkActions selectionCandidates={projectResult.selection} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut>
       <div className="view-switcher" aria-label={t("viewMode")}>
         <button type="button" className={displayMode === "tree" ? "active" : ""} aria-pressed={displayMode === "tree"} onClick={() => setDisplayMode("tree")}><GitBranch size={14} />{t("treeView")}</button>
         <button type="button" className={displayMode === "list" ? "active" : ""} aria-pressed={displayMode === "list"} onClick={() => setDisplayMode("list")}><List size={14} />{t("listView")}</button>
@@ -693,7 +714,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
       {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? <ChevronsUp size={14} /> : <ChevronsDown size={14} />}{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
     </BulkActions>
     {displayMode === "tree" ? (
-      projectsLoading ? <SessionGroupsLoading /> : projectsError ? <SessionGroupsError error={projectsError} retry={() => setProjectLoadAttempt((current) => current + 1)} /> : <SessionTreeTable snapshot={snapshot} projects={projects} pages={pages} sessionById={sessionById} itemByThread={itemByThread} childrenByParent={childrenByParent} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} loadProject={(projectId, cursor) => loadSessionPage(`tree:${projectId}`, projectId, true, cursor)} />
+      projectsLoading ? <SessionGroupsLoading /> : projectsError ? <SessionGroupsError error={projectsError} retry={() => setProjectLoadAttempt((current) => current + 1)} /> : <SessionTreeTable snapshot={snapshot} projects={projects} pages={pages} selectionByProject={selectionByProject} sessionById={sessionById} itemByThread={itemByThread} childrenByParent={childrenByParent} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} loadProject={(projectId, cursor) => loadSessionPage(`tree:${projectId}`, projectId, true, cursor)} />
     ) : <SessionListTable snapshot={snapshot} itemByThread={itemByThread} rows={listRows} page={listPage} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} loadNext={(cursor) => loadSessionPage("list", sessionFilter.projectId, false, cursor)} />}
     {!projectsLoading && !projectsError && displayMode === "tree" && !projects.length && <EmptyState />}
     {displayMode === "list" && listPage?.loaded && listPage.totalCount === 0 && <EmptyState />}
@@ -702,7 +723,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect, mergeSe
 
 function SessionListTable({ snapshot, itemByThread, rows, page, selected, toggle, inspect, loadNext }: SelectionProps & { itemByThread: Map<string, CleanupItem>; rows: SessionRecord[]; page?: LoadedSessionScope; loadNext: (cursor: number) => void }) {
   const { t } = useTranslation();
-  return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
+  return <div className="table-scroll session-list-table"><table aria-busy={Boolean(page?.loading)}><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
         const item = itemByThread.get(session.id)!;
         const projectName = snapshot.projects.find((candidate) => candidate.id === item.projectId)?.name ?? t("noProject");
@@ -716,7 +737,7 @@ function SessionListTable({ snapshot, itemByThread, rows, page, selected, toggle
     </tbody></table></div>;
 }
 
-function SessionTreeTable({ snapshot, projects, pages, sessionById, itemByThread, childrenByParent, selected, toggle, selectMany, inspect, expanded, toggleExpanded, loadProject }: SelectionProps & { projects: ProjectGroup[]; pages: Map<string, LoadedSessionScope>; sessionById: Map<string, SessionRecord>; itemByThread: Map<string, CleanupItem>; childrenByParent: Map<string, SessionRecord[]>; expanded: Set<string>; toggleExpanded: (key: string) => void; loadProject: (projectId: string, cursor: number) => void }) {
+function SessionTreeTable({ snapshot, projects, pages, selectionByProject, sessionById, itemByThread, childrenByParent, selected, toggle, selectMany, inspect, expanded, toggleExpanded, loadProject }: SelectionProps & { projects: ProjectGroup[]; pages: Map<string, LoadedSessionScope>; selectionByProject: Map<string, SessionSelectionCandidate[]>; sessionById: Map<string, SessionRecord>; itemByThread: Map<string, CleanupItem>; childrenByParent: Map<string, SessionRecord[]>; expanded: Set<string>; toggleExpanded: (key: string) => void; loadProject: (projectId: string, cursor: number) => void }) {
   const { t } = useTranslation();
   const renderSession = (session: SessionRecord, projectIds: Set<string>, matchingSessionIds: Set<string>, depth: number): ReactNode[] => {
     const item = itemByThread.get(session.id);
@@ -752,8 +773,7 @@ function SessionTreeTable({ snapshot, projects, pages, sessionById, itemByThread
     const roots = sessions.filter((session) => !session.parentThreadId || !projectIds.has(session.parentThreadId)).sort(sortSessions);
     const projectKey = `project:${project.id}`;
     const isExpanded = expanded.has(projectKey);
-    const projectItems = sessions.map((session) => itemByThread.get(session.id)).filter((item): item is CleanupItem => Boolean(item));
-    const selectableItems = projectItems.filter((item) => isItemSelectable(item, snapshot) && matchingSessionIds.has(item.threadId!));
+    const selectableItems = selectionByProject.get(project.id) ?? [];
     const allSelected = selectableItems.length > 0 && selectableItems.every((item) => selected.has(item.id));
     const toggleProject = () => selectMany(selectableItems, !allSelected);
     const noProject = project.id === NO_PROJECT_ID;
@@ -777,7 +797,8 @@ function SessionTreeTable({ snapshot, projects, pages, sessionById, itemByThread
   });
 
   if (!projectBodies.length) return null;
-  return <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead>{projectBodies}</table></div>;
+  const loading = [...pages.values()].some((page) => page.loading);
+  return <div className="table-scroll tree-table"><table aria-busy={loading}><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead>{projectBodies}</table></div>;
 }
 
 function LazySessionRow({ colSpan, initial, loading, error, onVisible }: { colSpan: number; initial: boolean; loading: boolean; error?: string; onVisible: () => void }) {
@@ -796,12 +817,12 @@ function LazySessionRow({ colSpan, initial, loading, error, onVisible }: { colSp
     }
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) onVisible();
-    }, { rootMargin: "180px 0px" });
+    }, { rootMargin: "720px 0px" });
     observer.observe(target);
     return () => observer.disconnect();
   }, [error, initial, loading, onVisible]);
-  return <tr ref={rowRef} className="session-lazy-row" hidden={!loading && !error}><td colSpan={colSpan}>
-    {error ? <button type="button" className="text-button" onClick={onVisible}><CircleAlert size={14} />{t("retrySessionLoad")}</button> : loading ? <><LoaderCircle size={15} className="spinning" /><span>{t("loadingSessions")}</span></> : <span className="session-lazy-marker" aria-hidden="true" />}
+  return <tr ref={rowRef} className="session-lazy-row" hidden={!error}><td colSpan={colSpan}>
+    {error && <button type="button" className="text-button" onClick={onVisible}><CircleAlert size={14} />{t("retrySessionLoad")}</button>}
   </td></tr>;
 }
 
@@ -1123,9 +1144,9 @@ function PurgeBackupDialog({ backup, close, purge, purging }: { backup: BackupRe
   </div>;
 }
 
-function BulkActions({ items, snapshot, selected, selectMany, shortcut = false, children }: { items: CleanupItem[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: CleanupItem[], shouldSelect: boolean) => void; shortcut?: boolean; children?: ReactNode }) {
+function BulkActions({ items = [], selectionCandidates, snapshot, selected, selectMany, shortcut = false, children }: { items?: CleanupItem[]; selectionCandidates?: SelectionCandidate[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: SelectionCandidate[], shouldSelect: boolean) => void; shortcut?: boolean; children?: ReactNode }) {
   const { t } = useTranslation();
-  const selectable = items.filter((item) => isItemSelectable(item, snapshot));
+  const selectable = selectionCandidates ?? items.filter((item) => isItemSelectable(item, snapshot));
   const selectedCount = selectable.filter((item) => selected.has(item.id)).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
   return <div className="bulk-actions" role="toolbar" aria-label={t("bulkSelection")}>
@@ -1327,8 +1348,12 @@ function isInteractiveTarget(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest("button, input, label, select, textarea, a, [contenteditable='true']"));
 }
 
-function useToggleAllShortcut(items: CleanupItem[], snapshot: InventorySnapshot, selected: Set<string>, selectMany: (items: CleanupItem[], shouldSelect: boolean) => void) {
+function useToggleAllShortcut(items: CleanupItem[], snapshot: InventorySnapshot, selected: Set<string>, selectMany: (items: SelectionCandidate[], shouldSelect: boolean) => void) {
   const selectable = items.filter((item) => isItemSelectable(item, snapshot));
+  useToggleCandidatesShortcut(selectable, selected, selectMany);
+}
+
+function useToggleCandidatesShortcut(selectable: SelectionCandidate[], selected: Set<string>, selectMany: (items: SelectionCandidate[], shouldSelect: boolean) => void) {
   const allSelected = selectable.length > 0 && selectable.every((item) => selected.has(item.id));
   useEffect(() => {
     const toggleFiltered = (event: KeyboardEvent) => {

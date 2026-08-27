@@ -15,6 +15,7 @@ import type {
   SessionPageRequest,
   SessionProjectResult,
   SessionRecord,
+  SessionSelectionCandidate,
   StorageCategory,
 } from "./types";
 
@@ -311,6 +312,10 @@ function sessionProjectResult(snapshot: InventorySnapshot, filter: SessionFilter
     }),
     unassignedSessionCount,
     unassignedSessionSizeBytes,
+    selection: matching.flatMap((session): SessionSelectionCandidate[] => {
+      const item = itemByThread.get(session.id);
+      return item && !item.protected && !item.blockedReason ? [{ id: item.id, threadId: session.id, projectId: item.projectId, sizeBytes: item.sizeBytes }] : [];
+    }),
   };
 }
 
@@ -599,6 +604,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
     sessionSources: [...new Set(sessions.map((session) => session.source))],
     unassignedSessionCount: 1,
     unassignedSessionSizeBytes: sessions[0].sizeBytes,
+    sessionSelection: items.flatMap((item): SessionSelectionCandidate[] => item.threadId && !item.protected && !item.blockedReason ? [{ id: item.id, threadId: item.threadId, projectId: item.projectId, sizeBytes: item.sizeBytes }] : []),
   };
 }
 

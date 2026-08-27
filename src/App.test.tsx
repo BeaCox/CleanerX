@@ -265,11 +265,12 @@ describe("CleanerX GUI", () => {
     const seed = await api.getSessionPage({ snapshotId: base.id, query: "", cursor: 0, limit: 100, includeAncestors: false });
     const large = createLargeSessionInventory(base, seed.sessions, seed.items, 161);
     const scan = vi.spyOn(api, "scanStorage").mockResolvedValue(large.report);
-    const getPage = vi.spyOn(api, "getSessionPage").mockImplementation(async (request) => {
+    let releaseFirstPage: (() => void) | undefined;
+    const getPage = vi.spyOn(api, "getSessionPage").mockImplementation((request) => {
       const pageSessions = large.sessions.slice(request.cursor, request.cursor + request.limit);
       const includedIds = new Set(pageSessions.map((session) => session.id));
       const end = request.cursor + pageSessions.length;
-      return {
+      const result = {
         snapshotId: large.report.id,
         sessions: pageSessions,
         items: large.items.filter((item) => item.threadId && includedIds.has(item.threadId)),
@@ -277,6 +278,8 @@ describe("CleanerX GUI", () => {
         totalCount: large.sessions.length,
         nextCursor: end < large.sessions.length ? end : undefined,
       };
+      if (request.cursor === 0) return new Promise((resolve) => { releaseFirstPage = () => resolve(result); });
+      return Promise.resolve(result);
     });
     const intersection = installControllableIntersectionObserver();
 
@@ -290,10 +293,20 @@ describe("CleanerX GUI", () => {
       fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
       expect(screen.getByText("161 sessions")).toBeVisible();
       expect(getPage).not.toHaveBeenCalled();
+      expect(screen.getByRole("checkbox", { name: "Select sessions with no project" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Select all results" }));
+      expect(screen.getByText("161 selected")).toBeVisible();
+      expect(screen.getByRole("checkbox", { name: "Select sessions with no project" })).toBeChecked();
+      expect(getPage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Deselect all results" }));
 
       fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
       expect(intersection.visibleTargets().every((target) => !target.classList.contains("session-lazy-row"))).toBe(true);
       act(() => intersection.triggerVisible());
+      expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
+      expect(view.container.querySelector("tr.session-lazy-row")).toHaveAttribute("hidden");
+      expect(screen.queryByText("Loading sessions…")).not.toBeInTheDocument();
+      await act(async () => releaseFirstPage?.());
       expect(await screen.findByText("Bulk session 049")).toBeVisible();
       expect(screen.queryByText("Bulk session 050")).not.toBeInTheDocument();
       expect(view.container.querySelector("tr.session-lazy-row")).toHaveAttribute("hidden");
@@ -485,6 +498,7 @@ function createLargeSessionInventory(base: InventorySnapshot, seedSessions: Sess
     archivedSessionCount: 0,
     unassignedSessionCount: count,
     unassignedSessionSizeBytes: sessionBytes,
+    sessionSelection: sessionItems.map((item) => ({ id: item.id, threadId: item.threadId!, sizeBytes: item.sizeBytes })),
     categories: base.categories
       .filter((category) => category.category !== "archivedSession")
       .map((category) => category.category === "session" ? { ...category, itemCount: count, sizeBytes: sessionBytes } : category),

@@ -65,6 +65,16 @@ struct SessionProjectResult {
     projects: Vec<SessionProjectSummary>,
     unassigned_session_count: usize,
     unassigned_session_size_bytes: u64,
+    selection: Vec<SessionSelectionCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSelectionCandidate {
+    id: String,
+    thread_id: String,
+    project_id: Option<String>,
+    size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +94,7 @@ struct InventoryReport {
     session_sources: Vec<String>,
     unassigned_session_count: usize,
     unassigned_session_size_bytes: u64,
+    session_selection: Vec<SessionSelectionCandidate>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -230,6 +241,7 @@ fn inventory_report(snapshot: &InventorySnapshot) -> InventoryReport {
         session_sources: session_sources.into_iter().collect(),
         unassigned_session_count: project_result.unassigned_session_count,
         unassigned_session_size_bytes: project_result.unassigned_session_size_bytes,
+        session_selection: project_result.selection,
     }
 }
 
@@ -246,11 +258,21 @@ fn session_project_result(
     let mut counts: HashMap<&str, (usize, u64)> = HashMap::new();
     let mut unassigned_session_count = 0;
     let mut unassigned_session_size_bytes = 0u64;
+    let mut selection = Vec::new();
     for session in matching {
-        match item_by_thread
-            .get(session.id.as_str())
-            .and_then(|item| item.project_id.as_deref())
+        let item = item_by_thread.get(session.id.as_str()).copied();
+        if let Some(item) = item
+            && !item.protected
+            && item.blocked_reason.is_none()
         {
+            selection.push(SessionSelectionCandidate {
+                id: item.id.clone(),
+                thread_id: session.id.clone(),
+                project_id: item.project_id.clone(),
+                size_bytes: item.size_bytes,
+            });
+        }
+        match item.and_then(|item| item.project_id.as_deref()) {
             Some(project_id) => {
                 let summary = counts.entry(project_id).or_default();
                 summary.0 += 1;
@@ -281,6 +303,7 @@ fn session_project_result(
         projects,
         unassigned_session_count,
         unassigned_session_size_bytes,
+        selection,
     })
 }
 
@@ -1204,7 +1227,7 @@ mod tests {
 
     #[test]
     fn inventory_report_keeps_session_data_backend_only() {
-        let snapshot = session_inventory_fixture();
+        let mut snapshot = session_inventory_fixture();
         let report = inventory_report(&snapshot);
 
         assert!(report.items.iter().all(|item| item.thread_id.is_none()));
@@ -1214,6 +1237,17 @@ mod tests {
         assert_eq!(report.projects[0].size_bytes, 20);
         assert_eq!(report.unassigned_session_count, 1);
         assert_eq!(report.unassigned_session_size_bytes, 10);
+        assert_eq!(report.session_selection.len(), 3);
+
+        snapshot.items[1].blocked_reason = Some("Active writer".into());
+        let blocked_report = inventory_report(&snapshot);
+        assert_eq!(blocked_report.session_selection.len(), 2);
+        assert!(
+            blocked_report
+                .session_selection
+                .iter()
+                .all(|candidate| candidate.thread_id != "child")
+        );
     }
 
     #[test]

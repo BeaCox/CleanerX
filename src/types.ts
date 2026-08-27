@@ -61,6 +61,11 @@ export interface CleanupItem {
   metadata: Record<string, string>;
 }
 
+export interface SelectionCandidate {
+  id: string;
+  sizeBytes: number;
+}
+
 export type ContentBlock =
   | { kind: "message"; role: string; text: string; phase?: string }
   | { kind: "text"; title: string; text: string }
@@ -121,6 +126,12 @@ export interface SessionProjectResult {
   projects: ProjectGroup[];
   unassignedSessionCount: number;
   unassignedSessionSizeBytes: number;
+  selection: SessionSelectionCandidate[];
+}
+
+export interface SessionSelectionCandidate extends SelectionCandidate {
+  threadId: string;
+  projectId?: string;
 }
 
 export interface SessionPageRequest extends SessionFilter {
@@ -161,6 +172,7 @@ export interface InventorySnapshot {
   sessionSources: string[];
   unassignedSessionCount: number;
   unassignedSessionSizeBytes: number;
+  sessionSelection: SessionSelectionCandidate[];
 }
 
 export interface PlannedOperation {
