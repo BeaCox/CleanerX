@@ -292,9 +292,11 @@ describe("CleanerX GUI", () => {
       expect(getPage).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+      expect(intersection.visibleTargets().every((target) => !target.classList.contains("session-lazy-row"))).toBe(true);
       act(() => intersection.triggerVisible());
       expect(await screen.findByText("Bulk session 049")).toBeVisible();
       expect(screen.queryByText("Bulk session 050")).not.toBeInTheDocument();
+      expect(view.container.querySelector("tr.session-lazy-row")).toHaveAttribute("hidden");
       expect(getPage).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 0, limit: 50, projectId: "__no_project" }));
 
       act(() => intersection.triggerVisible());
@@ -496,19 +498,23 @@ function installControllableIntersectionObserver() {
   class TestIntersectionObserver {
     active = true;
     callback: IntersectionObserverCallback;
+    target?: Element;
 
     constructor(callback: IntersectionObserverCallback) {
       this.callback = callback;
       observers.add(this);
     }
 
-    observe() {}
-    unobserve() {}
+    observe(target: Element) { this.target = target; }
+    unobserve(target: Element) { if (this.target === target) this.target = undefined; }
     takeRecords() { return []; }
     disconnect() { this.active = false; }
   }
   window.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
   return {
+    visibleTargets() {
+      return [...observers].filter((observer) => observer.active && observer.target).map((observer) => observer.target!);
+    },
     triggerVisible() {
       [...observers].filter((observer) => observer.active).forEach((observer) => {
         observer.callback([{ isIntersecting: true } as IntersectionObserverEntry], observer as unknown as IntersectionObserver);

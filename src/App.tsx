@@ -789,13 +789,18 @@ function LazySessionRow({ colSpan, initial, loading, error, onVisible }: { colSp
       if (initial) onVisible();
       return;
     }
+    const target = rowRef.current?.previousElementSibling;
+    if (!target) {
+      onVisible();
+      return;
+    }
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) onVisible();
     }, { rootMargin: "180px 0px" });
-    if (rowRef.current) observer.observe(rowRef.current);
+    observer.observe(target);
     return () => observer.disconnect();
   }, [error, initial, loading, onVisible]);
-  return <tr ref={rowRef} className="session-lazy-row"><td colSpan={colSpan}>
+  return <tr ref={rowRef} className="session-lazy-row" hidden={!loading && !error}><td colSpan={colSpan}>
     {error ? <button type="button" className="text-button" onClick={onVisible}><CircleAlert size={14} />{t("retrySessionLoad")}</button> : loading ? <><LoaderCircle size={15} className="spinning" /><span>{t("loadingSessions")}</span></> : <span className="session-lazy-marker" aria-hidden="true" />}
   </td></tr>;
 }
