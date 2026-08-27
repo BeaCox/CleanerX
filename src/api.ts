@@ -7,6 +7,7 @@ import type {
   CleanupResult,
   InventorySnapshot,
   ItemContentDetail,
+  ItemThumbnail,
   SessionRecord,
   StorageCategory,
 } from "./types";
@@ -27,6 +28,30 @@ let mockSettings: AppSettings = {
   logRetentionDays: 7,
   tempRetentionHours: 24,
 };
+let mockBackups: BackupRecord[] = [
+  {
+    id: "7f9fd849-9817-46ef-b075-7a437d32b03c",
+    createdAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    expiresAt: new Date(Date.now() + 28 * 86_400_000).toISOString(),
+    archivePath: "/Users/demo/Library/Application Support/CleanerX/backups/7f9fd849-9817-46ef-b075-7a437d32b03c.cxb",
+    archiveBytes: 8_420_000,
+    originalBytes: 15_760_000,
+    itemCount: 1,
+    operationId: "2f6d7c93-2ba1-40d0-a1dd-c6165915389d",
+  },
+];
+
+const mockPreviewDataUrl = (accent: string, label: string) => `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400">
+    <rect width="640" height="400" fill="#eee9dd"/>
+    <rect x="48" y="46" width="544" height="308" fill="#faf8f2" stroke="#bcb4a1" stroke-width="2"/>
+    <rect x="78" y="82" width="210" height="20" fill="${accent}"/>
+    <rect x="78" y="126" width="484" height="10" fill="#d9d3c4"/>
+    <rect x="78" y="152" width="390" height="10" fill="#d9d3c4"/>
+    <circle cx="458" cy="258" r="58" fill="none" stroke="${accent}" stroke-width="22"/>
+    <text x="78" y="310" fill="#6d6759" font-family="system-ui" font-size="24">${label}</text>
+  </svg>
+`)}`;
 
 export const api = {
   async scanStorage(): Promise<InventorySnapshot> {
@@ -107,6 +132,16 @@ export const api = {
         ],
       };
     }
+    if (item.category === "generatedImage") {
+      const dataUrl = mockPreviewDataUrl("#8f6fc0", item.title);
+      return {
+        itemId,
+        source: "filesystem.readOnly",
+        truncated: false,
+        bytesRead: dataUrl.length,
+        blocks: [{ kind: "image", title: item.title, dataUrl }],
+      };
+    }
     return {
       itemId,
       source: "filesystem.readOnly",
@@ -116,17 +151,43 @@ export const api = {
     };
   },
 
+  async getItemThumbnail(itemId: string): Promise<ItemThumbnail | undefined> {
+    if (inTauri()) return invoke("get_item_thumbnail", { itemId });
+    await delay(90);
+    const item = mockSnapshot.items.find((candidate) => candidate.id === itemId);
+    if (!item || (item.category !== "attachment" && item.category !== "generatedImage")) return undefined;
+    if (item.id === "attachment:1") return undefined;
+    return {
+      itemId,
+      title: item.title,
+      dataUrl: mockPreviewDataUrl(
+        item.category === "attachment" ? "#b08344" : "#8f6fc0",
+        item.title,
+      ),
+    };
+  },
+
   async executeCleanup(planId: string, createBackup: boolean): Promise<CleanupResult> {
     if (inTauri()) return invoke("execute_cleanup", { planId, createBackup });
     await delay(850);
     const plan = mockPlans.get(planId);
-    if (!createBackup && (plan?.estimatedBackupBytes ?? 0) > 0) {
-      throw new Error("Recoverable data requires a verified encrypted backup");
+    const backupId = createBackup ? crypto.randomUUID() : undefined;
+    if (backupId && plan) {
+      mockBackups = [{
+        id: backupId,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + mockSettings.backupRetentionDays * 86_400_000).toISOString(),
+        archivePath: `/Users/demo/Library/Application Support/CleanerX/backups/${backupId}.cxb`,
+        archiveBytes: Math.round(plan.estimatedBackupBytes * 0.62),
+        originalBytes: plan.estimatedBackupBytes,
+        itemCount: plan.selectedItemIds.length,
+        operationId: plan.id,
+      }, ...mockBackups];
     }
     return {
       operationId: planId,
       status: "complete",
-      backupId: createBackup ? crypto.randomUUID() : undefined,
+      backupId,
       reclaimedBytes: plan?.estimatedBytes ?? 0,
       deletedItemIds: [],
       warnings: [],
@@ -135,7 +196,7 @@ export const api = {
 
   async listBackups(): Promise<BackupRecord[]> {
     if (inTauri()) return invoke("list_backups");
-    return [];
+    return structuredClone(mockBackups);
   },
 
   async restoreBackup(backupId: string): Promise<void> {
@@ -143,7 +204,13 @@ export const api = {
   },
 
   async purgeBackup(backupId: string): Promise<void> {
-    if (inTauri()) await invoke("purge_backup", { backupId });
+    if (inTauri()) {
+      await invoke("purge_backup", { backupId });
+      return;
+    }
+    await delay(180);
+    if (!mockBackups.some((backup) => backup.id === backupId)) throw new Error("Backup not found");
+    mockBackups = mockBackups.filter((backup) => backup.id !== backupId);
   },
 
   async getSettings(): Promise<AppSettings> {
@@ -214,6 +281,19 @@ function createMockSnapshot(): InventorySnapshot {
       defaultSelected: false,
       protected: false,
       metadata: { entries: "11", association: "orphaned" },
+    },
+    {
+      id: "attachment:1",
+      category: "attachment" as const,
+      title: "Session attachment bundle",
+      subtitle: "ZIP archive",
+      paths: ["/Users/demo/.codex/attachments/session-files.zip"],
+      sizeBytes: 14_800_000,
+      risk: "review" as const,
+      recoverable: true,
+      defaultSelected: false,
+      protected: false,
+      metadata: { entries: "1", association: "orphaned" },
     },
     {
       id: "logs:database",

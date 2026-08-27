@@ -22,6 +22,11 @@ pub trait AgentAdapter: Send + Sync {
         installation: &AgentInstallation,
         item: &CleanupItem,
     ) -> Result<ItemContentDetail, CleanerError>;
+    async fn load_item_thumbnail(
+        &self,
+        installation: &AgentInstallation,
+        item: &CleanupItem,
+    ) -> Result<Option<ItemThumbnail>, CleanerError>;
     async fn delete_sessions(
         &self,
         installation: &AgentInstallation,

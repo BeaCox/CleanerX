@@ -7,7 +7,8 @@ use chrono::{DateTime, Utc};
 use cleanerx_core::{
     AgentAdapter, AgentInstallation, AppSettings, BackupRecord, BackupSource, BackupStore,
     CleanerError, CleanupPlan, CleanupResult, FileIdentity, InventorySnapshot, ItemContentDetail,
-    OperationKind, OperationStatus, PathPolicy, StorageCategory, create_cleanup_plan, safe_remove,
+    ItemThumbnail, OperationKind, OperationStatus, PathPolicy, StorageCategory,
+    create_cleanup_plan, safe_remove,
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -82,6 +83,29 @@ async fn get_item_content(
 }
 
 #[tauri::command]
+async fn get_item_thumbnail(
+    item_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Option<ItemThumbnail>> {
+    let snapshot = state
+        .snapshot
+        .lock()
+        .clone()
+        .ok_or_else(|| "Scan storage before opening an item thumbnail".to_owned())?;
+    let item = snapshot
+        .items
+        .iter()
+        .find(|item| item.id == item_id)
+        .cloned()
+        .ok_or_else(|| format!("Item {item_id} is not part of the current scan"))?;
+    state
+        .adapter
+        .load_item_thumbnail(&snapshot.installation, &item)
+        .await
+        .map_err(error_message)
+}
+
+#[tauri::command]
 fn plan_cleanup(
     selected_item_ids: Vec<String>,
     state: State<'_, AppState>,
@@ -119,8 +143,6 @@ async fn execute_cleanup(
     if !plan.blockers.is_empty() {
         return Err(format!("Cleanup is blocked: {}", plan.blockers.join("; ")));
     }
-    validate_backup_choice(create_backup, plan.estimated_backup_bytes)?;
-
     write_journal(
         &state.data_dir,
         OperationJournal {
@@ -597,13 +619,6 @@ fn error_message(error: CleanerError) -> String {
     error.to_string()
 }
 
-fn validate_backup_choice(create_backup: bool, estimated_backup_bytes: u64) -> CommandResult<()> {
-    if !create_backup && estimated_backup_bytes > 0 {
-        return Err("Recoverable data requires a verified encrypted backup".into());
-    }
-    Ok(())
-}
-
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -623,6 +638,7 @@ pub fn run() {
             detect_agents,
             scan_storage,
             get_item_content,
+            get_item_thumbnail,
             plan_cleanup,
             execute_cleanup,
             list_backups,
@@ -633,16 +649,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running CleanerX");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_backup_choice;
-
-    #[test]
-    fn recoverable_data_cannot_skip_backup() {
-        assert!(validate_backup_choice(false, 1).is_err());
-        assert!(validate_backup_choice(true, 1).is_ok());
-        assert!(validate_backup_choice(false, 0).is_ok());
-    }
 }

@@ -9,8 +9,10 @@ CleanerX currently has:
 - a Rust workspace with `cleanerx-core`, `adapter-codex`, and a narrow Tauri command layer;
 - a React/TypeScript GUI for Codex inventory, cleanup planning, backup listing, and settings;
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
+- a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
+- optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
 - cross-platform Rust checks and frontend tests in CI.
 
@@ -31,20 +33,20 @@ Priority: required before a broad public MVP release.
 
 - Exercise every journal transition with fault injection: before archive creation, during archive streaming, after verification, during each mutation route, and before/after rescan verification.
 - Add startup recovery UI that can continue verification, restore a committed backup, or safely terminate an incomplete operation.
-- Prove important-data deletion cannot begin while a `.partial` archive exists or while manifest/hash verification is incomplete.
+- When backup is selected, prove deletion cannot begin while a `.partial` archive exists or while manifest/hash verification is incomplete.
 - Add concurrent-writer and file-identity-change fixtures for each direct file category.
 
 ### Mutation routes
 
 - Validate session deletion against active, archived, pinned, loaded, parent, child, and subagent combinations using an isolated live App Server test environment.
-- Complete the memory-reset flow: require Codex exit, create a consistent memory/database backup, call `memory/reset`, rescan, and expose capability-specific errors without disabling session cleanup.
+- Complete the memory-reset flow: require Codex exit, optionally create a consistent memory/database backup, call `memory/reset`, rescan, and expose capability-specific errors without disabling session cleanup.
 - Implement and validate log maintenance only for recognized schemas using transactions, WAL checkpointing, and compaction. Unknown schemas stay report-only.
 - Remove attachments/generated content only after the owning session mutation succeeds, then verify references and residual files by rescan.
 
 ### Exit criteria
 
 - Protected files and source fixtures are byte-identical after every cleanup test.
-- All destructive fault-injection cases end in a recoverable, explainable journal state.
+- All destructive fault-injection cases end in an explainable journal state; backup-enabled paths are recoverable.
 - Restored file hashes match the backup manifest and Codex can rediscover restored sessions.
 - Unknown Codex capabilities, schemas, and active writers produce a specific read-only/blocking reason in the GUI.
 

@@ -9,7 +9,7 @@ These instructions apply to the entire repository. CleanerX deletes private loca
 - Never target authentication, configuration, MCP credentials, rules, skills, plugins, cookies, browser accounts, or source code.
 - Never expose a general shell or unrestricted filesystem API to the webview.
 - Never force-quit Codex or another process. Detect active writers, explain the blocker, and let the user retry.
-- Recoverable data must have a verified, atomically committed encrypted backup before mutation starts.
+- A backup is an explicit user choice. When selected, it must be verified and atomically committed before mutation starts; without one, the review must clearly state that cleanup is irreversible.
 
 ## Architecture boundaries
 
@@ -26,13 +26,13 @@ These instructions apply to the entire repository. CleanerX deletes private loca
 - `thread/delete` is the supported session deletion route. Never repair or delete sessions through private SQLite writes.
 - Treat `memory/reset` as an independently probed capability. Its absence disables memory reset only; it must not disable otherwise supported session cleanup.
 - State databases may supplement scans only when their schema is recognized. Unknown schemas are read-only and must not block a filesystem inventory.
-- Inventory scans must not load or retain transcript, memory, or log bodies. Content is loaded only after an explicit detail action, through a purpose-specific read-only command scoped to an item in the current snapshot. Enforce recognized schemas, fixed roots, symlink rejection, bounded previews, and clear the content when the detail view closes.
+- Inventory scans must not load or retain transcript, memory, or log bodies. Content is loaded only after an explicit detail action, through a purpose-specific read-only command scoped to an item in the current snapshot. The media gallery may request one bounded image thumbnail for each visible attachment/generated item through its own narrow command; it must never load text, logs, or additional files for the card. Enforce recognized schemas, fixed roots, symlink rejection, bounded previews, and clear detail content when the detail view closes.
 
 ## Mutation and path safety
 
 - Every direct file operation must resolve beneath a fixed, category-specific allowlisted root.
 - Reject symbolic links, lexical traversal, ownership anomalies, protected descendants, and file identity changes between planning and execution.
-- Session cleanup must expand descendants, show them in the review plan, back them up together, and call the official deletion operation only for the minimal root set.
+- Session cleanup must expand descendants, show them in the review plan, and call the official deletion operation only for the minimal root set. If backup is selected, back up the full expanded set together.
 - Delete allowlisted attachments only after the owning session deletion succeeds. Rescan to verify the result.
 - Restoration is all-or-nothing: verify manifest hashes and preflight every destination before the first move. Never overwrite an existing ID or path.
 - Keep transaction journal transitions atomic and recoverable. New mutation steps require fault-injection coverage for every boundary before and after irreversible work.
@@ -42,11 +42,35 @@ These instructions apply to the entire repository. CleanerX deletes private loca
 - “Sessions” is the only navigation entry for project-associated session data. In its default tree, project roots group root sessions and descendants; do not reintroduce a duplicate Projects page.
 - Keep the filtered flat list as an alternate session view.
 - Filtering a child must retain its ancestors as non-selectable context.
-- Bulk selection applies only to the visible/current scope and must skip blocked or protected items. Preserve `Cmd/Ctrl+A` inside text inputs for normal text selection.
+- Bulk selection applies only to the visible/current scope and must skip blocked or protected items. Present one left-aligned select-all/deselect-all toggle, not separate buttons. Preserve `Cmd/Ctrl+A` inside text inputs for normal text selection.
 - No cleanup item is automatically selected. Pinned and loaded sessions remain unavailable for selection where required by the mutation safety rules.
+- Backup is optional and off by default. An unchecked backup control must not block cleanup by itself; show one concise irreversible-deletion warning instead.
 - Open item details by activating the row or card itself; do not add a redundant view-details icon or button. Embedded selection and disclosure controls must not open details.
+- Tree expansion uses one expand-all/collapse-all toggle in the existing filter toolbar; never add a separate tree-controls row. Media without a supported thumbnail uses an icon-only placeholder without visible explanatory copy.
 - Keep Chinese and English translations in sync. Use system theme, keyboard-accessible controls, visible focus states, and reduced-motion preferences.
 - Avoid microtype for operational data. Body/table/control text should normally be at least 12 px; auxiliary monospace metadata may be 10–11 px when contrast remains accessible.
+
+## Design system: field-manual console
+
+CleanerX uses a flat technical-instrument aesthetic ("field manual console") because it performs irreversible deletion of private data. Preserve it; do not reintroduce consumer-SaaS/dashboard styling.
+
+### Window frame (fixed, do not regress)
+
+- No sidebar and no page hero titles. The frame is a 3-part chrome shell: a 46 px top toolbar (brand block, horizontal view tabs with a 2 px ink underline for the active tab, scan action), a full-bleed scrolling content region, and a 30 px bottom status deck.
+- The active tab is the view title; keep exactly one visually hidden `h1` per view for assistive tech (`.visually-hidden`). Never render a visible in-page heading that repeats the active tab label.
+- The status deck always shows the agent environment (connection dot + Codex version) on the left. The right side shows inventory totals + last-scan time, and swaps to the selection summary + clear/review actions while a selection exists. Selection UI must never float above content or appear as a separate bar.
+- Content is full-width with modest gutters; no centered max-width column for data views. Settings use the available width as responsive columns and collapse to one column on narrow windows.
+
+### Skin
+
+- Warm paper/ink palette only (light: paper `#f4f1ea`, ink `#23201a`; dark: warm lamp-black). Primary actions are solid ink buttons (inverted in dark mode); destructive actions are solid red. The cobalt `--focus` is reserved for focus rings and inline status accents. No brand-colored CTAs and no colored button shadows.
+- No gradients, glows, glassmorphism/backdrop blur, decorative orbs, or floating pills. Surfaces are separated by 1 px hairline borders; shadows (`--shadow-overlay`) only on transient overlays (dialogs, drawers, toasts).
+- Corner radii stay sharp: 3 px badges/checkboxes, 6 px controls, 8 px cards, 10 px dialogs (`--radius-s/m/l/xl`). No pill-shaped buttons.
+- Operational data — paths, sizes, counts, IDs, timestamps, durations, source labels, badges, table headers, status-deck text — is set in `ui-monospace` (`--mono`) at 10–12 px with tabular numerals. Prose and control labels use the system sans at ≥12 px.
+- Category colors are muted earthy mid-tone hues that stay legible on both light and dark themes; they never appear as pastel fills for emphasis. Status is conveyed by text plus a small dot or icon, never by color alone.
+- Group content with hairline separators and small monospace group labels (`.settings-group-label`, `.panel-heading`). Do not wrap forms or simple lists in boxed cards with large padding; a settings page is a flat stack of hairline rows.
+- Summaries are flat stat strips (`.stat-strip`): divided cells in one bordered row, no per-stat icon cards.
+- Theme tokens live at the top of `src/styles.css` for light, dark, and `prefers-color-scheme` fallback. New components must consume the existing custom properties instead of inventing hex values.
 
 ## Development workflow
 

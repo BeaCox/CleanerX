@@ -17,7 +17,6 @@ import {
   List,
   LoaderCircle,
   LockKeyhole,
-  Menu,
   MemoryStick,
   Moon,
   Pin,
@@ -25,8 +24,6 @@ import {
   RotateCcw,
   Search,
   Settings,
-  ShieldCheck,
-  Sparkles,
   Sun,
   Trash2,
   X,
@@ -48,15 +45,15 @@ import type {
 } from "./types";
 
 const categoryColors: Record<StorageCategory, string> = {
-  session: "#7868ee",
-  archivedSession: "#a596ff",
-  memory: "#e07098",
-  attachment: "#ebae52",
-  generatedImage: "#dc7a66",
-  log: "#55a3ce",
-  cache: "#38b99b",
-  temporary: "#91b759",
-  protected: "#84909f",
+  session: "#4f7cae",
+  archivedSession: "#8896ab",
+  memory: "#a46382",
+  attachment: "#b08344",
+  generatedImage: "#8f6fc0",
+  log: "#5b8fb9",
+  cache: "#4a9e8b",
+  temporary: "#7fa054",
+  protected: "#8a8a84",
 };
 
 const categoryTranslation: Record<StorageCategory, string> = {
@@ -89,12 +86,12 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [plan, setPlan] = useState<CleanupPlan>();
-  const [createBackup, setCreateBackup] = useState(true);
-  const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | null>("scan");
+  const [createBackup, setCreateBackup] = useState(false);
+  const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | "purge" | null>("scan");
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [detailItemId, setDetailItemId] = useState<string>();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [backupToPurge, setBackupToPurge] = useState<BackupRecord>();
   const loaded = useRef(false);
 
   const scan = useCallback(async () => {
@@ -142,7 +139,7 @@ export default function App() {
       if (event.key === "Escape") {
         setPlan(undefined);
         setDetailItemId(undefined);
-        setSidebarOpen(false);
+        setBackupToPurge(undefined);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -182,7 +179,7 @@ export default function App() {
     try {
       const nextPlan = await api.planCleanup([...selected]);
       setPlan(nextPlan);
-      setCreateBackup(nextPlan.estimatedBackupBytes > 0);
+      setCreateBackup(false);
     } catch (reason) {
       setError(messageOf(reason));
     } finally {
@@ -222,13 +219,19 @@ export default function App() {
     }
   };
 
-  const purge = async (backupId: string) => {
-    if (!window.confirm(t("deleteForever"))) return;
+  const purge = async () => {
+    if (!backupToPurge) return;
+    setBusy("purge");
+    setError(undefined);
     try {
-      await api.purgeBackup(backupId);
+      await api.purgeBackup(backupToPurge.id);
       setBackups(await api.listBackups());
+      setBackupToPurge(undefined);
+      setNotice(t("backupDeleted"));
     } catch (reason) {
       setError(messageOf(reason));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -248,94 +251,78 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <button
-        className="mobile-menu icon-button"
-        aria-label="Menu"
-        onClick={() => setSidebarOpen((open) => !open)}
-      >
-        <Menu size={19} />
-      </button>
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-        <div className="brand">
-          <div className="brand-mark"><Sparkles size={18} strokeWidth={2.4} /></div>
+      <header className="app-toolbar">
+        <div className="toolbar-brand">
+          <span className="brand-mark" aria-hidden="true">CX</span>
           <strong>{t("appName")}</strong>
         </div>
-        <nav aria-label="Primary navigation">
+        <nav className="view-tabs" aria-label="Primary navigation">
           {navItems.map(({ id, icon: Icon, label }) => (
             <button
               key={id}
-              className={view === id ? "nav-active" : ""}
-              onClick={() => { setView(id); setSidebarOpen(false); }}
+              className={view === id ? "tab-active" : ""}
+              aria-current={view === id ? "page" : undefined}
+              onClick={() => setView(id)}
             >
-              <Icon size={17} />
+              <Icon size={14} />
               <span>{t(label)}</span>
               {id === "sessions" && snapshot && <small>{snapshot.sessions.length}</small>}
               {id === "backups" && backups.length > 0 && <small>{backups.length}</small>}
             </button>
           ))}
         </nav>
-        <div className="agent-card">
-          <div className="agent-logo">C</div>
-          <div className="agent-copy">
-            <strong>Codex</strong>
-            <span>{snapshot?.installation.version?.replace("codex-cli ", "") ?? "—"}</span>
-          </div>
-          <span className={`status-dot ${snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
+        <div className="toolbar-actions">
+          {storageView && <button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>
+            <RefreshCw size={14} className={busy === "scan" ? "spinning" : ""} />
+            {busy === "scan" ? t("scanning") : t("scan")}
+          </button>}
         </div>
-      </aside>
+      </header>
 
-      <main className="main-panel">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">CODEX / LOCAL STORAGE</span>
-            <h1>{t(navItems.find((item) => item.id === view)?.label ?? "overview")}</h1>
-          </div>
-          <div className="topbar-actions">
-            {storageView && snapshot && (
-              <span className="last-scan">
-                <span className="status-dot" />
-                {t("lastScan")} {relativeTime(snapshot.scannedAt, i18n.language)}
-              </span>
-            )}
-            {storageView && <button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>
-              <RefreshCw size={15} className={busy === "scan" ? "spinning" : ""} />
-              {busy === "scan" ? t("scanning") : t("scan")}
-            </button>}
-          </div>
-        </header>
-
-        <div className="content">
-          {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
-          {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice")}</strong><span>{t("reportOnlyHelp")}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
-          {view === "settings" ? (
-            settings ? <SettingsView value={settings} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
-          ) : view === "backups" ? (
-            <BackupsView backups={backups} restore={restore} purge={purge} busy={busy !== null} />
-          ) : !snapshot ? (
-            <StorageLoadingView view={view} failed={busy !== "scan"} />
-          ) : (
-            <>
-              {view === "overview" && <Overview snapshot={snapshot} />}
-              {view === "sessions" && <SessionsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
-              {view === "memory" && <MemoryView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
-              {view === "generated" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["attachment", "generatedImage"]} />}
-              {view === "logs" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["log", "cache", "temporary", "protected"]} />}
-            </>
-          )}
-        </div>
+      <main className="content-scroll">
+        <h1 className="visually-hidden">{t(navItems.find((item) => item.id === view)?.label ?? "overview")}</h1>
+        {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
+        {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice")}</strong><span>{t("reportOnlyHelp")}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
+        {view === "settings" ? (
+          settings ? <SettingsView value={settings} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
+        ) : view === "backups" ? (
+          <BackupsView backups={backups} restore={restore} requestPurge={setBackupToPurge} busy={busy !== null} />
+        ) : !snapshot ? (
+          <StorageLoadingView view={view} failed={busy !== "scan"} />
+        ) : (
+          <>
+            {view === "overview" && <Overview snapshot={snapshot} />}
+            {view === "sessions" && <SessionsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+            {view === "memory" && <MemoryView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+            {view === "generated" && <MediaView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} />}
+            {view === "logs" && <ItemsView snapshot={snapshot} selected={selected} toggle={toggleItem} selectMany={selectMany} inspect={(item) => setDetailItemId(item.id)} categories={["log", "cache", "temporary", "protected"]} />}
+          </>
+        )}
       </main>
 
-      {selected.size > 0 && !plan && (
-        <div className="selection-bar" role="status">
-          <div className="selection-icon"><Check size={16} /></div>
-          <div><strong>{selected.size} {t("selected")}</strong><span>{formatBytes(selectedBytes)}</span></div>
-          <button className="text-button" onClick={() => setSelected(new Set())}>{t("clearSelection")}</button>
-          <button className="primary-button" onClick={() => void reviewPlan()} disabled={busy !== null}>
-            {busy === "plan" && <LoaderCircle size={16} className="spinning" />}
-            {t("reviewCleanup")}<ChevronRight size={16} />
-          </button>
-        </div>
-      )}
+      <footer className="status-bar">
+        <span className="status-env">
+          <span className={`status-dot ${snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
+          Codex {snapshot?.installation.version?.replace("codex-cli ", "") ?? "—"}
+        </span>
+        {selected.size > 0 && !plan ? (
+          <span className="status-selection" role="status">
+            <strong>{selected.size} {t("selected")}</strong>
+            <span>{formatBytes(selectedBytes)}</span>
+            <button className="text-button" onClick={() => setSelected(new Set())}>{t("clearSelection")}</button>
+            <button className="primary-button status-cta" onClick={() => void reviewPlan()} disabled={busy !== null}>
+              {busy === "plan" && <LoaderCircle size={13} className="spinning" />}
+              {t("reviewCleanup")}<ChevronRight size={13} />
+            </button>
+          </span>
+        ) : snapshot ? (
+          <span className="status-inventory">
+            {t("lastScan")} {relativeTime(snapshot.scannedAt, i18n.language)} · {snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0)} {t("items")} · {formatBytes(snapshot.totalBytes)}
+          </span>
+        ) : (
+          <span className="status-inventory">{t("waitingForScanData")}</span>
+        )}
+      </footer>
 
       {plan && (
         <ReviewDialog
@@ -349,6 +336,7 @@ export default function App() {
         />
       )}
       {detailItem && snapshot && <ItemDetailDialog item={detailItem} snapshot={snapshot} selected={selected.has(detailItem.id)} toggle={() => toggleItem(detailItem)} close={() => setDetailItemId(undefined)} />}
+      {backupToPurge && <PurgeBackupDialog backup={backupToPurge} close={() => setBackupToPurge(undefined)} purge={() => void purge()} purging={busy === "purge"} />}
       {notice && <div className="toast"><Check size={16} />{notice}</div>}
     </div>
   );
@@ -357,32 +345,66 @@ export default function App() {
 function Overview({ snapshot }: { snapshot: InventorySnapshot }) {
   const { t } = useTranslation();
   const categories = snapshot.categories.filter((item) => item.category !== "protected" && item.sizeBytes > 0);
+  const itemCount = snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0);
   return (
     <div className="page-stack">
-      <section className="metric-grid overview-metrics">
-        <Metric icon={HardDrive} tone="neutral" value={formatBytes(snapshot.totalBytes)} label={t("totalManaged")} detail={`${snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0)} ${t("items")}`} />
-        <Metric icon={FolderCode} tone="purple" value={String(snapshot.projects.length)} label={t("projectsCount")} detail={snapshot.projects.slice(0, 2).map((item) => item.name).join(" · ")} />
-        <Metric icon={Bot} tone="blue" value={String(snapshot.sessions.length)} label={t("sessionsCount")} detail={`${snapshot.sessions.filter((session) => session.archived).length} ${t("archived")}`} />
+      <section className="stat-strip">
+        <Stat value={formatBytes(snapshot.totalBytes)} label={t("totalManaged")} detail={`${itemCount} ${t("items")}`} />
+        <Stat value={String(snapshot.projects.length)} label={t("projectsCount")} />
+        <Stat value={String(snapshot.sessions.length)} label={t("sessionsCount")} detail={`${snapshot.sessions.filter((session) => session.archived).length} ${t("archived")}`} />
       </section>
       <section className="panel-card">
-        <div className="panel-heading"><div><h3>{t("storageBreakdown")}</h3><p>{snapshot.categories.reduce((sum, category) => sum + category.itemCount, 0)} {t("items")}</p></div></div>
-        <div className="category-list">
-          {categories.map((category) => (
-            <div className="category-row" key={category.category}>
-              <span className="category-swatch" style={{ background: categoryColors[category.category] }} />
-              <div><strong>{t(categoryTranslation[category.category])}</strong><span>{category.itemCount} {t("items")}</span></div>
-              <div className="category-track"><span style={{ width: `${Math.max(4, category.sizeBytes / snapshot.totalBytes * 100)}%`, background: categoryColors[category.category] }} /></div>
-              <strong>{formatBytes(category.sizeBytes)}</strong>
-            </div>
-          ))}
+        <div className="panel-heading"><h3>{t("storageBreakdown")}</h3><span>{itemCount} {t("items")}</span></div>
+        <div className="overview-chart-layout">
+          <StorageDonut categories={categories} totalBytes={snapshot.totalBytes} />
+          <div className="category-list">
+            {categories.map((category) => (
+              <div className="category-row" key={category.category}>
+                <span className="category-swatch" style={{ background: categoryColors[category.category] }} />
+                <div><strong>{t(categoryTranslation[category.category])}</strong><span>{category.itemCount} {t("items")}</span></div>
+                <div className="category-track"><span style={{ width: `${Math.max(4, category.sizeBytes / snapshot.totalBytes * 100)}%`, background: categoryColors[category.category] }} /></div>
+                <strong>{formatBytes(category.sizeBytes)}</strong>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
     </div>
   );
 }
 
-function Metric({ icon: Icon, tone, value, label, detail }: { icon: typeof Sparkles; tone: string; value: string; label: string; detail: string }) {
-  return <div className="metric-card"><div className={`metric-icon ${tone}`}><Icon size={19} /></div><div><span>{label}</span><strong>{value}</strong><small>{detail || "—"}</small></div></div>;
+function StorageDonut({ categories, totalBytes }: { categories: InventorySnapshot["categories"]; totalBytes: number }) {
+  const { t } = useTranslation();
+  const radius = 62;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  return <figure className="storage-donut-figure">
+    <div className="storage-donut-shell">
+      <svg viewBox="0 0 160 160" role="img" aria-label={`${t("storageChartLabel")} · ${formatBytes(totalBytes)}`}>
+        <circle className="storage-donut-track" cx="80" cy="80" r={radius} />
+        {categories.map((category) => {
+          const length = totalBytes > 0 ? category.sizeBytes / totalBytes * circumference : 0;
+          const segment = <circle
+            className="storage-donut-segment"
+            key={category.category}
+            cx="80"
+            cy="80"
+            r={radius}
+            stroke={categoryColors[category.category]}
+            strokeDasharray={`${length} ${circumference - length}`}
+            strokeDashoffset={-offset}
+          />;
+          offset += length;
+          return segment;
+        })}
+      </svg>
+      <div className="storage-donut-center"><strong>{formatBytes(totalBytes)}</strong><span>{t("storageChartTotal")}</span></div>
+    </div>
+  </figure>;
+}
+
+function Stat({ value, label, detail }: { value: string; label: string; detail?: string }) {
+  return <div className="stat"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>;
 }
 
 interface SelectionProps {
@@ -400,6 +422,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   const [source, setSource] = useState("all");
   const [state, setState] = useState("all");
   const [displayMode, setDisplayMode] = useState<"tree" | "list">("tree");
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(sessionTreeExpansionKeys(snapshot, new Set(snapshot.sessions.map((session) => session.id)))));
   const rows = snapshot.sessions.filter((session) => {
     const item = snapshot.items.find((candidate) => candidate.threadId === session.id);
     const matchesQuery = `${session.name} ${session.cwd}`.toLowerCase().includes(query.toLowerCase());
@@ -413,21 +436,24 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
     .filter((item): item is CleanupItem => Boolean(item));
   const matchingSessionIds = new Set(rows.map((session) => session.id));
   const visibleSessionIds = includeSessionAncestors(snapshot.sessions, matchingSessionIds);
+  const expansionKeys = sessionTreeExpansionKeys(snapshot, visibleSessionIds);
+  const allExpanded = expansionKeys.length > 0 && expansionKeys.every((key) => expanded.has(key));
   useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
   return <section className="panel-card table-panel">
     <div className="filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
       <select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-      <select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item}>{item}</option>)}</select>
+      <select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
       <select value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
       <div className="view-switcher" aria-label={t("viewMode")}>
         <button type="button" className={displayMode === "tree" ? "active" : ""} aria-pressed={displayMode === "tree"} onClick={() => setDisplayMode("tree")}><GitBranch size={14} />{t("treeView")}</button>
         <button type="button" className={displayMode === "list" ? "active" : ""} aria-pressed={displayMode === "list"} onClick={() => setDisplayMode("list")}><List size={14} />{t("listView")}</button>
       </div>
+      {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
     </div>
     <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut />
     {displayMode === "tree" ? (
-      <SessionTreeTable snapshot={snapshot} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />
+      <SessionTreeTable snapshot={snapshot} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />
     ) : <SessionListTable snapshot={snapshot} rows={rows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
     {!rows.length && <EmptyState />}
   </section>;
@@ -442,18 +468,14 @@ function SessionListTable({ snapshot, rows, selected, toggle, inspect }: Selecti
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
           <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
           <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
-          <td><span className="pill">{projectName ?? "—"}</span></td><td><span className="source-label">{session.source}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
+          <td><span className="pill">{projectName ?? "—"}</span></td><td><span className="source-label">{sourceLabel(session.source)}</span></td><td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td><strong>{formatBytes(session.sizeBytes)}</strong></td>
         </tr>;
       })}
     </tbody></table></div>;
 }
 
-function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect }: SelectionProps & { visibleSessionIds: Set<string>; matchingSessionIds: Set<string> }) {
+function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect, expanded, toggleExpanded }: SelectionProps & { visibleSessionIds: Set<string>; matchingSessionIds: Set<string>; expanded: Set<string>; toggleExpanded: (key: string) => void }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([
-    ...snapshot.projects.map((project) => `project:${project.id}`),
-    ...snapshot.sessions.filter((session) => session.descendantIds.length > 0).map((session) => `session:${session.id}`),
-  ]));
   const sessionById = new Map(snapshot.sessions.map((session) => [session.id, session]));
   const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
   const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
@@ -462,12 +484,6 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
     ...snapshot.projects,
     ...(ungroupedIds.length ? [{ id: "__ungrouped", name: t("ungrouped"), roots: [], sessionIds: ungroupedIds, sizeBytes: ungroupedIds.reduce((sum, id) => sum + (sessionById.get(id)?.sizeBytes ?? 0), 0) }] : []),
   ];
-
-  const toggleExpanded = (key: string) => setExpanded((current) => {
-    const next = new Set(current);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    return next;
-  });
 
   const renderSession = (session: SessionRecord, projectIds: Set<string>, depth: number): ReactNode[] => {
     const item = itemByThread.get(session.id);
@@ -489,7 +505,7 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
             </div>
           </div>
         </td>
-        <td><span className="source-label">{session.source}</span></td>
+        <td><span className="source-label">{sourceLabel(session.source)}</span></td>
         <td>{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td>
         <td><strong>{formatBytes(session.sizeBytes)}</strong></td>
       </tr>];
@@ -525,14 +541,19 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
   });
 
   if (!projectBodies.length) return null;
-  const expansionKeys = [
-    ...projects.filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id))).map((project) => `project:${project.id}`),
-    ...snapshot.sessions.filter((session) => visibleSessionIds.has(session.id) && snapshot.sessions.some((candidate) => candidate.parentThreadId === session.id && visibleSessionIds.has(candidate.id))).map((session) => `session:${session.id}`),
-  ];
-  return <>
-    <div className="tree-controls"><span>{t("treeNavigationHint")}</span><button type="button" className="text-button" onClick={() => setExpanded(new Set(expansionKeys))}>{t("expandAll")}</button><button type="button" className="text-button" onClick={() => setExpanded(new Set())}>{t("collapseAll")}</button></div>
-    <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead>{projectBodies}</table></div>
-  </>;
+  return <div className="table-scroll tree-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("hierarchy")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead>{projectBodies}</table></div>;
+}
+
+function sessionTreeExpansionKeys(snapshot: InventorySnapshot, visibleSessionIds: Set<string>) {
+  const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
+  const keys = snapshot.projects
+    .filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id)))
+    .map((project) => `project:${project.id}`);
+  if ([...visibleSessionIds].some((id) => !assigned.has(id))) keys.push("project:__ungrouped");
+  keys.push(...snapshot.sessions
+    .filter((session) => visibleSessionIds.has(session.id) && snapshot.sessions.some((candidate) => candidate.parentThreadId === session.id && visibleSessionIds.has(candidate.id)))
+    .map((session) => `session:${session.id}`));
+  return keys;
 }
 
 function includeSessionAncestors(sessions: SessionRecord[], matchingIds: Set<string>) {
@@ -558,9 +579,9 @@ function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: Selecti
   const { t } = useTranslation();
   const item = snapshot.items.find((candidate) => candidate.category === "memory");
   useToggleAllShortcut(item ? [item] : [], snapshot, selected, selectMany);
-  return <div className="memory-layout">
-    <header className="memory-heading"><div className="memory-orb"><MemoryStick size={24} /></div><div><span className="section-kicker">GLOBAL · HIGH RISK</span><h2>{t("globalMemory")}</h2><p>{t("memoryNotice")}</p></div></header>
-    {item ? <section className="panel-card detail-card clickable-card" tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}><div className="item-select-row"><CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} /><div><h3>{item.title}</h3><p>{item.subtitle}</p></div><div className="item-select-actions"><strong>{formatBytes(item.sizeBytes)}</strong></div></div><div className="detail-lines"><span><LockKeyhole size={15} />{t("recoverable")}</span><code>{item.paths[0]}</code></div></section> : <EmptyState />}
+  return <div className="page-stack">
+    <div className="alert alert-warning memory-alert"><CircleAlert size={16} /><span>{t("memoryNotice")}</span></div>
+    {item ? <section className="panel-card detail-card clickable-card" tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}><div className="item-select-row"><CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} /><div><h3>{item.title}</h3><p>{item.subtitle}</p></div><div className="item-select-actions"><strong>{formatBytes(item.sizeBytes)}</strong></div></div><div className="detail-lines"><span><Archive size={15} />{t("recoverable")}</span><code>{item.paths[0]}</code></div></section> : <EmptyState />}
   </div>;
 }
 
@@ -577,21 +598,75 @@ function ItemsView({ snapshot, selected, toggle, selectMany, inspect, categories
   </article>)}</div></div>;
 }
 
-function BackupsView({ backups, restore, purge, busy }: { backups: BackupRecord[]; restore: (id: string) => void; purge: (id: string) => void; busy: boolean }) {
+function MediaView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
+  const items = snapshot.items.filter((item) => item.category === "attachment" || item.category === "generatedImage");
+  useToggleAllShortcut(items, snapshot, selected, selectMany);
+  if (!items.length) return <EmptyState icon={Image} />;
+  return <div className="page-stack">
+    <BulkActions items={items} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut />
+    <div className="media-grid">
+      {items.map((item) => <MediaCard key={item.id} item={item} snapshot={snapshot} selected={selected.has(item.id)} toggle={() => toggle(item)} inspect={() => inspect(item)} />)}
+    </div>
+  </div>;
+}
+
+function MediaCard({ item, snapshot, selected, toggle, inspect }: { item: CleanupItem; snapshot: InventorySnapshot; selected: boolean; toggle: () => void; inspect: () => void }) {
   const { t } = useTranslation();
-  return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="icon-button danger" disabled={busy} onClick={() => purge(backup.id)} aria-label={t("deleteForever")}><Trash2 size={16} /></button></article>)}</div>}</div>;
+  const [thumbnail, setThumbnail] = useState<string>();
+  const [thumbnailState, setThumbnailState] = useState<"loading" | "ready" | "empty">("loading");
+  useEffect(() => {
+    let active = true;
+    setThumbnail(undefined);
+    setThumbnailState("loading");
+    void api.getItemThumbnail(item.id)
+      .then((result) => {
+        if (!active) return;
+        setThumbnail(result?.dataUrl);
+        setThumbnailState(result ? "ready" : "empty");
+      })
+      .catch(() => { if (active) setThumbnailState("empty"); });
+    return () => { active = false; };
+  }, [item.id]);
+  return <article
+    className="media-card clickable-card"
+    tabIndex={0}
+    aria-label={`${t("openDetails")} ${item.title}`}
+    onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(); }}
+    onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(); }}
+  >
+    <div className="media-preview" aria-busy={thumbnailState === "loading"}>
+      {thumbnail ? <img src={thumbnail} alt={t("mediaPreviewAlt", { title: item.title })} /> : thumbnailState === "loading" ? <LoaderCircle size={22} className="spinning" /> : <div className="media-preview-empty" aria-label={t("previewUnavailable")}><Image size={30} /></div>}
+      <div className="media-card-select" onClick={(event) => event.stopPropagation()}><CheckBox checked={selected} disabled={!isItemSelectable(item, snapshot)} onChange={toggle} label={item.title} /></div>
+      <span className="media-category" style={{ color: categoryColors[item.category] }}>{t(categoryTranslation[item.category])}</span>
+    </div>
+    <div className="media-card-body">
+      <div><h3>{item.title}</h3><strong>{formatBytes(item.sizeBytes)}</strong></div>
+      {item.subtitle && <p>{item.subtitle}</p>}
+      <code title={item.paths[0]}>{item.paths[0]}</code>
+    </div>
+  </article>;
+}
+
+function BackupsView({ backups, restore, requestPurge, busy }: { backups: BackupRecord[]; restore: (id: string) => void; requestPurge: (backup: BackupRecord) => void; busy: boolean }) {
+  const { t } = useTranslation();
+  return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
 function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => void }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(value);
   useEffect(() => setForm(value), [value]);
-  return <form className="settings-form panel-card" onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
-    <div className="settings-heading"><div className="settings-icon"><Settings size={21} /></div><h2>{t("cleanerSettings")}</h2></div>
-    <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
-    <Setting label={t("language")}><div className="segmented"><button type="button" className={form.locale === "system" ? "active" : ""} onClick={() => setForm({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} onClick={() => setForm({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} onClick={() => setForm({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
-    <Setting label={t("appearance")}><div className="segmented"><button type="button" className={form.theme === "system" ? "active" : ""} onClick={() => setForm({ ...form, theme: "system" })}><Sun size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} onClick={() => setForm({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} onClick={() => setForm({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
-    <div className="retention-grid"><Setting label={t("backupRetention")}><input type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
+  return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
+    <section className="settings-group">
+      <h3 className="settings-group-label">{t("settingsGeneral")}</h3>
+      <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
+      <Setting label={t("language")}><div className="segmented"><button type="button" className={form.locale === "system" ? "active" : ""} onClick={() => setForm({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} onClick={() => setForm({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} onClick={() => setForm({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
+      <Setting label={t("appearance")}><div className="segmented"><button type="button" className={form.theme === "system" ? "active" : ""} onClick={() => setForm({ ...form, theme: "system" })}><Sun size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} onClick={() => setForm({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} onClick={() => setForm({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
+    </section>
+    <section className="settings-group">
+      <h3 className="settings-group-label">{t("settingsRetention")}</h3>
+      <div className="retention-grid"><Setting label={t("backupRetention")}><input type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
+    </section>
     <div className="settings-footer"><button className="primary-button" type="submit">{t("save")}</button></div>
   </form>;
 }
@@ -649,7 +724,7 @@ function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: C
           <dl className="detail-facts">
             <div><dt>{t("detailsSessionId")}</dt><dd><code>{session.id}</code></dd></div>
             <div><dt>{t("project")}</dt><dd>{project?.name ?? t("ungrouped")}</dd></div>
-            <div><dt>{t("source")}</dt><dd>{session.source}</dd></div>
+            <div><dt>{t("source")}</dt><dd>{sourceLabel(session.source)}</dd></div>
             <div><dt>{t("detailsStatus")}</dt><dd>{session.archived ? t("archived") : statusLabel(session.status, t)}{session.pinned ? ` · ${t("pinned")}` : ""}</dd></div>
             <div><dt>{t("detailsCreated")}</dt><dd>{session.createdAt ? formatDate(session.createdAt, i18n.language) : "—"}</dd></div>
             <div><dt>{t("updated")}</dt><dd>{session.updatedAt ? formatDate(session.updatedAt, i18n.language) : "—"}</dd></div>
@@ -733,17 +808,38 @@ function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, ex
   const descendantCount = Math.max(0, plan.expandedSessionIds.length - selected.filter((item) => item.threadId).length);
   const canBackup = plan.estimatedBackupBytes > 0;
   const displayedBackupBytes = createBackup ? plan.estimatedBackupBytes : 0;
-  const backupRequired = canBackup && !createBackup;
+  const withoutBackup = canBackup && !createBackup;
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !executing) close(); }}><section className="review-dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
     <button className="icon-button modal-close" onClick={close} disabled={executing}><X size={18} /></button>
-    <div className="review-icon"><ShieldCheck size={26} /></div><h2 id="review-title">{t("reviewTitle")}</h2><p className="review-lead">{t("reviewLead")}</p>
+    <h2 id="review-title">{t("reviewTitle")}</h2>
     <div className="review-metrics"><div><span>{t("affected")}</span><strong>{selected.length}</strong></div><div><span>{t("descendants")}</span><strong>{descendantCount}</strong></div><div><span>{t("backupSize")}</span><strong>{formatBytes(displayedBackupBytes)}</strong></div><div><span>{t("netGain")}</span><strong>{formatBytes(Math.max(0, plan.estimatedBytes - displayedBackupBytes * 0.62))}</strong></div></div>
     <div className="impact-list">{selected.slice(0, 6).map((item) => <div key={item.id}><span style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</span><div><strong>{item.title}</strong><span>{t(categoryTranslation[item.category])}</span></div><strong>{formatBytes(item.sizeBytes)}</strong></div>)}</div>
     {plan.blockers.length > 0 && <div className="blocker-box"><CircleAlert size={18} /><div><strong>{t("blockers")}</strong>{plan.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}</div></div>}
-    <label className={`backup-option ${!canBackup ? "disabled" : ""}`}><input type="checkbox" checked={createBackup && canBackup} disabled={!canBackup || executing} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><span><strong>{t("createBackupOption")}</strong><small>{canBackup ? t("createBackupHint") : t("noBackupNeeded")}</small></span></label>
-    {backupRequired && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t("backupRequiredWarning")}</span></div>}
-    <div className="modal-actions"><button className="secondary-button" onClick={close} disabled={executing}>{t("cancel")}</button><button className="primary-button danger-primary" onClick={execute} disabled={plan.blockers.length > 0 || executing || backupRequired}>{executing && <LoaderCircle size={16} className="spinning" />}{executing ? t("executing") : backupRequired ? t("backupRequiredAction") : createBackup && canBackup ? t("backupAndExecute") : t("executeWithoutBackup")}</button></div>
+    {canBackup && <label className="backup-option"><input type="checkbox" checked={createBackup} disabled={executing} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><strong>{t("createBackupOption")}</strong></label>}
+    {withoutBackup && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t("noBackupWarning")}</span></div>}
+    <div className="modal-actions"><button className="secondary-button" onClick={close} disabled={executing}>{t("cancel")}</button><button className="primary-button danger-primary" onClick={execute} disabled={plan.blockers.length > 0 || executing}>{executing && <LoaderCircle size={16} className="spinning" />}{executing ? t("executing") : createBackup && canBackup ? t("backupAndExecute") : t("executeWithoutBackup")}</button></div>
   </section></div>;
+}
+
+function PurgeBackupDialog({ backup, close, purge, purging }: { backup: BackupRecord; close: () => void; purge: () => void; purging: boolean }) {
+  const { t } = useTranslation();
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !purging) close(); }}>
+    <section className="review-dialog purge-dialog" role="dialog" aria-modal="true" aria-labelledby="purge-backup-title">
+      <button className="icon-button modal-close" onClick={close} disabled={purging} aria-label={t("cancel")}><X size={18} /></button>
+      <div className="destructive-dialog-mark"><Trash2 size={20} /></div>
+      <h2 id="purge-backup-title">{t("deleteBackupTitle")}</h2>
+      <div className="purge-backup-summary">
+        <div><span>{t("created")}</span><strong>{new Date(backup.createdAt).toLocaleString()}</strong></div>
+        <div><span>{t("archiveSize")}</span><strong>{formatBytes(backup.archiveBytes)}</strong></div>
+        <code>{backup.archivePath}</code>
+      </div>
+      <div className="no-backup-warning"><CircleAlert size={16} /><span>{t("deleteBackupWarning")}</span></div>
+      <div className="modal-actions">
+        <button className="secondary-button" onClick={close} disabled={purging}>{t("cancel")}</button>
+        <button className="primary-button danger-primary" onClick={purge} disabled={purging}>{purging && <LoaderCircle size={16} className="spinning" />}{purging ? t("deletingBackup") : t("confirmDeleteBackup")}</button>
+      </div>
+    </section>
+  </div>;
 }
 
 function BulkActions({ items, snapshot, selected, selectMany, shortcut = false }: { items: CleanupItem[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: CleanupItem[], shouldSelect: boolean) => void; shortcut?: boolean }) {
@@ -752,9 +848,8 @@ function BulkActions({ items, snapshot, selected, selectMany, shortcut = false }
   const selectedCount = selectable.filter((item) => selected.has(item.id)).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
   return <div className="bulk-actions" role="toolbar" aria-label={t("bulkSelection")}>
+    <button type="button" className="text-button" disabled={!selectable.length} onClick={() => selectMany(selectable, !allSelected)}>{allSelected ? <X size={14} /> : <Check size={14} />}{allSelected ? t("deselectAllResults") : t("selectAllResults")}</button>
     <span>{t("selectionScope", { selected: selectedCount, total: selectable.length })}{shortcut && <kbd>⌘/Ctrl A</kbd>}</span>
-    <button type="button" className="text-button" disabled={!selectable.length || allSelected} onClick={() => selectMany(selectable, true)}><Check size={14} />{t("selectAllResults")}</button>
-    <button type="button" className="text-button" disabled={!selectedCount} onClick={() => selectMany(selectable, false)}><X size={14} />{t("clearCurrentSelection")}</button>
   </div>;
 }
 
@@ -770,16 +865,15 @@ function StorageLoadingView({ view, failed }: { view: ViewId; failed: boolean })
   </div>;
   if (view === "overview") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
     {status}
-    <section className="metric-grid overview-metrics">{[0, 1, 2].map((index) => <div className="metric-card" key={index}><div className="skeleton skeleton-icon" /><div className="skeleton-copy"><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line skeleton-medium" /></div></div>)}</section>
-    <section className="panel-card skeleton-panel"><div className="panel-heading"><div><h3>{t("storageBreakdown")}</h3><p>{t("waitingForScanData")}</p></div></div><div className="category-list">{[0, 1, 2, 3].map((index) => <div className="category-row" key={index}><span className="skeleton skeleton-dot" /><div><span className="skeleton skeleton-line skeleton-medium" /><span className="skeleton skeleton-line skeleton-short" /></div><div className="skeleton skeleton-track" /><span className="skeleton skeleton-line" /></div>)}</div></section>
+    <section className="stat-strip">{[0, 1, 2].map((index) => <div className="stat" key={index}><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line skeleton-medium" /></div>)}</section>
+    <section className="panel-card skeleton-panel"><div className="panel-heading"><h3>{t("storageBreakdown")}</h3><span>{t("waitingForScanData")}</span></div><div className="overview-chart-layout"><div className="storage-donut-figure skeleton-donut-figure"><span className="skeleton-donut" /><span className="skeleton skeleton-line skeleton-medium" /></div><div className="category-list">{[0, 1, 2, 3].map((index) => <div className="category-row" key={index}><span className="skeleton skeleton-dot" /><div><span className="skeleton skeleton-line skeleton-medium" /><span className="skeleton skeleton-line skeleton-short" /></div><div className="skeleton skeleton-track" /><span className="skeleton skeleton-line" /></div>)}</div></div></section>
   </div>;
   if (view === "sessions") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
     {status}
     <section className="panel-card table-panel"><div className="filter-row"><div className="search-box skeleton-control"><Search size={16} /><span>{t("filterSessions")}</span></div>{[0, 1, 2].map((index) => <div className="skeleton-control compact" key={index}><span className="skeleton skeleton-line" /></div>)}</div><div className="bulk-actions"><span>{t("waitingForScanData")}</span></div><div className="skeleton-table">{[0, 1, 2, 3, 4].map((index) => <div key={index}><span className="skeleton skeleton-dot" /><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-line skeleton-short" /></div>)}</div></section>
   </div>;
-  if (view === "memory") return <div className="memory-layout storage-skeleton" aria-busy={!failed}>
+  if (view === "memory") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
     {status}
-    <header className="memory-heading"><div className="memory-orb"><MemoryStick size={24} /></div><div><span className="section-kicker">GLOBAL · HIGH RISK</span><h2>{t("globalMemory")}</h2><p>{t("memoryNotice")}</p></div></header>
     <section className="panel-card detail-card skeleton-detail-card"><span className="skeleton skeleton-dot" /><div><span className="skeleton skeleton-value" /><span className="skeleton skeleton-line skeleton-medium" /></div><span className="skeleton skeleton-line skeleton-short" /></section>
   </div>;
   return <div className="page-stack storage-skeleton" aria-busy={!failed}>
@@ -823,7 +917,7 @@ function isItemSelectable(item: CleanupItem, snapshot: InventorySnapshot) {
 }
 
 function isInteractiveTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && Boolean(target.closest("button, input, label, select, textarea, a, [contenteditable='true']"));
+  return target instanceof Element && Boolean(target.closest("button, input, label, select, textarea, a, [contenteditable='true']"));
 }
 
 function useToggleAllShortcut(items: CleanupItem[], snapshot: InventorySnapshot, selected: Set<string>, selectMany: (items: CleanupItem[], shouldSelect: boolean) => void) {
@@ -881,6 +975,7 @@ function relativeTime(value: string, language: string) {
 }
 
 function statusLabel(status: string, t: (key: string) => string) { const normalized = status.toLowerCase(); return normalized === "active" || normalized === "loaded" ? t("active") : t("notLoaded"); }
+function sourceLabel(source: string) { return source === "vscode" ? "Desktop / IDE" : source; }
 function roleLabel(role: string, t: (key: string) => string) {
   if (role === "user") return t("contentRoleUser");
   if (role === "assistant") return t("contentRoleAssistant");

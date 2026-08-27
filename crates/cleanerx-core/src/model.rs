@@ -173,6 +173,14 @@ pub struct ItemContentDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ItemThumbnail {
+    pub item_id: String,
+    pub title: String,
+    pub data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: String,
     pub name: String,
@@ -231,7 +239,7 @@ pub struct PlannedOperation {
     pub session_ids: Vec<String>,
     pub paths: Vec<String>,
     pub size_bytes: u64,
-    pub requires_backup: bool,
+    pub backup_eligible: bool,
     pub requires_codex_exit: bool,
     pub blockers: Vec<String>,
 }

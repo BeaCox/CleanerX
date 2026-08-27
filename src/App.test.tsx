@@ -16,10 +16,18 @@ describe("CleanerX GUI", () => {
     expect(screen.getAllByText("Waiting for scan data").length).toBeGreaterThan(0);
   });
 
+  it("renders storage usage as an accessible statistical chart", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    expect(screen.getByRole("img", { name: /Storage usage donut chart/ })).toBeVisible();
+    expect(screen.queryByText("Current manageable local storage grouped by data type")).not.toBeInTheDocument();
+    expect(screen.queryByText("CleanerX · atlas-web")).not.toBeInTheDocument();
+  });
+
   it("keeps settings usable while storage is still scanning", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByText("CleanerX settings")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Save settings" })).toBeVisible();
     expect(screen.queryByText("Scanning…")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Scanning…" })).not.toBeInTheDocument();
   });
@@ -35,7 +43,7 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByText("Design token migration")).not.toBeInTheDocument();
   });
 
-  it("uses a backup control instead of a separate approval checkbox", async () => {
+  it("keeps backup optional and warns about irreversible cleanup", async () => {
     render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
@@ -43,11 +51,12 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
     expect(await screen.findByRole("dialog", { name: "Review cleanup plan" })).toBeVisible();
     const backup = screen.getByRole("checkbox", { name: /Create an encrypted backup first/ });
-    expect(backup).toBeChecked();
-    expect(screen.getByRole("button", { name: "Back up & clean" })).toBeEnabled();
+    expect(backup).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Clean without backup" })).toBeEnabled();
+    expect(screen.getByText("Without a backup, deleted data cannot be restored.")).toBeVisible();
     fireEvent.click(backup);
-    expect(screen.getByRole("button", { name: "Backup required" })).toBeDisabled();
-    expect(screen.getByText(/verified encrypted backup is required/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Back up & clean" })).toBeEnabled();
+    expect(screen.queryByText("Without a backup, deleted data cannot be restored.")).not.toBeInTheDocument();
   });
 
   it("keeps active sessions unavailable for selection", async () => {
@@ -66,6 +75,12 @@ describe("CleanerX GUI", () => {
     expect(screen.getByRole("button", { name: "Collapse atlas-web" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Collapse Design token migration" })).toBeVisible();
     expect(screen.getByText("Release checklist")).toBeVisible();
+    expect(screen.queryByText("Expansion only changes the view, not cleanup selection.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(screen.queryByText("Release checklist")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(screen.getByText("Release checklist")).toBeVisible();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search sessions or paths…" }), { target: { value: "Release checklist" } });
     expect(screen.getByText("Design token migration")).toBeVisible();
@@ -82,6 +97,15 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByRole("button", { name: "Collapse atlas-web" })).not.toBeInTheDocument();
   });
 
+  it("maps the vscode source to Desktop / IDE", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+
+    expect(screen.getByRole("option", { name: "Desktop / IDE" })).toHaveValue("vscode");
+    expect(screen.getAllByText("Desktop / IDE").length).toBeGreaterThan(1);
+  });
+
   it("selects and clears every cleanable item in the current filter", async () => {
     render(<App />);
     await screen.findByText("Managed data");
@@ -92,7 +116,8 @@ describe("CleanerX GUI", () => {
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).toBeChecked();
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear current results" }));
+    expect(screen.queryByRole("button", { name: "Clear current results" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Deselect all results" }));
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).not.toBeChecked();
   });
@@ -167,5 +192,45 @@ describe("CleanerX GUI", () => {
     expect(within(dialog).getByText("Retention days")).toBeVisible();
     expect(within(dialog).getByText("7")).toBeVisible();
     expect(await within(dialog).findByText("thread/list completed · 5 rows")).toBeVisible();
+  });
+
+  it("shows attachment and generated images in a preview card grid", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: "Attachments & generated" }));
+
+    expect(await screen.findByRole("img", { name: "Image preview for Generated visuals" })).toBeVisible();
+    expect(await screen.findByLabelText("No image preview available")).toBeVisible();
+    expect(screen.queryByText("No image preview available")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Open details Generated visuals")).toHaveClass("media-card");
+  });
+
+  it("does not open media details when the visual checkbox is clicked", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: "Attachments & generated" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Generated visuals" });
+    const checkPath = checkbox.closest("label")?.querySelector("svg path");
+    expect(checkPath).not.toBeNull();
+
+    fireEvent.click(checkPath!);
+
+    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole("dialog", { name: "Generated visuals" })).not.toBeInTheDocument();
+  });
+
+  it("permanently deletes a backup after an in-app confirmation", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(await screen.findByRole("button", { name: /Backups 1/ }));
+    expect(screen.getByText("7f9fd849-9817-46ef-b075-7a437d32b03c")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete forever" }));
+    const dialog = screen.getByRole("dialog", { name: "Permanently delete this backup?" });
+    expect(within(dialog).getByText(/does not remove or modify current Codex data/)).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete backup forever" }));
+
+    expect(await screen.findByText("No CleanerX backups yet")).toBeVisible();
+    expect(screen.getByText("Backup permanently deleted")).toBeVisible();
   });
 });

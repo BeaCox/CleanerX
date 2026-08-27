@@ -64,6 +64,12 @@ export interface ItemContentDetail {
   warning?: string;
 }
 
+export interface ItemThumbnail {
+  itemId: string;
+  title: string;
+  dataUrl: string;
+}
+
 export interface SessionRecord {
   id: string;
   name: string;
@@ -114,7 +120,7 @@ export interface PlannedOperation {
   sessionIds: string[];
   paths: string[];
   sizeBytes: number;
-  requiresBackup: boolean;
+  backupEligible: boolean;
   requiresCodexExit: boolean;
   blockers: string[];
 }

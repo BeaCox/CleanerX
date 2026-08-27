@@ -165,7 +165,7 @@ impl BackupStore {
             .find(|record| record.id == backup_id)
             .ok_or_else(|| CleanerError::NotFound(format!("backup {backup_id}")))?;
         let archive_path = PathBuf::from(&record.archive_path);
-        self.validate_archive_path(&archive_path)?;
+        self.validate_archive_path(backup_id, &archive_path)?;
 
         let identity = self.identity()?;
         let input = BufReader::new(File::open(&archive_path)?);
@@ -270,19 +270,21 @@ impl BackupStore {
             .cloned()
             .ok_or_else(|| CleanerError::NotFound(format!("backup {backup_id}")))?;
         let path = PathBuf::from(record.archive_path);
-        self.validate_archive_path(&path)?;
+        self.validate_archive_path(backup_id, &path)?;
         if path.exists() {
-            fs::remove_file(path)?;
+            fs::remove_file(&path)?;
         }
         catalog.records.retain(|record| record.id != backup_id);
         self.save_catalog(&catalog)
     }
 
-    fn validate_archive_path(&self, path: &Path) -> Result<(), CleanerError> {
-        let base = self.base_dir.canonicalize()?;
-        let canonical = path.canonicalize()?;
-        if !canonical.starts_with(base)
-            || canonical.extension().and_then(|ext| ext.to_str()) != Some("cxb")
+    fn validate_archive_path(&self, backup_id: Uuid, path: &Path) -> Result<(), CleanerError> {
+        let expected = self.base_dir.join(format!("{backup_id}.cxb"));
+        if path != expected {
+            return Err(CleanerError::UnsafePath(path.display().to_string()));
+        }
+        if let Ok(metadata) = fs::symlink_metadata(path)
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
         {
             return Err(CleanerError::UnsafePath(path.display().to_string()));
         }
@@ -548,5 +550,54 @@ mod tests {
         let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
         store.restore(manifest.id, &roots).expect("restore");
         assert_eq!(fs::read(source).expect("read"), b"private transcript");
+
+        let archive_path = PathBuf::from(
+            store
+                .list()
+                .expect("list")
+                .first()
+                .expect("backup record")
+                .archive_path
+                .clone(),
+        );
+        assert!(archive_path.is_file());
+        store.purge(manifest.id).expect("purge");
+        assert!(!archive_path.exists());
+        assert!(store.list().expect("list after purge").is_empty());
+    }
+
+    #[test]
+    fn purge_rejects_a_catalog_path_outside_the_backup_store() {
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let outside_dir = tempfile::tempdir().expect("outside");
+        let outside_archive = outside_dir.path().join("private.cxb");
+        fs::write(&outside_archive, b"unrelated bytes").expect("outside archive");
+        let identity = age::x25519::Identity::generate();
+        let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+            .expect("store");
+        let backup_id = Uuid::new_v4();
+        store
+            .save_catalog(&BackupCatalog {
+                records: vec![BackupRecord {
+                    id: backup_id,
+                    created_at: Utc::now(),
+                    expires_at: Utc::now() + Duration::days(30),
+                    archive_path: outside_archive.to_string_lossy().into_owned(),
+                    archive_bytes: 15,
+                    original_bytes: 15,
+                    item_count: 1,
+                    operation_id: Uuid::new_v4(),
+                }],
+            })
+            .expect("catalog");
+
+        assert!(matches!(
+            store.purge(backup_id),
+            Err(CleanerError::UnsafePath(_))
+        ));
+        assert_eq!(
+            fs::read(outside_archive).expect("outside bytes"),
+            b"unrelated bytes"
+        );
     }
 }

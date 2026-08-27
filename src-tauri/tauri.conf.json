@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "CleanerX",
+        "hiddenTitle": true,
         "width": 1240,
         "height": 800,
         "minWidth": 980,

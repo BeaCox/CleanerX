@@ -84,7 +84,7 @@ pub fn create_cleanup_plan(
         operation.paths.clear();
         operation.size_bytes = 0;
         operation.session_ids = deletion_roots;
-        operation.requires_backup = true;
+        operation.backup_eligible = true;
         for session_id in &expanded_sessions {
             if let Some(session) = session_by_id.get(session_id.as_str()) {
                 operation.size_bytes = operation.size_bytes.saturating_add(session.size_bytes);
@@ -140,7 +140,7 @@ pub fn create_cleanup_plan(
     let estimated_bytes = grouped.values().map(|operation| operation.size_bytes).sum();
     let estimated_backup_bytes = grouped
         .values()
-        .filter(|operation| operation.requires_backup)
+        .filter(|operation| operation.backup_eligible)
         .map(|operation| operation.size_bytes)
         .sum();
 
@@ -177,7 +177,7 @@ fn blank_operation(kind: OperationKind) -> PlannedOperation {
         session_ids: Vec::new(),
         paths: Vec::new(),
         size_bytes: 0,
-        requires_backup: false,
+        backup_eligible: false,
         requires_codex_exit: false,
         blockers: Vec::new(),
     }
@@ -192,7 +192,7 @@ fn add_to_operation(
     operation.item_ids.push(item.id.clone());
     operation.paths.extend(item.paths.iter().cloned());
     operation.size_bytes = operation.size_bytes.saturating_add(item.size_bytes);
-    operation.requires_backup |= item.recoverable;
+    operation.backup_eligible |= item.recoverable;
     operation.requires_codex_exit |= matches!(
         item.category,
         StorageCategory::Memory

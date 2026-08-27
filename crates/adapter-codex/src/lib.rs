@@ -17,8 +17,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentInstallation, AgentKind, CategorySummary, CleanerError,
-    CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail, ProjectGroup, RiskLevel,
-    SessionRecord, StorageCategory,
+    CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail, ItemThumbnail, ProjectGroup,
+    RiskLevel, SessionRecord, StorageCategory,
 };
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -341,6 +341,23 @@ impl AgentAdapter for CodexAdapter {
                 "No preview is available for this item.",
             )),
         }
+    }
+
+    async fn load_item_thumbnail(
+        &self,
+        installation: &AgentInstallation,
+        item: &CleanupItem,
+    ) -> Result<Option<ItemThumbnail>, CleanerError> {
+        if !matches!(
+            item.category,
+            StorageCategory::Attachment | StorageCategory::GeneratedImage
+        ) {
+            return Err(CleanerError::Unsupported(
+                "thumbnails are available only for attachments and generated images".into(),
+            ));
+        }
+        validate_content_paths(installation, item)?;
+        thumbnail_from_paths(item)
     }
 
     async fn delete_sessions(
@@ -969,6 +986,58 @@ fn content_from_paths(item: &CleanupItem) -> Result<ItemContentDetail, CleanerEr
     Ok(detail)
 }
 
+fn thumbnail_from_paths(item: &CleanupItem) -> Result<Option<ItemThumbnail>, CleanerError> {
+    let mut candidates = Vec::new();
+    for root in item.paths.iter().map(Path::new) {
+        if root.is_dir() {
+            candidates.extend(
+                WalkDir::new(root)
+                    .max_depth(3)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_file() && !entry.path_is_symlink())
+                    .take(100)
+                    .map(|entry| entry.into_path()),
+            );
+        } else if root.is_file() {
+            candidates.push(root.to_path_buf());
+        }
+    }
+    candidates.sort();
+    for path in candidates {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let Some(mime) = image_mime(&extension) else {
+            continue;
+        };
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > CONTENT_IMAGE_LIMIT {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        return Ok(Some(ItemThumbnail {
+            item_id: item.id.clone(),
+            title: path.to_string_lossy().into_owned(),
+            data_url: format!("data:{mime};base64,{}", BASE64.encode(bytes)),
+        }));
+    }
+    Ok(None)
+}
+
+fn image_mime(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
 fn preview_file(path: &Path, detail: &mut ItemContentDetail) -> Result<(), CleanerError> {
     let title = path.to_string_lossy().into_owned();
     let extension = path
@@ -977,13 +1046,7 @@ fn preview_file(path: &Path, detail: &mut ItemContentDetail) -> Result<(), Clean
         .unwrap_or_default()
         .to_ascii_lowercase();
     let metadata = fs::metadata(path)?;
-    if let Some(mime) = match extension.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    } {
+    if let Some(mime) = image_mime(&extension) {
         if metadata.len() <= CONTENT_IMAGE_LIMIT {
             let bytes = fs::read(path)?;
             detail.bytes_read = detail.bytes_read.saturating_add(bytes.len() as u64);
@@ -2180,6 +2243,30 @@ mod tests {
             validate_content_paths(&installation, &item),
             Err(CleanerError::UnsafePath(_))
         ));
+    }
+
+    #[test]
+    fn media_thumbnail_reads_only_a_bounded_supported_image() {
+        let temp = tempfile::tempdir().expect("temp");
+        let image = temp.path().join("preview.png");
+        let bytes = BASE64
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .expect("png fixture");
+        fs::write(&image, bytes).expect("image");
+        fs::write(temp.path().join("private.txt"), "not a thumbnail").expect("text");
+        let item = cleanup_item(
+            "attachment:test",
+            StorageCategory::Attachment,
+            vec![temp.path().to_string_lossy().into_owned()],
+        );
+
+        let thumbnail = thumbnail_from_paths(&item)
+            .expect("thumbnail")
+            .expect("supported image");
+
+        assert_eq!(thumbnail.item_id, item.id);
+        assert_eq!(thumbnail.title, image.to_string_lossy());
+        assert!(thumbnail.data_url.starts_with("data:image/png;base64,"));
     }
 
     #[tokio::test]
