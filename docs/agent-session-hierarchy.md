@@ -4,7 +4,7 @@ CleanerX uses a common **forest** model for storage navigation:
 
 ```text
 Agent
-└── Project / working-directory root
+└── Verified project / repository root
     ├── Root session
     │   ├── Branch, fork, or child session
     │   └── Subagent session
@@ -25,6 +25,7 @@ A project can contain multiple independent root sessions, so this is a forest ra
 Official references:
 
 - [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server)
+- [Codex projects and chats](https://learn.chatgpt.com/docs/projects)
 - [Claude Code sessions](https://code.claude.com/docs/en/sessions)
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
 - [OpenCode agents](https://opencode.ai/docs/agents/)
@@ -39,6 +40,7 @@ Official references:
 - “Recent” is an updated-time filter (currently last 7 or 30 days), not a durable tree node. Its membership changes over time and never creates or changes a project association.
 - Filtering a child keeps its ancestor rows as non-selectable context.
 - Project selection operates only on associated Agent data; it never selects or traverses the source directory.
+- A session `cwd` is shown as recognition metadata but does not by itself create a project association. CleanerX requires a recognized Codex project root or an ancestor Git marker; standalone desktop chat workspaces therefore remain under “No project.”
 - The “No project” virtual root sorts sessions by most recent update. A known `cwd` may be shown only as recognition metadata; an absent `cwd` is displayed explicitly and is never inferred from CleanerX's working directory.
 - A parent cleanup remains explicit. The confirmation plan expands and displays every descendant that the Agent's official delete operation will also remove.
 - CleanerX does not inspect message bodies while building the hierarchy. Codex content can be loaded on demand in a bounded detail view; Agent-specific entry-level branching, such as Pi's internal message tree, remains out of scope for the MVP hierarchy.

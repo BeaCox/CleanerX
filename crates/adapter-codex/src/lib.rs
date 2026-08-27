@@ -200,7 +200,13 @@ impl AgentAdapter for CodexAdapter {
         };
         augment_pinned_and_parents(&home, &mut sessions, &mut warnings);
         populate_descendants(&mut sessions);
-        let project_roots = project_roots_by_session(&sessions);
+        let database_projects = read_database_projects(&home).unwrap_or_else(|error| {
+            warnings.push(format!(
+                "Project registry metadata was ignored because its schema is not recognized: {error}"
+            ));
+            HashMap::new()
+        });
+        let project_roots = project_roots_by_session(&sessions, &database_projects);
 
         let mut items = Vec::new();
         for session in &mut sessions {
@@ -269,7 +275,7 @@ impl AgentAdapter for CodexAdapter {
         )?;
         scan_protected(&home, &mut items)?;
 
-        let projects = group_projects(&sessions, &project_roots, &home, &mut warnings);
+        let projects = group_projects(&sessions, &project_roots, &database_projects);
         let categories = summarize_categories(&items);
         let total_bytes = items
             .iter()
@@ -1850,15 +1856,8 @@ fn scan_protected(home: &Path, items: &mut Vec<CleanupItem>) -> Result<(), Clean
 fn group_projects(
     sessions: &[SessionRecord],
     project_roots: &HashMap<String, String>,
-    home: &Path,
-    warnings: &mut Vec<String>,
+    database_projects: &HashMap<String, String>,
 ) -> Vec<ProjectGroup> {
-    let database_projects = read_database_projects(home).unwrap_or_else(|error| {
-        warnings.push(format!(
-            "Project registry metadata was ignored because its schema is not recognized: {error}"
-        ));
-        HashMap::new()
-    });
     let mut groups: BTreeMap<String, ProjectGroup> = BTreeMap::new();
     for session in sessions {
         let Some(root) = project_roots.get(&session.id) else {
@@ -2063,10 +2062,15 @@ fn codex_is_running(home: &Path) -> bool {
     })
 }
 
-fn project_roots_by_session(sessions: &[SessionRecord]) -> HashMap<String, String> {
+fn project_roots_by_session(
+    sessions: &[SessionRecord],
+    database_projects: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut roots: HashMap<String, String> = sessions
         .iter()
-        .filter_map(|session| project_root(&session.cwd).map(|root| (session.id.clone(), root)))
+        .filter_map(|session| {
+            project_root(&session.cwd, database_projects).map(|root| (session.id.clone(), root))
+        })
         .collect();
 
     // Child threads occasionally omit cwd even though their parent is project-associated.
@@ -2092,7 +2096,7 @@ fn project_roots_by_session(sessions: &[SessionRecord]) -> HashMap<String, Strin
     roots
 }
 
-fn project_root(cwd: &str) -> Option<String> {
+fn project_root(cwd: &str, database_projects: &HashMap<String, String>) -> Option<String> {
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return None;
@@ -2102,12 +2106,29 @@ fn project_root(cwd: &str) -> Option<String> {
         return None;
     }
     let normalized = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Some(root) = database_projects
+        .keys()
+        .filter_map(|root| {
+            let path = Path::new(root);
+            if !path.is_absolute() {
+                return None;
+            }
+            let normalized_root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            normalized
+                .starts_with(&normalized_root)
+                .then_some((root, normalized_root.components().count()))
+        })
+        .max_by_key(|(_, depth)| *depth)
+        .map(|(root, _)| root.clone())
+    {
+        return Some(root);
+    }
     for ancestor in normalized.ancestors() {
         if ancestor.join(".git").exists() {
             return Some(ancestor.to_string_lossy().into_owned());
         }
     }
-    Some(normalized.to_string_lossy().into_owned())
+    None
 }
 
 fn project_id_for_root(root: &str) -> String {
@@ -2329,6 +2350,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp");
         let project = temp.path().join("demo-project");
         fs::create_dir_all(project.join(".git")).expect("git marker");
+        let database_projects = HashMap::new();
 
         let mut parent = record("parent", None);
         parent.cwd = project.to_string_lossy().into_owned();
@@ -2341,18 +2363,53 @@ mod tests {
         unassigned.size_bytes = 7;
         let sessions = vec![parent, child, unassigned];
 
-        let roots = project_roots_by_session(&sessions);
+        let roots = project_roots_by_session(&sessions, &database_projects);
         assert_eq!(roots.get("parent"), roots.get("child"));
         assert!(!roots.contains_key("unassigned"));
-        assert!(project_root("").is_none());
-        assert!(project_root("relative/path").is_none());
+        assert!(project_root("", &database_projects).is_none());
+        assert!(project_root("relative/path", &database_projects).is_none());
 
-        let mut warnings = Vec::new();
-        let projects = group_projects(&sessions, &roots, temp.path(), &mut warnings);
+        let projects = group_projects(&sessions, &roots, &database_projects);
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].session_ids, vec!["parent", "child"]);
         assert_eq!(projects[0].size_bytes, 15);
-        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn absolute_non_project_workspace_remains_unassigned() {
+        let temp = tempfile::tempdir().expect("temp");
+        let workspace = temp.path().join("Documents/Codex/2026-08-27/he-l");
+        fs::create_dir_all(workspace.join("work")).expect("workspace");
+        fs::create_dir_all(workspace.join("outputs")).expect("outputs");
+
+        let mut session = record("unlinked", None);
+        session.cwd = workspace.to_string_lossy().into_owned();
+        let database_projects = HashMap::new();
+        let roots = project_roots_by_session(&[session], &database_projects);
+
+        assert!(!roots.contains_key("unlinked"));
+        assert!(project_root(&workspace.to_string_lossy(), &database_projects).is_none());
+    }
+
+    #[test]
+    fn registered_non_git_project_is_grouped_by_its_known_root() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("notes");
+        let workspace = project.join("drafts");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let root = project.to_string_lossy().into_owned();
+        let database_projects = HashMap::from([(root.clone(), "Research notes".into())]);
+
+        let mut session = record("registered", None);
+        session.cwd = workspace.to_string_lossy().into_owned();
+        let sessions = vec![session];
+        let roots = project_roots_by_session(&sessions, &database_projects);
+        let projects = group_projects(&sessions, &roots, &database_projects);
+
+        assert_eq!(roots.get("registered"), Some(&root));
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Research notes");
+        assert_eq!(projects[0].roots, vec![root]);
     }
 
     fn record(id: &str, parent: Option<&str>) -> SessionRecord {
