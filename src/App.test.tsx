@@ -137,6 +137,28 @@ describe("CleanerX GUI", () => {
     expect(screen.getByText(/Ancestor of a filtered result/)).toBeVisible();
   });
 
+  it("keeps sessions without a project in a virtual root and filters recent updates by time", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+
+    expect(screen.getByRole("button", { name: "Collapse No project" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Select sessions with no project" })).toBeDisabled();
+    expect(screen.getByRole("option", { name: "No project" })).toHaveValue("__no_project");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by project" }), { target: { value: "__no_project" } });
+    expect(screen.getByRole("checkbox", { name: "CleanerX" })).toBeVisible();
+    expect(screen.queryByText("Design token migration")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by project" }), { target: { value: "all" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by updated time" }), { target: { value: "7" } });
+    expect(screen.getByText("Design token migration")).toBeVisible();
+    expect(screen.queryByText("Fix flaky integration tests")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Open details CleanerX"));
+    expect(within(screen.getByRole("dialog", { name: "CleanerX" })).getByText("No working directory")).toBeVisible();
+  });
+
   it("retains the flat list as an explicit alternate view", async () => {
     render(<App />);
     await screen.findByText("Managed data");

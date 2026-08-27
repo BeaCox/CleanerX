@@ -200,6 +200,7 @@ impl AgentAdapter for CodexAdapter {
         };
         augment_pinned_and_parents(&home, &mut sessions, &mut warnings);
         populate_descendants(&mut sessions);
+        let project_roots = project_roots_by_session(&sessions);
 
         let mut items = Vec::new();
         for session in &mut sessions {
@@ -230,9 +231,11 @@ impl AgentAdapter for CodexAdapter {
                 id: format!("session:{}", session.id),
                 category,
                 title: session.name.clone(),
-                subtitle: Some(session.cwd.clone()),
+                subtitle: (!session.cwd.trim().is_empty()).then(|| session.cwd.clone()),
                 paths,
-                project_id: Some(project_id_for_cwd(&session.cwd)),
+                project_id: project_roots
+                    .get(&session.id)
+                    .map(|root| project_id_for_root(root)),
                 thread_id: Some(session.id.clone()),
                 size_bytes: session.size_bytes,
                 modified_at: session.updated_at,
@@ -266,7 +269,7 @@ impl AgentAdapter for CodexAdapter {
         )?;
         scan_protected(&home, &mut items)?;
 
-        let projects = group_projects(&sessions, &home, &mut warnings);
+        let projects = group_projects(&sessions, &project_roots, &home, &mut warnings);
         let categories = summarize_categories(&items);
         let total_bytes = items
             .iter()
@@ -1846,6 +1849,7 @@ fn scan_protected(home: &Path, items: &mut Vec<CleanupItem>) -> Result<(), Clean
 
 fn group_projects(
     sessions: &[SessionRecord],
+    project_roots: &HashMap<String, String>,
     home: &Path,
     warnings: &mut Vec<String>,
 ) -> Vec<ProjectGroup> {
@@ -1857,11 +1861,13 @@ fn group_projects(
     });
     let mut groups: BTreeMap<String, ProjectGroup> = BTreeMap::new();
     for session in sessions {
-        let root = project_root(&session.cwd);
-        let id = project_id_for_cwd(&root);
-        let database_name = database_projects.get(&root).cloned();
+        let Some(root) = project_roots.get(&session.id) else {
+            continue;
+        };
+        let id = project_id_for_root(root);
+        let database_name = database_projects.get(root).cloned();
         let name = database_name.unwrap_or_else(|| {
-            Path::new(&root)
+            Path::new(root)
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
@@ -2057,19 +2063,54 @@ fn codex_is_running(home: &Path) -> bool {
     })
 }
 
-fn project_root(cwd: &str) -> String {
+fn project_roots_by_session(sessions: &[SessionRecord]) -> HashMap<String, String> {
+    let mut roots: HashMap<String, String> = sessions
+        .iter()
+        .filter_map(|session| project_root(&session.cwd).map(|root| (session.id.clone(), root)))
+        .collect();
+
+    // Child threads occasionally omit cwd even though their parent is project-associated.
+    // Inherit only from a known parent; never infer a root from CleanerX's own process cwd.
+    loop {
+        let inherited: Vec<_> = sessions
+            .iter()
+            .filter(|session| !roots.contains_key(&session.id))
+            .filter_map(|session| {
+                let parent = session.parent_thread_id.as_ref()?;
+                roots
+                    .get(parent)
+                    .cloned()
+                    .map(|root| (session.id.clone(), root))
+            })
+            .collect();
+        if inherited.is_empty() {
+            break;
+        }
+        roots.extend(inherited);
+    }
+
+    roots
+}
+
+fn project_root(cwd: &str) -> Option<String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
     let path = Path::new(cwd);
+    if !path.is_absolute() {
+        return None;
+    }
     let normalized = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     for ancestor in normalized.ancestors() {
         if ancestor.join(".git").exists() {
-            return ancestor.to_string_lossy().into_owned();
+            return Some(ancestor.to_string_lossy().into_owned());
         }
     }
-    normalized.to_string_lossy().into_owned()
+    Some(normalized.to_string_lossy().into_owned())
 }
 
-fn project_id_for_cwd(cwd: &str) -> String {
-    let root = project_root(cwd);
+fn project_id_for_root(root: &str) -> String {
     Uuid::new_v5(&Uuid::NAMESPACE_URL, root.as_bytes()).to_string()
 }
 
@@ -2281,6 +2322,37 @@ mod tests {
         assert!(snapshot.installation.capabilities.thread_list);
         assert!(snapshot.installation.capabilities.thread_delete);
         assert!(!snapshot.installation.capabilities.report_only);
+    }
+
+    #[test]
+    fn project_grouping_keeps_missing_cwd_unassigned_without_splitting_children() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("demo-project");
+        fs::create_dir_all(project.join(".git")).expect("git marker");
+
+        let mut parent = record("parent", None);
+        parent.cwd = project.to_string_lossy().into_owned();
+        parent.size_bytes = 10;
+        let mut child = record("child", Some("parent"));
+        child.cwd.clear();
+        child.size_bytes = 5;
+        let mut unassigned = record("unassigned", None);
+        unassigned.cwd.clear();
+        unassigned.size_bytes = 7;
+        let sessions = vec![parent, child, unassigned];
+
+        let roots = project_roots_by_session(&sessions);
+        assert_eq!(roots.get("parent"), roots.get("child"));
+        assert!(!roots.contains_key("unassigned"));
+        assert!(project_root("").is_none());
+        assert!(project_root("relative/path").is_none());
+
+        let mut warnings = Vec::new();
+        let projects = group_projects(&sessions, &roots, temp.path(), &mut warnings);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].session_ids, vec!["parent", "child"]);
+        assert_eq!(projects[0].size_bytes, 15);
+        assert!(warnings.is_empty());
     }
 
     fn record(id: &str, parent: Option<&str>) -> SessionRecord {

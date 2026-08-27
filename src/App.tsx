@@ -72,6 +72,8 @@ const categoryTranslation: Record<StorageCategory, string> = {
   protected: "categoryProtected",
 };
 
+const NO_PROJECT_ID = "__no_project";
+
 const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
   { id: "overview", icon: HardDrive, label: "overview" },
   { id: "sessions", icon: Bot, label: "sessions" },
@@ -435,16 +437,19 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   const [project, setProject] = useState("all");
   const [source, setSource] = useState("all");
   const [state, setState] = useState("all");
+  const [updatedWithin, setUpdatedWithin] = useState("all");
   const [displayMode, setDisplayMode] = useState<"tree" | "list">("tree");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(sessionTreeExpansionKeys(snapshot, new Set(snapshot.sessions.map((session) => session.id)))));
+  const hasNoProjectSessions = snapshot.sessions.some((session) => !snapshot.items.find((candidate) => candidate.threadId === session.id)?.projectId);
   const rows = snapshot.sessions.filter((session) => {
     const item = snapshot.items.find((candidate) => candidate.threadId === session.id);
     const matchesQuery = `${session.name} ${session.cwd}`.toLowerCase().includes(query.toLowerCase());
-    const matchesProject = project === "all" || item?.projectId === project;
+    const matchesProject = project === "all" || (project === NO_PROJECT_ID ? Boolean(item && !item.projectId) : item?.projectId === project);
     const matchesSource = source === "all" || session.source === source;
     const matchesState = state === "all" || (state === "archived" ? session.archived : !session.archived);
-    return matchesQuery && matchesProject && matchesSource && matchesState;
-  });
+    const matchesUpdated = updatedWithin === "all" || isWithinDays(session.updatedAt, Number(updatedWithin));
+    return matchesQuery && matchesProject && matchesSource && matchesState && matchesUpdated;
+  }).sort(sortSessions);
   const rowItems = rows
     .map((session) => snapshot.items.find((candidate) => candidate.threadId === session.id))
     .filter((item): item is CleanupItem => Boolean(item));
@@ -456,9 +461,10 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   return <section className="panel-card table-panel session-panel">
     <div className="filter-row session-filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
-      <select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-      <select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
-      <select value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
+      <select aria-label={t("projectFilter")} value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}{hasNoProjectSessions && <option value={NO_PROJECT_ID}>{t("noProject")}</option>}</select>
+      <select aria-label={t("sourceFilter")} value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
+      <select aria-label={t("stateFilter")} value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
+      <select aria-label={t("updatedFilter")} value={updatedWithin} onChange={(event) => setUpdatedWithin(event.target.value)}><option value="all">{t("allTime")}</option><option value="7">{t("last7Days")}</option><option value="30">{t("last30Days")}</option></select>
     </div>
     <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut>
       <div className="view-switcher" aria-label={t("viewMode")}>
@@ -479,11 +485,11 @@ function SessionListTable({ snapshot, rows, selected, toggle, inspect }: Selecti
   return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
         const item = snapshot.items.find((candidate) => candidate.threadId === session.id)!;
-        const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name;
+        const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name ?? t("noProject");
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
           <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
           <td><div className="session-name session-detail-trigger"><span className="session-glyph"><Bot size={16} /></span><span className="session-copy"><strong title={session.name}>{session.name}</strong><span>{session.archived && <Archive size={12} />}{session.pinned && <Pin size={12} />}{session.archived ? t("archived") : statusLabel(session.status, t)}</span></span></div></td>
-          <td className="session-col-project"><span className="pill" title={projectName}>{projectName ?? "—"}</span></td><td className="session-col-source"><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
+          <td className="session-col-project"><span className="pill" title={projectName}>{projectName}</span></td><td className="session-col-source"><span className="source-label" title={sourceLabel(session.source)}>{sourceLabel(session.source)}</span></td><td className="session-col-updated">{session.updatedAt ? relativeTime(session.updatedAt, i18n.language) : "—"}</td><td className="session-col-size"><strong>{formatBytes(session.sizeBytes)}</strong></td>
         </tr>;
       })}
     </tbody></table></div>;
@@ -494,10 +500,10 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
   const sessionById = new Map(snapshot.sessions.map((session) => [session.id, session]));
   const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
   const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
-  const ungroupedIds = [...visibleSessionIds].filter((id) => !assigned.has(id));
+  const noProjectIds = [...visibleSessionIds].filter((id) => !assigned.has(id));
   const projects: ProjectGroup[] = [
     ...snapshot.projects,
-    ...(ungroupedIds.length ? [{ id: "__ungrouped", name: t("ungrouped"), roots: [], sessionIds: ungroupedIds, sizeBytes: ungroupedIds.reduce((sum, id) => sum + (sessionById.get(id)?.sizeBytes ?? 0), 0) }] : []),
+    ...(noProjectIds.length ? [{ id: NO_PROJECT_ID, name: t("noProject"), roots: [], sessionIds: noProjectIds, sizeBytes: noProjectIds.reduce((sum, id) => sum + (sessionById.get(id)?.sizeBytes ?? 0), 0) }] : []),
   ];
 
   const renderSession = (session: SessionRecord, projectIds: Set<string>, depth: number): ReactNode[] => {
@@ -539,14 +545,15 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
     const selectableItems = projectItems.filter((item) => !item.blockedReason && matchingSessionIds.has(item.threadId!));
     const allSelected = selectableItems.length > 0 && selectableItems.every((item) => selected.has(item.id));
     const toggleProject = () => selectMany(selectableItems, !allSelected);
+    const noProject = project.id === NO_PROJECT_ID;
     return [<tbody className="tree-project" key={project.id}>
       <tr className="tree-project-row">
-        <td><CheckBox checked={allSelected} disabled={!selectableItems.length} onChange={toggleProject} label={`${t("selectProject")} ${project.name}`} /></td>
+        <td><CheckBox checked={allSelected} disabled={!selectableItems.length} onChange={toggleProject} label={noProject ? t("selectNoProjectSessions") : `${t("selectProject")} ${project.name}`} /></td>
         <td>
           <button type="button" className="project-tree-toggle" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${project.name}`} onClick={() => toggleExpanded(projectKey)}>
             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-            <span className="project-icon compact"><FolderCode size={16} /></span>
-            <span className="project-tree-copy"><strong title={project.name}>{project.name}</strong><code title={project.roots[0] ?? t("ungrouped")}>{project.roots[0] ?? t("ungrouped")}</code></span>
+            <span className="project-icon compact">{noProject ? <Bot size={16} /> : <FolderCode size={16} />}</span>
+            <span className="project-tree-copy"><strong title={project.name}>{project.name}</strong>{noProject ? <span>{t("sessionCount", { count: sessions.length })}</span> : <code title={project.roots[0]}>{project.roots[0]}</code>}</span>
           </button>
         </td>
         <td className="session-col-source" />
@@ -566,7 +573,7 @@ function sessionTreeExpansionKeys(snapshot: InventorySnapshot, visibleSessionIds
   const keys = snapshot.projects
     .filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id)))
     .map((project) => `project:${project.id}`);
-  if ([...visibleSessionIds].some((id) => !assigned.has(id))) keys.push("project:__ungrouped");
+  if ([...visibleSessionIds].some((id) => !assigned.has(id))) keys.push(`project:${NO_PROJECT_ID}`);
   keys.push(...snapshot.sessions
     .filter((session) => visibleSessionIds.has(session.id) && snapshot.sessions.some((candidate) => candidate.parentThreadId === session.id && visibleSessionIds.has(candidate.id)))
     .map((session) => `session:${session.id}`));
@@ -590,6 +597,12 @@ function includeSessionAncestors(sessions: SessionRecord[], matchingIds: Set<str
 
 function sortSessions(left: SessionRecord, right: SessionRecord) {
   return new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime();
+}
+
+function isWithinDays(value: string | undefined, days: number) {
+  if (!value || !Number.isFinite(days) || days <= 0) return false;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= Date.now() - days * 86_400_000;
 }
 
 function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
@@ -751,14 +764,14 @@ function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: C
           <h3>{t("detailsSession")}</h3>
           <dl className="detail-facts">
             <div><dt>{t("detailsSessionId")}</dt><dd><code>{session.id}</code></dd></div>
-            <div><dt>{t("project")}</dt><dd>{project?.name ?? t("ungrouped")}</dd></div>
+            <div><dt>{t("project")}</dt><dd>{project?.name ?? t("noProject")}</dd></div>
             <div><dt>{t("source")}</dt><dd>{sourceLabel(session.source)}</dd></div>
             <div><dt>{t("detailsStatus")}</dt><dd>{session.archived ? t("archived") : statusLabel(session.status, t)}{session.pinned ? ` · ${t("pinned")}` : ""}</dd></div>
             <div><dt>{t("detailsCreated")}</dt><dd>{session.createdAt ? formatDate(session.createdAt, i18n.language) : "—"}</dd></div>
             <div><dt>{t("updated")}</dt><dd>{session.updatedAt ? formatDate(session.updatedAt, i18n.language) : "—"}</dd></div>
             <div><dt>{t("detailsParent")}</dt><dd><code>{session.parentThreadId ?? "—"}</code></dd></div>
             <div><dt>{t("detailsChildren")}</dt><dd>{session.descendantIds.length}</dd></div>
-            <div className="detail-fact-wide"><dt>{t("detailsWorkingDirectory")}</dt><dd><code>{session.cwd}</code></dd></div>
+            <div className="detail-fact-wide"><dt>{t("detailsWorkingDirectory")}</dt><dd>{session.cwd ? <code>{session.cwd}</code> : t("noWorkingDirectory")}</dd></div>
             {project?.roots[0] && <div className="detail-fact-wide"><dt>{t("detailsProjectRoot")}</dt><dd><code>{project.roots[0]}</code></dd></div>}
           </dl>
         </section>}
@@ -899,7 +912,7 @@ function StorageLoadingView({ view, failed }: { view: ViewId; failed: boolean })
   </div>;
   if (view === "sessions") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
     {status}
-    <section className="panel-card table-panel"><div className="filter-row"><div className="search-box skeleton-control"><Search size={16} /><span>{t("filterSessions")}</span></div>{[0, 1, 2].map((index) => <div className="skeleton-control compact" key={index}><span className="skeleton skeleton-line" /></div>)}</div><div className="bulk-actions"><span>{t("waitingForScanData")}</span></div><div className="skeleton-table">{[0, 1, 2, 3, 4].map((index) => <div key={index}><span className="skeleton skeleton-dot" /><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-line skeleton-short" /></div>)}</div></section>
+    <section className="panel-card table-panel"><div className="filter-row session-filter-row"><div className="search-box skeleton-control"><Search size={16} /><span>{t("filterSessions")}</span></div>{[0, 1, 2, 3].map((index) => <div className="skeleton-control compact" key={index}><span className="skeleton skeleton-line" /></div>)}</div><div className="bulk-actions"><span>{t("waitingForScanData")}</span></div><div className="skeleton-table">{[0, 1, 2, 3, 4].map((index) => <div key={index}><span className="skeleton skeleton-dot" /><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line skeleton-short" /><span className="skeleton skeleton-line skeleton-short" /></div>)}</div></section>
   </div>;
   if (view === "memory") return <div className="page-stack storage-skeleton" aria-busy={!failed}>
     {status}

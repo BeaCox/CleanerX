@@ -20,9 +20,11 @@ When App Server listing fails, CleanerX may query a recognized state database re
 | Temporary data older than retention | Off | No | Allowlisted path removal |
 | Auth/config/rules/skills/plugins | Never | N/A | Protected |
 
-Projects are associations derived from session `cwd`, known project roots and ancestor `.git` markers. Project cleanup selects linked Agent records only. It never makes a project directory an allowed mutation root.
+Projects are associations derived from a non-empty absolute session `cwd`, known project roots and ancestor `.git` markers. A child with no recorded `cwd` may inherit an already resolved parent association; CleanerX never resolves an empty or relative `cwd` against its own process directory. Sessions that still have no association remain outside `projects` and are displayed under the UI-only “No project” virtual root. Project cleanup selects linked Agent records only. It never makes a project directory an allowed mutation root.
 
 Content preview is separate from inventory. The Tauri boundary accepts only an item ID from the current snapshot, resolves its known paths on the Rust side, rejects symlinks and paths outside Codex Home/Application Support, and applies block/byte limits. Recognized memory and log schemas are queried read-only; unknown SQLite schemas and unsupported binaries produce an explicit unavailable preview instead of a guessed query or raw dump. The media gallery uses a separate thumbnail command that reads at most the first supported image (PNG, JPEG, GIF, or WebP) up to 5 MB from a visible attachment/generated item; it cannot return text or enumerate content into the frontend. Protected authentication and configuration content is never opened.
+
+Memory semantics and future entry-editing routes are specified in [Agent memory research and implementation plan](memory-management.md). Instructions and rules remain protected even when an Agent presents them alongside memory in its own UI.
 
 ## Transaction states
 

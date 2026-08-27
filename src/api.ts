@@ -241,11 +241,11 @@ function readMockSettings(): AppSettings {
 
 function createMockSnapshot(): InventorySnapshot {
   const sessions: SessionRecord[] = [
-    session("019f…c47", "CleanerX", "/Users/demo/Developer/CleanerX", "appServer", 28_420_000, false, true),
-    session("019f…a91", "Design token migration", "/Users/demo/Developer/atlas-web", "vscode", 15_760_000),
-    session("019e…01c", "Fix flaky integration tests", "/Users/demo/Developer/pulse-api", "cli", 8_940_000),
-    session("019d…3f2", "Release checklist", "/Users/demo/Developer/atlas-web", "cli", 5_120_000, true),
-    session("019c…9b4", "Database indexing review", "/Users/demo/Developer/pulse-api", "vscode", 4_210_000, true),
+    session("019f…c47", "CleanerX", "", "appServer", 28_420_000, false, true, 0),
+    session("019f…a91", "Design token migration", "/Users/demo/Developer/atlas-web", "vscode", 15_760_000, false, false, 2),
+    session("019e…01c", "Fix flaky integration tests", "/Users/demo/Developer/pulse-api", "cli", 8_940_000, false, false, 10),
+    session("019d…3f2", "Release checklist", "/Users/demo/Developer/atlas-web", "cli", 5_120_000, true, false, 20),
+    session("019c…9b4", "Database indexing review", "/Users/demo/Developer/pulse-api", "vscode", 4_210_000, true, false, 40),
   ];
   sessions[1].descendantIds = [sessions[3].id];
   sessions[3].parentThreadId = sessions[1].id;
@@ -254,9 +254,9 @@ function createMockSnapshot(): InventorySnapshot {
       id: `session:${record.id}`,
       category: (record.archived ? "archivedSession" : "session") as StorageCategory,
       title: record.name,
-      subtitle: record.cwd,
+      subtitle: record.cwd || undefined,
       paths: [`/Users/demo/.codex/sessions/${record.id}.jsonl`],
-      projectId: index === 0 ? "cleanerx" : index % 2 ? "atlas" : "pulse",
+      projectId: index === 0 ? undefined : index % 2 ? "atlas" : "pulse",
       threadId: record.id,
       sizeBytes: record.sizeBytes,
       modifiedAt: record.updatedAt,
@@ -412,7 +412,6 @@ function createMockSnapshot(): InventorySnapshot {
     items,
     sessions,
     projects: [
-      { id: "cleanerx", name: "CleanerX", roots: ["/Users/demo/Developer/CleanerX"], sessionIds: [sessions[0].id], sizeBytes: sessions[0].sizeBytes },
       { id: "atlas", name: "atlas-web", roots: ["/Users/demo/Developer/atlas-web"], sessionIds: [sessions[1].id, sessions[3].id], sizeBytes: sessions[1].sizeBytes + sessions[3].sizeBytes },
       { id: "pulse", name: "pulse-api", roots: ["/Users/demo/Developer/pulse-api"], sessionIds: [sessions[2].id, sessions[4].id], sizeBytes: sessions[2].sizeBytes + sessions[4].sizeBytes },
     ],
@@ -429,6 +428,7 @@ function session(
   sizeBytes: number,
   archived = false,
   pinned = false,
+  updatedDaysAgo = 0,
 ): SessionRecord {
   return {
     id,
@@ -439,7 +439,7 @@ function session(
     pinned,
     status: pinned ? "loaded" : "notLoaded",
     createdAt: new Date(Date.now() - 12 * 86_400_000).toISOString(),
-    updatedAt: new Date(Date.now() - Math.random() * 10 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - updatedDaysAgo * 86_400_000).toISOString(),
     sizeBytes,
     descendantIds: [],
   };

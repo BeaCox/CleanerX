@@ -11,7 +11,7 @@ Agent
     └── Another root session
 ```
 
-A project can contain multiple independent root sessions, so this is a forest rather than a strict single tree. Sessions with no known parent stay at the project root. Unknown or missing project associations are kept under an explicit “Unlinked project” node instead of being discarded.
+A project can contain multiple independent root sessions, so this is a forest rather than a strict single tree. Sessions with no known parent stay at the project root. Unknown or missing project associations are kept under an explicit “No project” virtual root instead of being discarded. This node is presentation-only: it is not written to the Agent's project registry and selecting it selects only visible, eligible session data.
 
 ## Evidence from supported and planned agents
 
@@ -36,7 +36,9 @@ Official references:
 
 - Tree view is the default on the Sessions page. Project roots are grouping nodes there; CleanerX does not maintain a duplicate Projects page.
 - Sessions page retains a flat list toggle for sorting, comparison, and large-result workflows.
+- “Recent” is an updated-time filter (currently last 7 or 30 days), not a durable tree node. Its membership changes over time and never creates or changes a project association.
 - Filtering a child keeps its ancestor rows as non-selectable context.
 - Project selection operates only on associated Agent data; it never selects or traverses the source directory.
+- The “No project” virtual root sorts sessions by most recent update. A known `cwd` may be shown only as recognition metadata; an absent `cwd` is displayed explicitly and is never inferred from CleanerX's working directory.
 - A parent cleanup remains explicit. The confirmation plan expands and displays every descendant that the Agent's official delete operation will also remove.
 - CleanerX does not inspect message bodies while building the hierarchy. Codex content can be loaded on demand in a bounded detail view; Agent-specific entry-level branching, such as Pi's internal message tree, remains out of scope for the MVP hierarchy.

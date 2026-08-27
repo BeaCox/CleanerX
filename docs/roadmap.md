@@ -9,6 +9,7 @@ CleanerX currently has:
 - a Rust workspace with `cleanerx-core`, `adapter-codex`, and a narrow Tauri command layer;
 - a React/TypeScript GUI for Codex inventory, cleanup planning, backup listing, and settings;
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
+- a presentation-only “No project” session root plus updated-time filtering for recent sessions;
 - a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
 - persisted Chinese/English and system-aware light/dark appearance preferences with immediate preview;
 - branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCOx copyright metadata;
@@ -42,6 +43,7 @@ Priority: required before a broad public MVP release.
 
 - Validate session deletion against active, archived, pinned, loaded, parent, child, and subagent combinations using an isolated live App Server test environment.
 - Complete the memory-reset flow: require Codex exit, optionally create a consistent memory/database backup, call `memory/reset`, rescan, and expose capability-specific errors without disabling session cleanup.
+- Formalize the cross-Agent memory capability model described in [Agent memory research](memory-management.md); Codex remains inspect/reset-only unless an official entry-level mutation API appears.
 - Implement and validate log maintenance only for recognized schemas using transactions, WAL checkpointing, and compaction. Unknown schemas stay report-only.
 - Remove attachments/generated content only after the owning session mutation succeeds, then verify references and residual files by rescan.
 
@@ -86,6 +88,8 @@ Priority: portability before additional Agent adapters.
 ## M4 — Additional Agent adapters
 
 Priority order: Claude Code, OpenCode, then Pi, subject to documented interface stability.
+
+Claude Code is the first planned entry-level memory editor because its official auto-memory format is user-editable Markdown. OpenCode and Pi do not receive a native memory editor until their official capabilities define one; rules and extension-owned data remain protected or unsupported. See [Agent memory research](memory-management.md).
 
 Each adapter progresses through the same gates:
 
