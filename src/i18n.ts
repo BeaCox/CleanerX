@@ -1,5 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
+import { defaultUiPreferences, readCachedPreferences, resolveLocalePreference } from "./preferenceStore";
 
 const resources = {
   zh: {
@@ -73,6 +74,8 @@ const resources = {
       logRetention: "日志保留天数",
       tempRetention: "临时文件保留小时",
       save: "保存设置",
+      savingSettings: "正在保存…",
+      settingsSaved: "设置已保存",
       loadingSettings: "正在读取本机设置",
       system: "跟随系统",
       light: "浅色",
@@ -257,6 +260,8 @@ const resources = {
       logRetention: "Log retention days",
       tempRetention: "Temporary file retention hours",
       save: "Save settings",
+      savingSettings: "Saving…",
+      settingsSaved: "Settings saved",
       loadingSettings: "Loading local settings",
       system: "System",
       light: "Light",
@@ -372,11 +377,11 @@ const resources = {
   },
 };
 
-const systemLanguage = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+const initialPreferences = readCachedPreferences() ?? defaultUiPreferences;
 
 void i18n.use(initReactI18next).init({
   resources,
-  lng: systemLanguage,
+  lng: resolveLocalePreference(initialPreferences.locale),
   fallbackLng: "en",
   interpolation: { escapeValue: false },
 });

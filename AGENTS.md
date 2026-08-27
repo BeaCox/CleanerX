@@ -49,6 +49,7 @@ These instructions apply to the entire repository. CleanerX deletes private loca
 - Open item details by activating the row or card itself; do not add a redundant view-details icon or button. Embedded selection and disclosure controls must not open details.
 - Tree expansion uses one expand-all/collapse-all toggle in the existing filter toolbar; never add a separate tree-controls row. Media without a supported thumbnail uses an icon-only placeholder without visible explanatory copy.
 - Keep Chinese and English translations in sync. Use system theme, keyboard-accessible controls, visible focus states, and reduced-motion preferences.
+- Locale and theme choices preview immediately, persist only after a successful settings write, apply before the first useful paint from a local preference cache, and follow OS changes while set to system. Unsupported persisted values must be rejected at the Rust boundary.
 - Avoid microtype for operational data. Body/table/control text should normally be at least 12 px; auxiliary monospace metadata may be 10–11 px when contrast remains accessible.
 
 ## Design system: field-manual console

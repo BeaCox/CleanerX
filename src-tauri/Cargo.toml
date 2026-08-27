@@ -24,3 +24,6 @@ uuid.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2.5.4", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -15,11 +15,11 @@ import {
   GitBranch,
   HardDrive,
   Image,
-  Languages,
   List,
   LoaderCircle,
   LockKeyhole,
   MemoryStick,
+  Monitor,
   Moon,
   Pin,
   RefreshCw,
@@ -32,6 +32,8 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import i18n from "./i18n";
+import { applyPreferences, watchSystemPreferences } from "./preferences";
+import { cachePreferences } from "./preferenceStore";
 import type {
   AppSettings,
   BackupRecord,
@@ -118,9 +120,9 @@ export default function App() {
     loaded.current = true;
     void Promise.all([api.getSettings(), api.listBackups()])
       .then(([nextSettings, nextBackups]) => {
+        cachePreferences(nextSettings);
         setSettings(nextSettings);
         setBackups(nextBackups);
-        applyPreferences(nextSettings);
       })
       .catch((reason) => setError(messageOf(reason)));
     void scan();
@@ -131,6 +133,13 @@ export default function App() {
     const timeout = window.setTimeout(() => setNotice(undefined), 2800);
     return () => window.clearTimeout(timeout);
   }, [notice]);
+
+  useEffect(() => {
+    if (!settings) return;
+    void applyPreferences(settings);
+    if (view === "settings") return;
+    return watchSystemPreferences(settings);
+  }, [settings, view]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -240,9 +249,10 @@ export default function App() {
   const saveSettings = async (next: AppSettings) => {
     try {
       const saved = await api.updateSettings(next);
+      cachePreferences(saved);
+      await applyPreferences(saved);
       setSettings(saved);
-      applyPreferences(saved);
-      setNotice(t("save"));
+      setNotice(i18n.t("settingsSaved"));
     } catch (reason) {
       setError(messageOf(reason));
     }
@@ -659,27 +669,38 @@ function BackupsView({ backups, restore, requestPurge, busy }: { backups: Backup
   return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
-function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => void }) {
+function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => Promise<void> }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(value);
-  useEffect(() => setForm(value), [value]);
-  return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
+  const [saving, setSaving] = useState(false);
+  const persistedPreferences = useRef(value);
+  useEffect(() => {
+    persistedPreferences.current = value;
+    setForm(value);
+  }, [value]);
+  useEffect(() => () => { void applyPreferences(persistedPreferences.current); }, []);
+  useEffect(() => watchSystemPreferences(form), [form.locale, form.theme]);
+  const preview = (next: AppSettings) => {
+    setForm(next);
+    void applyPreferences(next);
+  };
+  return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); setSaving(true); void onSave(form).finally(() => setSaving(false)); }}>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsGeneral")}</h3>
-      <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
-      <Setting label={t("language")}><div className="segmented"><button type="button" className={form.locale === "system" ? "active" : ""} onClick={() => setForm({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} onClick={() => setForm({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} onClick={() => setForm({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
-      <Setting label={t("appearance")}><div className="segmented"><button type="button" className={form.theme === "system" ? "active" : ""} onClick={() => setForm({ ...form, theme: "system" })}><Sun size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} onClick={() => setForm({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} onClick={() => setForm({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
+      <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
+      <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
+      <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
     </section>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>
-      <div className="retention-grid"><Setting label={t("backupRetention")}><input type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
+      <div className="retention-grid"><Setting label={t("backupRetention")}><input aria-label={t("backupRetention")} type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input aria-label={t("logRetention")} type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input aria-label={t("tempRetention")} type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
     </section>
-    <div className="settings-footer"><button className="primary-button" type="submit">{t("save")}</button></div>
+    <div className="settings-footer"><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle size={14} className="spinning" />}{saving ? t("savingSettings") : t("save")}</button></div>
   </form>;
 }
 
 function Setting({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return <label className="setting-row"><div><strong>{label}</strong>{hint && <span>{hint}</span>}</div>{children}</label>;
+  return <div className="setting-row"><div><strong>{label}</strong>{hint && <span>{hint}</span>}</div>{children}</div>;
 }
 
 function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: CleanupItem; snapshot: InventorySnapshot; selected: boolean; toggle: () => void; close: () => void }) {
@@ -999,8 +1020,3 @@ function contentSourceLabel(source: string, t: (key: string) => string) {
   return source;
 }
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
-function applyPreferences(settings: AppSettings) {
-  const language = settings.locale === "system" ? (navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en") : settings.locale;
-  void i18n.changeLanguage(language);
-  document.documentElement.dataset.theme = settings.theme;
-}

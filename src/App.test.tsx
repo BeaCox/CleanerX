@@ -39,6 +39,39 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByRole("button", { name: "Scanning…" })).not.toBeInTheDocument();
   });
 
+  it("previews and persists interface language and appearance", async () => {
+    const first = render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "中文" }));
+    expect(await screen.findByRole("button", { name: "保存设置" })).toBeVisible();
+    expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
+
+    fireEvent.click(screen.getByRole("button", { name: "深色" }));
+    expect(screen.getByRole("button", { name: "深色" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(await screen.findByText("设置已保存")).toBeVisible();
+    first.unmount();
+
+    render(<App />);
+    expect(await screen.findByText("可管理数据")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("button", { name: "中文" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "深色" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    fireEvent.click(screen.getByRole("button", { name: "浅色" }));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+    expect(await screen.findByRole("button", { name: "概览" })).toBeVisible();
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
   it("filters sessions before a detail is opened", async () => {
     render(<App />);
     await screen.findByText("Managed data");

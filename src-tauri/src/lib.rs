@@ -403,6 +403,16 @@ fn update_settings(
 }
 
 fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
+    if !matches!(settings.locale.as_str(), "system" | "zh" | "en") {
+        return Err(CleanerError::InvalidRequest(
+            "Unsupported interface language".into(),
+        ));
+    }
+    if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {
+        return Err(CleanerError::InvalidRequest(
+            "Unsupported appearance setting".into(),
+        ));
+    }
     if let Some(home) = &settings.custom_codex_home
         && !Path::new(home).is_absolute()
     {
@@ -612,6 +622,7 @@ fn load_settings(data_dir: &Path) -> AppSettings {
     fs::File::open(data_dir.join("settings.json"))
         .ok()
         .and_then(|file| serde_json::from_reader(file).ok())
+        .filter(|settings| validate_settings(settings).is_ok())
         .unwrap_or_default()
 }
 
@@ -649,4 +660,44 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running CleanerX");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_settings, validate_settings};
+    use cleanerx_core::AppSettings;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn validates_locale_and_theme_settings() {
+        let settings = AppSettings::default();
+        assert!(validate_settings(&settings).is_ok());
+
+        let mut invalid_locale = settings.clone();
+        invalid_locale.locale = "fr".into();
+        assert!(validate_settings(&invalid_locale).is_err());
+
+        let mut invalid_theme = settings;
+        invalid_theme.theme = "neon".into();
+        assert!(validate_settings(&invalid_theme).is_err());
+    }
+
+    #[test]
+    fn invalid_persisted_preferences_fall_back_to_defaults() {
+        let directory = tempdir().expect("temp settings directory");
+        let settings = AppSettings {
+            locale: "unsupported".into(),
+            ..AppSettings::default()
+        };
+        fs::write(
+            directory.path().join("settings.json"),
+            serde_json::to_vec(&settings).expect("serialize settings"),
+        )
+        .expect("write settings");
+
+        let loaded = load_settings(directory.path());
+        assert_eq!(loaded.locale, "system");
+        assert_eq!(loaded.theme, "system");
+    }
 }

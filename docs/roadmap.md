@@ -10,6 +10,7 @@ CleanerX currently has:
 - a React/TypeScript GUI for Codex inventory, cleanup planning, backup listing, and settings;
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
 - a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
+- persisted Chinese/English and system-aware light/dark appearance preferences with immediate preview;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;

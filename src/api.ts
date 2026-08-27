@@ -21,7 +21,7 @@ declare global {
 const inTauri = () => Boolean(window.__TAURI_INTERNALS__);
 let mockSnapshot = createMockSnapshot();
 const mockPlans = new Map<string, CleanupPlan>();
-let mockSettings: AppSettings = {
+const defaultMockSettings: AppSettings = {
   locale: "system",
   theme: "system",
   backupRetentionDays: 30,
@@ -176,7 +176,7 @@ export const api = {
       mockBackups = [{
         id: backupId,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + mockSettings.backupRetentionDays * 86_400_000).toISOString(),
+        expiresAt: new Date(Date.now() + readMockSettings().backupRetentionDays * 86_400_000).toISOString(),
         archivePath: `/Users/demo/Library/Application Support/CleanerX/backups/${backupId}.cxb`,
         archiveBytes: Math.round(plan.estimatedBackupBytes * 0.62),
         originalBytes: plan.estimatedBackupBytes,
@@ -215,18 +215,29 @@ export const api = {
 
   async getSettings(): Promise<AppSettings> {
     if (inTauri()) return invoke("get_settings");
-    return structuredClone(mockSettings);
+    return readMockSettings();
   },
 
   async updateSettings(settings: AppSettings): Promise<AppSettings> {
     if (inTauri()) return invoke("update_settings", { settings });
-    mockSettings = structuredClone(settings);
+    window.localStorage.setItem("cleanerx.mock.settings.v1", JSON.stringify(settings));
     return structuredClone(settings);
   },
 };
 
 const delay = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function readMockSettings(): AppSettings {
+  try {
+    const stored = window.localStorage.getItem("cleanerx.mock.settings.v1");
+    return stored
+      ? { ...defaultMockSettings, ...JSON.parse(stored) as AppSettings }
+      : structuredClone(defaultMockSettings);
+  } catch {
+    return structuredClone(defaultMockSettings);
+  }
+}
 
 function createMockSnapshot(): InventorySnapshot {
   const sessions: SessionRecord[] = [
