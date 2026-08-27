@@ -4,88 +4,165 @@
 
 # CleanerX
 
-CleanerX 是一个本地优先的 coding agent 存储清理器。MVP 使用 Rust、Tauri 2 和 React 构建，专注于 macOS 13+ 上的 Codex 本地数据。
+CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current MVP supports Codex data on macOS 13+ and is built with Rust, Tauri 2, React, and TypeScript.
 
-它不会连接云端、上传数据或收集遥测。项目仅用于聚合 Codex 数据；CleanerX 不递归扫描项目目录，也不会删除源码。
+CleanerX itself does not connect to cloud services, upload data, or collect telemetry. Project paths are used only to organize sessions: CleanerX never recursively scans or modifies source directories.
 
-## MVP 能力
+> [!CAUTION]
+> CleanerX performs destructive operations on private local data. This repository is an engineering MVP and is not yet intended for broad production use. Review every cleanup plan before running it. Backups are optional and disabled by default, so cleanup without a backup is irreversible.
 
-- 通过 Codex App Server 分页读取当前、归档和子会话，并通过官方 `thread/delete` 删除会话树。
-- 按规范化项目根聚合会话，但从不修改项目目录或 Codex 项目注册信息。
-- 会话是项目数据的唯一入口，默认按“项目根 → 根会话 → 分支/子会话”树形展示，并保留可筛选的列表视图；不再设置功能重叠的独立项目页。
-- 会话、记忆、附件、生成内容、日志、缓存和临时文件均可打开详情；正文只在用户主动打开单项详情时按需、只读、限量加载，不进入扫描快照。
-- 统计会话 rollout、附件、生成图片、可视化、日志、缓存与临时文件的实际磁盘占用。
-- 所有清理项均不默认选择，用户可在当前筛选范围内手动全选、取消全选或逐项选择；固定和活动会话仍不可清理。
-- 重要数据先写入加密 `.cxb` 备份，验证完成后才会开始清理。
-- 认证、配置、规则、技能、插件与源码始终受保护。
-- 支持系统中英文、深浅色、键盘导航和减少动态效果。
+## Features
 
-## 安全模型
+- Discovers current, archived, root, and child Codex sessions through the Codex App Server.
+- Organizes sessions by project root in a tree, with a searchable flat-list alternative.
+- Reports the real disk usage of session rollouts, attachments, generated media, visualizations, logs, caches, and temporary files.
+- Loads transcript, memory, log, and media details only after an explicit user action, using bounded read-only requests. Content bodies are not retained in inventory snapshots.
+- Deletes session trees through the official `thread/delete` operation and shows all affected descendants before confirmation.
+- Probes `memory/reset` independently, so an unsupported memory operation does not disable otherwise supported session cleanup.
+- Supports optional encrypted `.cxb` backups and all-or-nothing restore without overwriting existing data.
+- Protects active and pinned sessions, authentication, configuration, MCP credentials, rules, skills, plugins, browser data, cookies, and source code.
+- Provides English and Chinese localization, system-aware light and dark themes, keyboard navigation, and reduced-motion support.
 
-会话写操作优先且仅通过 Codex App Server 完成。CleanerX 不使用私有 SQLite 写入作为删除兜底。无法建立 App Server 连接或无法使用 `thread/delete` 时，会话清理自动降级为只读报告；`memory/reset` 不可用时只禁用独立的记忆重置操作。
+## Safety model
 
-直接文件清理受固定根目录和类别白名单限制，并拒绝符号链接、路径逃逸、受保护路径和操作前身份变化。日志数据库只有在 schema 明确匹配时才使用事务、WAL checkpoint 与 `VACUUM` 清理。
+CleanerX treats deletion as a security boundary:
 
-`.cxb` 格式为 tar + zstd + [age](https://age-encryption.org/) X25519 加密。私钥存储在 macOS Keychain；归档先写 `.partial`，完成校验后原子改名。恢复绝不覆盖已存在的同路径数据。
+| Area | Guarantee |
+| --- | --- |
+| Source projects | Project paths are grouping metadata only and are never recursive scan or cleanup roots. |
+| Session deletion | Mutations use Codex App Server `thread/delete`; CleanerX never writes to private session databases. |
+| Capability failure | Missing or unavailable mutation methods degrade the affected operation to read-only reporting. |
+| Direct file cleanup | Every path must remain under a category-specific allowlisted root. Symlinks, traversal, protected descendants, ownership anomalies, and identity changes are rejected. |
+| Active writers | CleanerX never force-quits Codex or another process. It reports the blocker and lets the user retry. |
+| Backups | Backups are opt-in. When selected, the encrypted archive is verified and atomically committed before mutation starts. |
+| Restore | Manifest hashes and every destination are checked before the first move. Existing IDs and paths are never overwritten. |
+| Privacy | There is no telemetry, crash upload, cloud synchronization, updater, background daemon, or unrestricted shell/filesystem API. |
 
-更完整的说明见 [文档索引](docs/README.md)、[后续开发计划](docs/roadmap.md)、[存储模型](docs/storage-model.md)、[跨 Agent 会话层级调研](docs/agent-session-hierarchy.md)、[开发代理约束](AGENTS.md) 与 [SECURITY.md](SECURITY.md)。
+Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain. Archives are first written as `.partial` files, verified, and then atomically committed as `.cxb` files.
 
-## 开发
+For the complete threat model and vulnerability-reporting process, see [SECURITY.md](SECURITY.md).
 
-要求：Rust 1.88+、Node.js 22+、pnpm 11+、macOS 上的 Tauri 系统依赖。
+## Project status
+
+CleanerX is currently an engineering MVP focused on Codex and macOS. There is no signed or notarized public build yet. The repository can build unsigned Apple Silicon and Intel `.app` and DMG artifacts; Windows, Linux, and additional agent adapters remain planned work.
+
+See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
+
+## Requirements
+
+- macOS 13 or later
+- A local Codex CLI, ChatGPT desktop, or Codex desktop installation for Codex inventory and supported mutations
+- [Rust](https://www.rust-lang.org/tools/install) 1.88 or later
+- [Node.js](https://nodejs.org/) 22 or later (CI uses Node.js 24)
+- [pnpm](https://pnpm.io/installation) 11.3.0 or later
+- Xcode Command Line Tools for native macOS builds
+
+Install the Xcode Command Line Tools if needed:
+
+```bash
+xcode-select --install
+```
+
+## Getting started
+
+From the repository root, install the locked frontend dependencies and start the development application:
 
 ```bash
 make setup
 make dev
 ```
 
-提交前执行与 CI 对齐的质量流水线：
+To build an unsigned macOS application:
+
+```bash
+make app
+open target/release/bundle/macos/CleanerX.app
+```
+
+To build both the `.app` and DMG artifacts:
+
+```bash
+make bundles
+```
+
+Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Do not bypass Gatekeeper for binaries from an untrusted source.
+
+## Usage
+
+1. Launch CleanerX and scan the detected Codex installation.
+2. Inspect the overview, session tree, media, memory, logs, caches, and temporary data.
+3. Select individual cleanable items or use scoped bulk selection. Nothing is selected by default.
+4. Review the cleanup plan, including expanded session descendants and any blocked items.
+5. Choose whether to create an encrypted backup. This option is off by default.
+6. Confirm the operation. CleanerX performs the cleanup and rescans to verify the result.
+
+You can set a custom absolute `CODEX_HOME` in Settings. When it is empty, CleanerX checks the `CODEX_HOME` environment variable and then `~/.codex`.
+
+## Read-only mode
+
+CleanerX first tries the active Codex control socket. If the socket is stale or unresponsive, it falls back to an isolated stdio App Server. If neither transport provides the required official capability, the affected session operation remains read-only.
+
+If CleanerX reports read-only mode:
+
+1. Use **Retry connection** and read the specific reason shown in the application.
+2. Confirm that a Codex CLI or supported desktop application is installed. In a terminal, `codex --version` and `codex app-server --help` should succeed when using the CLI.
+3. If your data lives in a custom location, set an absolute `CODEX_HOME` in Settings and scan again.
+4. Restart CleanerX after upgrading Codex.
+
+CleanerX will not bypass a missing official deletion capability by writing to private SQLite databases.
+
+## Architecture
+
+| Path | Responsibility |
+| --- | --- |
+| `crates/cleanerx-core` | Domain types, cleanup planning, path validation, backup and restore, hashing, and transaction invariants. |
+| `crates/adapter-codex` | Codex discovery, capability probing, App Server transport, storage classification, and read-only compatibility fallbacks. |
+| `src-tauri` | Narrow application command boundary and cleanup transaction orchestration. |
+| `src` | React and TypeScript presentation layer. |
+
+Future agents integrate through the compile-time `AgentAdapter` trait. CleanerX does not load a dynamic cleanup-plugin ABI or expose general shell and filesystem access to the webview.
+
+## Development
+
+The root `Makefile` is the stable entry point for local development and CI:
+
+| Command | Purpose |
+| --- | --- |
+| `make setup` | Install dependencies from the lockfile. |
+| `make dev` | Run the Tauri application with hot reload. |
+| `make format` | Format the Rust workspace. |
+| `make check` | Run formatting checks, Clippy, Rust tests, frontend tests, and the production frontend build. |
+| `make app` | Build an unsigned macOS `.app`. |
+| `make dmg` | Build an unsigned macOS DMG. |
+| `make bundles` | Build the `.app` and DMG in one Tauri invocation. |
+
+Run the complete validation pipeline before submitting a change:
 
 ```bash
 make check
 ```
 
-它依次检查 Rust 格式、Clippy、Rust/前端测试和前端生产构建。底层仍直接使用 Cargo、pnpm 与 Tauri；Makefile 只是稳定的本地和 CI 编排入口。
+Use `TARGET=<rust-target-triple>` with the bundle commands when building for an explicit architecture.
 
-日常调试可只构建未签名 `.app`，无需生成或挂载 DMG；发布检查可一次生成 `.app` 和 DMG：
+## Documentation
 
-```bash
-make app
-open target/release/bundle/macos/CleanerX.app
+- [Documentation index](docs/README.md)
+- [Development roadmap](docs/roadmap.md)
+- [Storage and transaction model](docs/storage-model.md)
+- [Agent session hierarchy](docs/agent-session-hierarchy.md)
+- [Agent memory research](docs/memory-management.md)
+- [Security policy](SECURITY.md)
 
-make bundles
-```
+CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations. Runtime capabilities are negotiated because Codex evolves independently of CleanerX.
 
-开发期间需要热更新和前后端日志时，使用 `make dev`。
+## Contributing
 
-Apple Silicon 和 Intel 产物分别在对应架构 runner 上构建。未签名应用首次打开时，macOS 可能阻止运行；在 Finder 中右键 CleanerX →“打开”，或前往“系统设置 → 隐私与安全性”确认打开。不要对来历不明的二进制绕过 Gatekeeper。
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the repository-wide [AGENTS.md](AGENTS.md) constraints before starting. New storage schemas, categories, and mutation paths require fixtures and negative-path tests, including proof that protected files and source trees remain unchanged.
 
-## 只读模式排障
+## Security
 
-CleanerX 会先尝试连接正在运行的 Codex 控制 socket；若 socket 已残留或没有响应，会自动回退到隔离的临时 stdio App Server，不需要强制退出 Codex。Finder 启动时即使 PATH 不完整，也会探测 Codex/ChatGPT 应用内置二进制以及常见 Homebrew、NVM、Volta、asdf、Bun 和 pnpm 安装位置。
-
-如果界面仍显示只读报告：
-
-1. 点击警告中的“重试连接”，并查看警告下方的具体原因。
-2. 确认已安装 Codex CLI 或 ChatGPT/Codex 桌面应用；终端执行 `codex --version` 和 `codex app-server --help` 应成功。
-3. 如果使用自定义目录，在“设置”中填写绝对 `CODEX_HOME` 路径后重新扫描。
-4. 升级 Codex 后重启 CleanerX。CleanerX 不会通过修改私有 SQLite 绕过缺失的官方删除能力。
-
-## 架构
-
-```text
-crates/cleanerx-core   domain types, planning, path safety, .cxb backup/restore
-crates/adapter-codex  installation detection, App Server client, capability-aware scan
-src-tauri             narrow command boundary and cleanup transaction orchestration
-src                   React/TypeScript GUI
-```
-
-未来 Claude Code、OpenCode 与 Pi 适配器通过编译期 `AgentAdapter` trait 接入。MVP 不加载动态插件，也不授予前端通用文件系统或 Shell 能力。
-
-## Official Codex interfaces
-
-CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations and treats [Codex memory](https://learn.chatgpt.com/docs/customization/memories) as global data. Protocol capabilities are negotiated at runtime because Codex evolves independently of CleanerX.
+Please report vulnerabilities through a private security advisory in the source repository. Do not include real transcripts, credentials, memory databases, operation journals, or `.cxb` archives in a public report. See [SECURITY.md](SECURITY.md) for the requested report details.
 
 ## License
 
-Copyright © 2026 BeaCOx. Licensed under Apache-2.0; see [LICENSE](LICENSE).
+Copyright © 2026 BeaCOx. Licensed under the [Apache License 2.0](LICENSE).
