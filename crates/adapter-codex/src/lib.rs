@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use cleanerx_core::{
-    AgentAdapter, AgentCapabilities, AgentInstallation, AgentKind, CategorySummary, CleanerError,
-    CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail, ItemThumbnail, ProjectGroup,
-    RiskLevel, SessionRecord, StorageCategory,
+    AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
+    CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
+    ItemThumbnail, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
 };
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -169,6 +169,10 @@ impl AgentAdapter for CodexAdapter {
 
         Ok(AgentInstallation {
             kind: AgentKind::Codex,
+            state: AgentDetectionState::from_presence(
+                binary.is_some() || app_support.is_some(),
+                home.is_dir(),
+            ),
             home: home.to_string_lossy().into_owned(),
             binary: binary.map(|path| path.to_string_lossy().into_owned()),
             version,
@@ -2625,6 +2629,7 @@ mod tests {
         );
         let installation = AgentInstallation {
             kind: AgentKind::Codex,
+            state: Default::default(),
             home: temp.path().to_string_lossy().into_owned(),
             binary: None,
             version: None,

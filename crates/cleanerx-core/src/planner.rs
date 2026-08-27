@@ -262,6 +262,7 @@ mod tests {
             scanned_at: Utc::now(),
             installation: AgentInstallation {
                 kind: AgentKind::Codex,
+                state: Default::default(),
                 home: "/tmp/.codex".into(),
                 binary: Some("codex".into()),
                 version: Some("test".into()),

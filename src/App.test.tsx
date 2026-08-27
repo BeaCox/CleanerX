@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
-import type { CleanupItem, InventorySnapshot, SessionRecord } from "./types";
+import type { AgentInstallation, CleanupItem, InventorySnapshot, SessionRecord } from "./types";
 
 function chooseMenuOption(label: string, option: string) {
   const trigger = screen.getByRole("combobox", { name: label });
@@ -38,6 +38,7 @@ describe("CleanerX GUI", () => {
     await screen.findByText("Managed data");
     const switcher = screen.getByRole("combobox", { name: "Target Agent" });
     expect(switcher).toHaveAttribute("data-value", "codex");
+    expect(screen.getByText("Agent", { selector: ".status-agent-label" })).toBeVisible();
 
     chooseMenuOption("Target Agent", "Claude Code");
 
@@ -71,7 +72,9 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("textbox", { name: "OpenCode custom directory" })).toBeVisible();
-    expect(screen.queryByRole("textbox", { name: "Codex custom directory" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Codex custom directory" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Claude Code custom directory" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "pi custom directory" })).toBeVisible();
   });
 
   it("exposes pi as a target with file-backed sessions and no memory cleanup", async () => {
@@ -92,7 +95,84 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("textbox", { name: "pi custom directory" })).toBeVisible();
-    expect(screen.queryByRole("textbox", { name: "Codex custom directory" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Codex custom directory" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Claude Code custom directory" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "OpenCode custom directory" })).toBeVisible();
+  });
+
+  it("uses detected installation state to hide unavailable Agent targets", async () => {
+    const detected = await api.detectAgents();
+    const unavailablePi: AgentInstallation[] = detected.map((installation) => installation.kind === "pi"
+      ? { ...installation, state: "dataOnly", binary: undefined, version: undefined }
+      : installation);
+    const detect = vi.spyOn(api, "detectAgents").mockResolvedValue(unavailablePi);
+    const update = vi.spyOn(api, "updateSettings");
+    const view = render(<App />);
+    try {
+      await screen.findByText("Managed data");
+      const switcher = screen.getByRole("combobox", { name: "Target Agent" });
+      fireEvent.click(switcher);
+      expect(screen.queryByRole("option", { name: "pi" })).not.toBeInTheDocument();
+      expect(screen.getAllByRole("option")).toHaveLength(3);
+      expect(screen.getByRole("listbox", { name: "Target Agent" })).not.toHaveTextContent("Installed");
+      expect(switcher).toHaveAttribute("data-value", "codex");
+      expect(update).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      const piRow = screen.getByRole("textbox", { name: "pi custom directory" }).closest<HTMLElement>(".agent-setting-row")!;
+      expect(within(piRow).getByText("Local data only")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "pi custom directory" })).toBeEnabled();
+    } finally {
+      view.unmount();
+      detect.mockRestore();
+      update.mockRestore();
+    }
+  });
+
+  it("refreshes all Agent installation states from settings", async () => {
+    const installed = await api.detectAgents();
+    const refreshed = installed.map((installation) => installation.kind === "claudeCode"
+      ? { ...installation, state: "notFound" as const, binary: undefined, version: undefined }
+      : installation);
+    const detect = vi.spyOn(api, "detectAgents")
+      .mockResolvedValueOnce(installed)
+      .mockResolvedValueOnce(refreshed);
+    const view = render(<App />);
+    try {
+      await screen.findByText("Managed data");
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      const claudeRow = screen.getByRole("textbox", { name: "Claude Code custom directory" }).closest<HTMLElement>(".agent-setting-row")!;
+      expect(within(claudeRow).getByText("Installed")).toBeVisible();
+
+      fireEvent.click(screen.getByRole("button", { name: "Detect again" }));
+
+      expect(await within(claudeRow).findByText("Not detected")).toBeVisible();
+      expect(detect).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      detect.mockRestore();
+    }
+  });
+
+  it("shows explicit controls when the top view tabs overflow", async () => {
+    const view = render(<App />);
+    try {
+      const tabs = view.container.querySelector<HTMLElement>(".view-tabs")!;
+      Object.defineProperties(tabs, {
+        clientWidth: { configurable: true, value: 240 },
+        scrollWidth: { configurable: true, value: 760 },
+        scrollLeft: { configurable: true, writable: true, value: 0 },
+      });
+      const scrollBy = vi.fn();
+      Object.defineProperty(tabs, "scrollBy", { configurable: true, value: scrollBy });
+      fireEvent(window, new Event("resize"));
+
+      const more = await screen.findByRole("button", { name: "Show more pages" });
+      fireEvent.click(more);
+      expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ left: 168 }));
+    } finally {
+      view.unmount();
+    }
   });
 
   it("previews pi session files through the bounded read-only detail command", async () => {

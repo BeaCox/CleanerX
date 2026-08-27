@@ -10,9 +10,10 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cleanerx_core::{
-    AgentAdapter, AgentCapabilities, AgentInstallation, AgentKind, CategorySummary, CleanerError,
-    CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail, ItemThumbnail,
-    MemoryCapabilities, MemoryScope, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
+    AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
+    CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
+    ItemThumbnail, MemoryCapabilities, MemoryScope, ProjectGroup, RiskLevel, SessionRecord,
+    StorageCategory,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -100,6 +101,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let recognized_storage = home.is_dir();
         Ok(AgentInstallation {
             kind: AgentKind::ClaudeCode,
+            state: AgentDetectionState::from_presence(binary.is_some(), recognized_storage),
             home: home.to_string_lossy().into_owned(),
             binary: binary.map(|path| path.to_string_lossy().into_owned()),
             version,

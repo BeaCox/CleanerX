@@ -13,9 +13,9 @@ use std::time::{Duration as StdDuration, SystemTime};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cleanerx_core::{
-    AgentAdapter, AgentCapabilities, AgentInstallation, AgentKind, CategorySummary, CleanerError,
-    CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail, ItemThumbnail,
-    MemoryCapabilities, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
+    AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
+    CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
+    ItemThumbnail, MemoryCapabilities, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Deserialize;
@@ -172,6 +172,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let thread_delete = recognized_database && binary.is_some();
         Ok(AgentInstallation {
             kind: AgentKind::OpenCode,
+            state: AgentDetectionState::from_presence(binary.is_some(), recognized_database),
             home: home.to_string_lossy().into_owned(),
             binary: binary.map(|path| path.to_string_lossy().into_owned()),
             version,
@@ -2506,6 +2507,7 @@ mod tests {
     fn fixture_installation(home: &Path) -> AgentInstallation {
         AgentInstallation {
             kind: AgentKind::OpenCode,
+            state: Default::default(),
             home: home.to_string_lossy().into_owned(),
             binary: None,
             version: Some("test".into()),

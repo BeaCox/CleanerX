@@ -1529,6 +1529,7 @@ mod tests {
         fs::write(home.join("auth.json"), "oauth token").expect("credentials");
         let installation = AgentInstallation {
             kind: AgentKind::Pi,
+            state: Default::default(),
             home: home.to_string_lossy().into_owned(),
             binary: None,
             version: Some("test".into()),
@@ -1581,6 +1582,7 @@ mod tests {
             scanned_at: Utc::now(),
             installation: AgentInstallation {
                 kind: AgentKind::Codex,
+                state: Default::default(),
                 home: "/tmp/.codex".into(),
                 binary: None,
                 version: Some("test".into()),
@@ -1731,6 +1733,7 @@ mod tests {
         let selected = vec![&item];
         let installation = AgentInstallation {
             kind: AgentKind::Pi,
+            state: Default::default(),
             home: home.path().to_string_lossy().into_owned(),
             binary: None,
             version: None,

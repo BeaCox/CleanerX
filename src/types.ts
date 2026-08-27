@@ -11,6 +11,7 @@ export type StorageCategory =
 
 export type RiskLevel = "safe" | "review" | "high" | "protected";
 export type AgentKind = "codex" | "claudeCode" | "openCode" | "pi";
+export type AgentDetectionState = "installed" | "dataOnly" | "notFound";
 
 export interface MemoryCapabilities {
   canScan: boolean;
@@ -34,6 +35,7 @@ export interface AgentCapabilities {
 
 export interface AgentInstallation {
   kind: AgentKind;
+  state: AgentDetectionState;
   home: string;
   binary?: string;
   version?: string;

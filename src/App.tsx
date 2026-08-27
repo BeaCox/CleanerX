@@ -16,6 +16,7 @@ import {
   Boxes,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
@@ -47,6 +48,7 @@ import { cachePreferences } from "./preferenceStore";
 import cleanerXLogo from "../src-tauri/icons/64x64.png";
 import type {
   AppSettings,
+  AgentInstallation,
   AgentKind,
   BackupRecord,
   CleanupItem,
@@ -102,6 +104,15 @@ const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
   { id: "settings", icon: Settings, label: "settings" },
 ];
 
+type AgentHomeSetting = "customCodexHome" | "customClaudeHome" | "customOpencodeHome" | "customPiHome";
+
+const agentDefinitions: Array<{ kind: AgentKind; label: string; homeKey: AgentHomeSetting; placeholder: string }> = [
+  { kind: "codex", label: "Codex", homeKey: "customCodexHome", placeholder: "~/.codex" },
+  { kind: "claudeCode", label: "Claude Code", homeKey: "customClaudeHome", placeholder: "~/.claude" },
+  { kind: "openCode", label: "OpenCode", homeKey: "customOpencodeHome", placeholder: "~/.local/share/opencode" },
+  { kind: "pi", label: "pi", homeKey: "customPiHome", placeholder: "~/.pi/agent" },
+];
+
 export default function App() {
   const { t } = useTranslation();
   const [view, setView] = useState<ViewId>("overview");
@@ -109,6 +120,8 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<InventorySnapshot>();
   const [backups, setBackups] = useState<BackupRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings>();
+  const [installations, setInstallations] = useState<AgentInstallation[]>([]);
+  const [detectingAgents, setDetectingAgents] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedSizes, setSelectedSizes] = useState<Map<string, number>>(new Map());
   const [plan, setPlan] = useState<CleanupPlan>();
@@ -119,6 +132,8 @@ export default function App() {
   const [detailItemId, setDetailItemId] = useState<string>();
   const [backupToPurge, setBackupToPurge] = useState<BackupRecord>();
   const loaded = useRef(false);
+  const tabsRef = useRef<HTMLElement>(null);
+  const [tabOverflow, setTabOverflow] = useState({ left: false, right: false });
 
   const scan = useCallback(async (targetAgent: AgentKind = activeAgent) => {
     setBusy("scan");
@@ -137,16 +152,51 @@ export default function App() {
   useEffect(() => {
     if (loaded.current) return;
     loaded.current = true;
-    void Promise.all([api.getSettings(), api.listBackups()])
-      .then(([nextSettings, nextBackups]) => {
+    void Promise.all([api.getSettings(), api.listBackups(), api.detectAgents()])
+      .then(([nextSettings, nextBackups, detected]) => {
+        const requestedAvailable = detected.some((installation) => installation.kind === nextSettings.activeAgent && installation.state === "installed");
+        const initialAgent = requestedAvailable
+          ? nextSettings.activeAgent
+          : detected.find((installation) => installation.state === "installed")?.kind ?? nextSettings.activeAgent;
+        const nextUiSettings = initialAgent === nextSettings.activeAgent ? nextSettings : { ...nextSettings, activeAgent: initialAgent };
         cachePreferences(nextSettings);
-        setSettings(nextSettings);
-        setActiveAgent(nextSettings.activeAgent);
+        setSettings(nextUiSettings);
+        setInstallations(detected);
+        setActiveAgent(initialAgent);
         setBackups(nextBackups);
-        void scan(nextSettings.activeAgent);
+        void scan(initialAgent);
       })
-      .catch((reason) => setError(messageOf(reason)));
+      .catch((reason) => setError(messageOf(reason)))
+      .finally(() => setDetectingAgents(false));
   }, [scan]);
+
+  const updateTabOverflow = useCallback(() => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    const maxScroll = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
+    setTabOverflow({ left: tabs.scrollLeft > 1, right: tabs.scrollLeft < maxScroll - 1 });
+  }, []);
+
+  useEffect(() => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    updateTabOverflow();
+    tabs.addEventListener("scroll", updateTabOverflow, { passive: true });
+    window.addEventListener("resize", updateTabOverflow);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateTabOverflow);
+    observer?.observe(tabs);
+    return () => {
+      tabs.removeEventListener("scroll", updateTabOverflow);
+      window.removeEventListener("resize", updateTabOverflow);
+      observer?.disconnect();
+    };
+  }, [updateTabOverflow]);
+
+  useEffect(() => {
+    const activeTab = tabsRef.current?.querySelector<HTMLElement>(`[data-view-id="${view}"]`);
+    activeTab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    window.requestAnimationFrame(updateTabOverflow);
+  }, [updateTabOverflow, view]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -298,14 +348,32 @@ export default function App() {
       cachePreferences(saved);
       await applyPreferences(saved);
       setSettings(saved);
+      setDetectingAgents(true);
+      setInstallations(await api.detectAgents());
       setNotice(i18n.t("settingsSaved"));
     } catch (reason) {
       setError(messageOf(reason));
+    } finally {
+      setDetectingAgents(false);
+    }
+  };
+
+  const refreshAgentInstallations = async () => {
+    setDetectingAgents(true);
+    setError(undefined);
+    try {
+      setInstallations(await api.detectAgents());
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setDetectingAgents(false);
     }
   };
 
   const switchAgent = async (targetAgent: AgentKind) => {
     if (!settings || targetAgent === activeAgent || busy !== null) return;
+    const targetInstallation = installations.find((installation) => installation.kind === targetAgent);
+    if (!targetInstallation || targetInstallation.state !== "installed") return;
     const previousAgent = activeAgent;
     const previousSnapshot = snapshot;
     let settingsSaved = false;
@@ -336,8 +404,28 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (detectingAgents || busy !== null || !settings || installations.length === 0) return;
+    const activeAvailable = installations.some((installation) => installation.kind === activeAgent && installation.state === "installed");
+    const fallback = installations.find((installation) => installation.state === "installed");
+    if (!activeAvailable && fallback) void switchAgent(fallback.kind);
+  }, [activeAgent, busy, detectingAgents, installations, settings]);
+
   const storageView = view === "overview" || view === "sessions" || view === "memory" || view === "generated" || view === "logs";
   const detailItem = snapshot?.items.find((item) => item.id === detailItemId);
+  const agentOptions = agentDefinitions.flatMap((agent) => {
+    const installation = installations.find((candidate) => candidate.kind === agent.kind);
+    return installation?.state === "installed" ? [{
+      value: agent.kind,
+      label: agent.label,
+    }] : [];
+  });
+  const scrollTabs = (direction: -1 | 1) => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    tabs.scrollBy({ left: direction * Math.max(160, tabs.clientWidth * 0.7), behavior: reducedMotion ? "auto" : "smooth" });
+  };
 
   return (
     <div className="app-shell">
@@ -346,21 +434,26 @@ export default function App() {
           <span className="brand-mark" aria-hidden="true"><img src={cleanerXLogo} alt="" /></span>
           <strong>{t("appName")}</strong>
         </div>
-        <nav className="view-tabs" aria-label="Primary navigation">
-          {navItems.map(({ id, icon: Icon, label }) => (
-            <button
-              key={id}
-              className={view === id ? "tab-active" : ""}
-              aria-current={view === id ? "page" : undefined}
-              onClick={() => setView(id)}
-            >
-              <Icon size={14} />
-              <span>{t(label)}</span>
-              {id === "sessions" && snapshot && <small>{snapshot.sessionCount}</small>}
-              {id === "backups" && backups.length > 0 && <small>{backups.length}</small>}
-            </button>
-          ))}
-        </nav>
+        <div className="view-tabs-shell">
+          <nav ref={tabsRef} className="view-tabs" aria-label="Primary navigation">
+            {navItems.map(({ id, icon: Icon, label }) => (
+              <button
+                key={id}
+                data-view-id={id}
+                className={view === id ? "tab-active" : ""}
+                aria-current={view === id ? "page" : undefined}
+                onClick={() => setView(id)}
+              >
+                <Icon size={14} />
+                <span>{t(label)}</span>
+                {id === "sessions" && snapshot && <small>{snapshot.sessionCount}</small>}
+                {id === "backups" && backups.length > 0 && <small>{backups.length}</small>}
+              </button>
+            ))}
+          </nav>
+          {tabOverflow.left && <button type="button" className="tab-scroll-control tab-scroll-left" aria-label={t("scrollTabsLeft")} onClick={() => scrollTabs(-1)}><ChevronLeft size={15} /></button>}
+          {tabOverflow.right && <button type="button" className="tab-scroll-control tab-scroll-right" aria-label={t("scrollTabsRight")} onClick={() => scrollTabs(1)}><ChevronRight size={15} /></button>}
+        </div>
         <div className="toolbar-actions">
           {storageView && <button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>
             <RefreshCw size={14} className={busy === "scan" ? "spinning" : ""} />
@@ -374,7 +467,7 @@ export default function App() {
         {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
         {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice", { agent: agentName(activeAgent) })}</strong><span>{t("reportOnlyHelp", { agent: agentName(activeAgent) })}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
         {view === "settings" ? (
-          settings ? <SettingsView value={settings} activeAgent={activeAgent} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
+          settings ? <SettingsView value={settings} installations={installations} detecting={detectingAgents} onDetect={refreshAgentInstallations} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
         ) : view === "backups" ? (
           <BackupsView backups={backups} restore={restore} requestPurge={setBackupToPurge} busy={busy !== null} />
         ) : !snapshot ? (
@@ -393,17 +486,13 @@ export default function App() {
       <footer className="status-bar">
         <span className="status-env">
           <span className={`status-dot ${busy === "scan" ? "status-scanning" : snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
+          <span className="status-agent-label">{t("agentLabel")}</span>
           <SelectMenu
             label={t("targetAgent")}
             value={activeAgent}
-            options={[
-              { value: "codex", label: "Codex" },
-              { value: "claudeCode", label: "Claude Code" },
-              { value: "openCode", label: "OpenCode" },
-              { value: "pi", label: "pi" },
-            ]}
+            options={agentOptions}
             variant="agent"
-            disabled={!settings || busy !== null}
+            disabled={!settings || busy !== null || detectingAgents || agentOptions.length === 0}
             onChange={(value) => void switchAgent(value as AgentKind)}
           />
           <span className="agent-version">{busy === "scan" && !snapshot ? t("scanning") : displayAgentVersion(snapshot)}</span>
@@ -944,7 +1033,7 @@ function BackupsView({ backups, restore, requestPurge, busy }: { backups: Backup
   return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{agentName(backup.agent)} · {backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
-function SettingsView({ value, activeAgent, onSave }: { value: AppSettings; activeAgent: AgentKind; onSave: (settings: AppSettings) => Promise<void> }) {
+function SettingsView({ value, installations, detecting, onDetect, onSave }: { value: AppSettings; installations: AgentInstallation[]; detecting: boolean; onDetect: () => Promise<void>; onSave: (settings: AppSettings) => Promise<void> }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -959,36 +1048,42 @@ function SettingsView({ value, activeAgent, onSave }: { value: AppSettings; acti
     setForm(next);
     void applyPreferences(next);
   };
-  const agentPath = activeAgent === "codex" ? {
-    key: "customCodexHome" as const,
-    placeholder: "~/.codex",
-  } : activeAgent === "claudeCode" ? {
-    key: "customClaudeHome" as const,
-    placeholder: "~/.claude",
-  } : activeAgent === "openCode" ? {
-    key: "customOpencodeHome" as const,
-    placeholder: "~/.local/share/opencode",
-  } : {
-    key: "customPiHome" as const,
-    placeholder: "~/.pi/agent",
-  };
-  const agentPathLabel = t("agentPathOverride", { agent: agentName(activeAgent) });
-  return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); setSaving(true); void onSave(form).finally(() => setSaving(false)); }}>
+  return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); if (detecting || saving) return; setSaving(true); void onSave(form).finally(() => setSaving(false)); }}>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsInterface")}</h3>
       <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
       <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
       <Setting label={t("textSize")}><div className="segmented" role="group" aria-label={t("textSize")}><button type="button" className={form.textSize === "standard" ? "active" : ""} aria-pressed={form.textSize === "standard"} onClick={() => preview({ ...form, textSize: "standard" })}>{t("textSizeStandard")}</button><button type="button" className={form.textSize === "large" ? "active" : ""} aria-pressed={form.textSize === "large"} onClick={() => preview({ ...form, textSize: "large" })}>{t("textSizeLarge")}</button><button type="button" className={form.textSize === "extraLarge" ? "active" : ""} aria-pressed={form.textSize === "extraLarge"} onClick={() => preview({ ...form, textSize: "extraLarge" })}>{t("textSizeExtraLarge")}</button></div></Setting>
     </section>
-    <section className="settings-group settings-path-group">
-      <h3 className="settings-group-label">{t("settingsAgentPath")}</h3>
-      <Setting label={agentPathLabel}><input aria-label={agentPathLabel} value={form[agentPath.key] ?? ""} onChange={(event) => setForm({ ...form, [agentPath.key]: event.target.value || undefined })} placeholder={agentPath.placeholder} /></Setting>
-    </section>
-    <section className="settings-group">
+    <section className="settings-group settings-retention-group">
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>
       <div className="retention-grid"><Setting label={t("backupRetention")}><input aria-label={t("backupRetention")} type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input aria-label={t("logRetention")} type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input aria-label={t("tempRetention")} type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
     </section>
-    <div className="settings-footer"><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle size={14} className="spinning" />}{saving ? t("savingSettings") : t("save")}</button></div>
+    <section className="settings-group settings-agent-group">
+      <div className="settings-group-heading">
+        <h3 className="settings-group-label">{t("settingsAgents")}</h3>
+        <button type="button" className="text-button settings-detect-button" disabled={detecting || saving} onClick={() => void onDetect()}><RefreshCw size={13} className={detecting ? "spinning" : ""} />{detecting ? t("detectingAgents") : t("detectAgain")}</button>
+      </div>
+      <div className="agent-settings-list">
+        {agentDefinitions.map((agent) => {
+          const installation = installations.find((candidate) => candidate.kind === agent.kind);
+          const pathLabel = t("agentPathOverride", { agent: agent.label });
+          const state = installation?.state;
+          return <div className="agent-setting-row" key={agent.kind}>
+            <div className="agent-setting-identity">
+              <strong>{agent.label}</strong>
+              <span className={`agent-detection-state state-${state ?? "detecting"}`}><i aria-hidden="true" />{t(state ? agentDetectionTranslation(state) : "agentDetecting")}</span>
+            </div>
+            <div className="agent-setting-detected">
+              <code title={installation?.home}>{installation?.home ?? agent.placeholder}</code>
+              <span>{installation?.version || t("versionUnknown")}</span>
+            </div>
+            <input aria-label={pathLabel} value={form[agent.homeKey] ?? ""} onChange={(event) => setForm({ ...form, [agent.homeKey]: event.target.value || undefined })} placeholder={agent.placeholder} />
+          </div>;
+        })}
+      </div>
+    </section>
+    <div className="settings-footer"><button className="primary-button" type="submit" disabled={detecting || saving}>{saving && <LoaderCircle size={14} className="spinning" />}{saving ? t("savingSettings") : t("save")}</button></div>
   </form>;
 }
 
@@ -1179,6 +1274,7 @@ function BulkActions({ items = [], selectionCandidates, snapshot, selected, sele
 interface SelectMenuOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 function SelectMenu({ label, value, options, onChange, disabled = false, variant = "filter" }: { label: string; value: string; options: SelectMenuOption[]; onChange: (value: string) => void; disabled?: boolean; variant?: "filter" | "agent" }) {
@@ -1205,19 +1301,26 @@ function SelectMenu({ label, value, options, onChange, disabled = false, variant
 
   const openMenu = (index = selectedIndex) => {
     if (disabled || !options.length) return;
-    setActiveIndex(index);
+    const firstEnabled = options.findIndex((option) => !option.disabled);
+    setActiveIndex(options[index]?.disabled && firstEnabled >= 0 ? firstEnabled : index);
     setOpen(true);
   };
   const choose = (index: number) => {
     const option = options[index];
-    if (!option) return;
+    if (!option || option.disabled) return;
     setActiveIndex(index);
     setOpen(false);
     if (option.value !== value) onChange(option.value);
     triggerRef.current?.focus();
   };
   const move = (amount: number) => {
-    setActiveIndex((current) => (current + amount + options.length) % options.length);
+    setActiveIndex((current) => {
+      for (let offset = 1; offset <= options.length; offset += 1) {
+        const candidate = (current + amount * offset + options.length * 2) % options.length;
+        if (!options[candidate]?.disabled) return candidate;
+      }
+      return current;
+    });
   };
   const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1227,12 +1330,14 @@ function SelectMenu({ label, value, options, onChange, disabled = false, variant
     }
     if (event.key === "Home" && open) {
       event.preventDefault();
-      setActiveIndex(0);
+      const firstEnabled = options.findIndex((option) => !option.disabled);
+      if (firstEnabled >= 0) setActiveIndex(firstEnabled);
       return;
     }
     if (event.key === "End" && open) {
       event.preventDefault();
-      setActiveIndex(options.length - 1);
+      const lastEnabled = options.reduce((result, option, index) => option.disabled ? result : index, -1);
+      if (lastEnabled >= 0) setActiveIndex(lastEnabled);
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1254,7 +1359,7 @@ function SelectMenu({ label, value, options, onChange, disabled = false, variant
       const normalized = event.key.toLocaleLowerCase();
       const match = [...options, ...options]
         .slice(start, start + options.length)
-        .findIndex((option) => option.label.toLocaleLowerCase().startsWith(normalized));
+        .findIndex((option) => !option.disabled && option.label.toLocaleLowerCase().startsWith(normalized));
       if (match >= 0) {
         event.preventDefault();
         openMenu((start + match) % options.length);
@@ -1287,9 +1392,11 @@ function SelectMenu({ label, value, options, onChange, disabled = false, variant
         type="button"
         role="option"
         aria-selected={option.value === value}
-        className={`${index === activeIndex ? "option-active" : ""} ${option.value === value ? "option-selected" : ""}`}
+        aria-disabled={option.disabled || undefined}
+        disabled={option.disabled}
+        className={`${index === activeIndex ? "option-active" : ""} ${option.value === value ? "option-selected" : ""} ${option.disabled ? "option-disabled" : ""}`}
         key={option.value}
-        onPointerMove={() => setActiveIndex(index)}
+        onPointerMove={() => { if (!option.disabled) setActiveIndex(index); }}
         onClick={() => choose(index)}
       >
         <span title={option.label}>{option.label}</span>
@@ -1449,6 +1556,9 @@ function contentSourceLabel(source: string, t: (key: string) => string) {
   return source;
 }
 function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : kind === "pi" ? "pi" : "OpenCode"; }
+function agentDetectionTranslation(state: AgentInstallation["state"]) {
+  return state === "installed" ? "agentInstalled" : state === "dataOnly" ? "agentDataOnly" : "agentNotFound";
+}
 function displayAgentVersion(snapshot: InventorySnapshot | undefined) {
   if (!snapshot?.installation.version) return "—";
   return snapshot.installation.version

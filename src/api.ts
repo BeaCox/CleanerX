@@ -620,6 +620,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
     scannedAt: new Date().toISOString(),
     installation: {
       kind,
+      state: "installed",
       home: kind === "codex" ? "/Users/demo/.codex" : kind === "claudeCode" ? "/Users/demo/.claude" : kind === "openCode" ? "/Users/demo/.local/share/opencode" : "/Users/demo/.pi/agent",
       binary: kind === "codex" ? "/opt/homebrew/bin/codex" : kind === "claudeCode" ? "/Users/demo/.local/bin/claude" : kind === "openCode" ? "/Users/demo/.local/bin/opencode" : "/Users/demo/.local/bin/pi",
       version: kind === "codex" ? "codex-cli 0.145.0" : kind === "claudeCode" ? "2.1.238 (Claude Code)" : kind === "openCode" ? "1.18.3" : "0.84.3",

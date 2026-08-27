@@ -50,6 +50,27 @@ impl AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentDetectionState {
+    Installed,
+    DataOnly,
+    #[default]
+    NotFound,
+}
+
+impl AgentDetectionState {
+    pub fn from_presence(installed: bool, recognized_storage: bool) -> Self {
+        if installed {
+            Self::Installed
+        } else if recognized_storage {
+            Self::DataOnly
+        } else {
+            Self::NotFound
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum MemoryScope {
@@ -156,6 +177,8 @@ impl Default for AgentCapabilities {
 #[serde(rename_all = "camelCase")]
 pub struct AgentInstallation {
     pub kind: AgentKind,
+    #[serde(default)]
+    pub state: AgentDetectionState,
     pub home: String,
     pub binary: Option<String>,
     pub version: Option<String>,
@@ -394,5 +417,26 @@ impl Default for AppSettings {
             log_retention_days: 7,
             temp_retention_hours: 24,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentDetectionState;
+
+    #[test]
+    fn agent_detection_state_keeps_installation_and_data_evidence_distinct() {
+        assert_eq!(
+            AgentDetectionState::from_presence(true, false),
+            AgentDetectionState::Installed
+        );
+        assert_eq!(
+            AgentDetectionState::from_presence(false, true),
+            AgentDetectionState::DataOnly
+        );
+        assert_eq!(
+            AgentDetectionState::from_presence(false, false),
+            AgentDetectionState::NotFound
+        );
     }
 }
