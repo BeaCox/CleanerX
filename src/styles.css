@@ -112,7 +112,8 @@ code { font-family: var(--mono); font-size: 0.92em; }
 .app-shell { display: flex; height: 100vh; flex-direction: column; }
 .app-toolbar { display: grid; height: 46px; flex: 0 0 auto; grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr); align-items: stretch; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--chrome); -webkit-app-region: drag; }
 .toolbar-brand { display: flex; align-items: center; gap: 9px; }
-.brand-mark { display: grid; width: 24px; height: 24px; place-items: center; border-radius: var(--radius-m); background: var(--ink); color: var(--ink-text); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+.brand-mark { display: block; width: 26px; height: 26px; flex: 0 0 auto; overflow: hidden; border-radius: var(--radius-m); }
+.brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .toolbar-brand strong { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
 .view-tabs { display: flex; max-width: 100%; align-items: stretch; justify-self: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-app-region: no-drag; }
 .view-tabs::-webkit-scrollbar { display: none; }

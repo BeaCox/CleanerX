@@ -34,6 +34,7 @@ import { api } from "./api";
 import i18n from "./i18n";
 import { applyPreferences, watchSystemPreferences } from "./preferences";
 import { cachePreferences } from "./preferenceStore";
+import cleanerXLogo from "../src-tauri/icons/64x64.png";
 import type {
   AppSettings,
   BackupRecord,
@@ -267,7 +268,7 @@ export default function App() {
     <div className="app-shell">
       <header className="app-toolbar">
         <div className="toolbar-brand">
-          <span className="brand-mark" aria-hidden="true">CX</span>
+          <span className="brand-mark" aria-hidden="true"><img src={cleanerXLogo} alt="" /></span>
           <strong>{t("appName")}</strong>
         </div>
         <nav className="view-tabs" aria-label="Primary navigation">

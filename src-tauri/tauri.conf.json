@@ -14,10 +14,10 @@
       {
         "title": "CleanerX",
         "hiddenTitle": true,
-        "width": 1240,
-        "height": 800,
-        "minWidth": 980,
-        "minHeight": 650
+        "width": 1080,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {

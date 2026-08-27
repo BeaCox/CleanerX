@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import App from "./App";
 
 describe("CleanerX GUI", () => {
+  it("uses the CleanerX artwork in the toolbar brand", () => {
+    const { container } = render(<App />);
+    const logo = container.querySelector<HTMLImageElement>(".toolbar-brand .brand-mark img");
+    expect(logo).toBeInTheDocument();
+    expect(logo?.getAttribute("src")).toContain("64x64.png");
+  });
+
   it("keeps every cleanup item unselected after scanning", async () => {
     render(<App />);
     expect(await screen.findByText("Managed data")).toBeVisible();
