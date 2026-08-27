@@ -8,7 +8,7 @@ Work is ordered by data-safety risk. A later milestone may be explored early, bu
 
 CleanerX currently has:
 
-- a Rust workspace with `cleanerx-core`, compile-time Codex and Claude Code adapters, and a narrow Tauri command layer;
+- a Rust workspace with `cleanerx-core`, compile-time Codex, Claude Code, and OpenCode adapters, and a narrow Tauri command layer;
 - a React/TypeScript GUI for Agent-specific inventory, cleanup planning, backup listing, settings, and a persisted target-Agent switcher in the bottom status deck;
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
 - a presentation-only “No project” session root plus updated-time filtering for recent sessions;
@@ -17,6 +17,7 @@ CleanerX currently has:
 - branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCOx copyright metadata;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
 - Claude Code Home/binary/writer detection, metadata-only session inventory, project auto-memory inventory, guarded local-data cleanup, and Agent-bound backup/restore;
+- OpenCode XDG data/cache and binary/writer detection, recognized-SQLite metadata inventory, official CLI session deletion, export/import backup and restore, and protected legacy/source-managed storage;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
@@ -148,7 +149,7 @@ Priority: portability before additional Agent adapters.
 
 Priority order: Claude Code, OpenCode, then Pi, subject to documented interface stability.
 
-Claude Code is the first additional adapter. Its installation detection, read-only inventory, protected-path specification, project memory deletion capability, encrypted backup/restore, writer blocking, guarded cleanup, and post-operation rescan are implemented. Its documented auto-memory Markdown is user-editable; CleanerX currently reports entry editing as **not yet supported**, not prohibited. `CLAUDE.md`, rules, and other instructions remain protected. See the [Agent memory capability and safety model](memory-management.md).
+Claude Code and OpenCode are implemented additional adapters. Claude Code includes installation detection, read-only inventory, protected-path specification, project memory deletion capability, encrypted backup/restore, writer blocking, guarded cleanup, and post-operation rescan. OpenCode includes recognized-SQLite read-only inventory, official CLI deletion, official export/import recovery, writer blocking, descendant expansion, and protected data/cache roots; it intentionally exposes no memory item because no supported automatic-memory capability was found. Claude Code's documented auto-memory Markdown is user-editable; CleanerX currently reports entry editing as **not yet supported**, not prohibited. Instructions and rules remain protected. See the [Agent memory capability and safety model](memory-management.md).
 
 Each adapter progresses through the same gates:
 
@@ -174,7 +175,7 @@ Adapters remain compile-time implementations of `AgentAdapter`. Reverse-engineer
 
 ### Later adapter memory decisions
 
-- Recheck OpenCode and Pi official releases for a native memory API or recognized schema before implementing either adapter's memory surface.
+- Recheck OpenCode and Pi official releases for a native memory API or recognized schema before implementing either adapter's memory surface. OpenCode session support must not be treated as evidence of a memory capability.
 - If Pi memory depends on an extension, identify the extension and exact version at compile time; leave unknown extension data untouched.
 - Never reinterpret rules, prompts, system files, or arbitrary `MEMORY.md` files as automatic memory to populate the UI.
 

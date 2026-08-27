@@ -26,17 +26,29 @@ Claude Code currently exposes project-wide `claude project purge`, but not a per
 
 Protected Claude Code data includes `~/.claude.json` (outside the cleanup root), credentials, settings, `CLAUDE.md`, keybindings, rules, commands, agents, skills, plugins, themes, hooks, policy caches, and configuration backups. Project `.claude/` directories and source trees are never visited.
 
+### OpenCode
+
+OpenCode data resolution uses the user override, then `XDG_DATA_HOME/opencode`, then `~/.local/share/opencode`. The executable is resolved from `PATH` and the same bounded set of common user package-manager locations used by the other CLI adapters. The regenerable cache root is resolved separately from `XDG_CACHE_HOME/opencode` or `~/.cache/opencode`; it never expands the data-directory allowlist into a project directory.
+
+CleanerX recognizes the official `project` and `session` SQLite columns before reading metadata from `opencode.db` or one unambiguous channel database. Session title, directory, parent ID, project ID, archive time, and timestamps are read without loading transcript bodies. Logical per-session size is estimated from recognized session-owned projection and event rows; official deletion can make database pages reusable without immediately shrinking the SQLite file, and CleanerX never runs a private `VACUUM` or edits SQLite rows. Unknown or ambiguous schemas stay read-only while logs, cache metadata, and protected paths remain inventoryable.
+
+OpenCode session deletion uses the documented `opencode session delete <sessionID>` command with the recognized database selected through the official `OPENCODE_DB` override. CleanerX requires every OpenCode process to exit, rechecks the database metadata revision, expands descendants in the review, and calls the official command only for the minimal root set. It never calls the documented HTTP endpoint on an undiscovered server, writes SQL, or deletes the database file.
+
+When backup is selected, CleanerX runs the documented `opencode export <sessionID>` route for the full expanded set into a private temporary directory. The verified JSON exports are encrypted into the `.cxb` archive before deletion and the plaintext staging directory is removed. Restore extracts exports only into private staging, rejects duplicate or existing session IDs and unavailable original working directories before import, then uses `opencode import <file>` from the recorded directory. A failed multi-session import compensates by deleting sessions already imported through the same official CLI route. OpenCode does not expose a supported automatic-memory capability, so CleanerX shows no OpenCode memory cleanup item.
+
+Protected OpenCode data includes authentication, configuration, plugins, skills, rules, commands, agents, source-managed worktrees/repositories, legacy or unmigrated JSON storage, plans, and the SQLite database/WAL files themselves. These may be shown as protected metadata but are never opened or selected. An explicit session detail action may query bounded message/part projections read-only; an explicit log detail action may read bounded lines and warns that logs can contain prompts, paths, and tool output.
+
 ## Categories
 
-| Category | Initial selection | Backup | Codex route | Claude Code route |
-| --- | --- | --- | --- | --- |
-| Current/archived session | Off | Optional | App Server `thread/delete` | Snapshot-owned session paths beneath Claude Code Home |
-| Automatic memory | Off | Optional | App Server `memory/reset` (global) | Selected project `memory/` directory |
-| Attachment/generated content | Off | Optional | Allowlisted path removal | Session-owned documented attachment/cache paths only |
-| Logs/history | Off | Agent-specific | Validated SQLite transaction | Recognized `history.jsonl` path removal |
-| Regenerable cache | Off | No | Allowlisted path removal | Documented cache roots beneath Claude Code Home |
-| Temporary data | Off | No | Allowlisted path removal | Documented temporary roots beneath Claude Code Home |
-| Auth/config/rules/skills/plugins | Never | N/A | Protected | Protected |
+| Category | Initial selection | Backup | Codex route | Claude Code route | OpenCode route |
+| --- | --- | --- | --- | --- | --- |
+| Current/archived session | Off | Optional | App Server `thread/delete` | Snapshot-owned session paths beneath Claude Code Home | Official `session delete`; backup/restore through `export` / `import` |
+| Automatic memory | Off | Optional where supported | App Server `memory/reset` (global) | Selected project `memory/` directory | Unsupported; no item shown |
+| Attachment/generated content | Off | Optional | Allowlisted path removal | Session-owned documented attachment/cache paths only | Not independently targeted |
+| Logs/history | Off | Agent-specific | Validated SQLite transaction | Recognized `history.jsonl` path removal | Recognized log-directory path removal while offline |
+| Regenerable cache | Off | No | Allowlisted path removal | Documented cache roots beneath Claude Code Home | Fixed XDG cache root only |
+| Temporary data | Off | No | Allowlisted path removal | Documented temporary roots beneath Claude Code Home | Not currently targeted |
+| Auth/config/rules/skills/plugins/source-managed data | Never | N/A | Protected | Protected | Protected |
 
 Title, working directory, and project association are three independent fields. Projects require positive association evidence: a non-empty absolute session `cwd` must fall beneath a root in Codex's recognized project registry or beneath an ancestor with a `.git` marker. An arbitrary absolute working directory is recognition metadata, not a project root; in particular, a standalone desktop chat workspace such as `Documents/Codex/<date>/<name>` stays unassigned unless it independently satisfies one of those checks. A child with no recorded `cwd` may inherit an already resolved parent association; CleanerX never resolves an empty or relative `cwd` against its own process directory. Sessions that still have no association remain outside `projects` and are displayed under the UI-only “No project” virtual root. If the project registry schema is unavailable or unrecognized, CleanerX keeps the inventory available and falls back only to verifiable Git roots. Project cleanup selects linked Agent records only. It never makes a project directory an allowed mutation root.
 
@@ -58,9 +70,11 @@ After cleanup, CleanerX scans the same Agent again. A selected session that rema
 
 ## Restore
 
-An archive records its `AgentKind` and is decrypted into a private staging directory. Every entry must be a regular relative path and every SHA-256 must match the manifest. The catalog Agent, manifest Agent, and restore adapter must match. All destination paths are preflighted before the first move. Any existing destination rejects the entire restore. A post-restore scan verifies that the selected Agent can rediscover the restored paths.
+An archive records its `AgentKind` and is decrypted into a private staging directory. Every entry must be a regular relative path and every SHA-256 must match the manifest. The catalog Agent, manifest Agent, and restore adapter must match. All destination paths are preflighted before the first move. Any existing destination rejects the entire restore. OpenCode session exports use private import staging and official ID/directory preflight instead of becoming permanent filesystem destinations. A post-restore scan verifies that the selected Agent can rediscover the restored paths or imported sessions.
 
 Official Claude Code references: [application data and project purge](https://code.claude.com/docs/en/claude-directory), [sessions and transcript location](https://code.claude.com/docs/en/sessions), and [project auto memory](https://code.claude.com/docs/en/memory).
+
+Official OpenCode references: [storage locations](https://opencode.ai/docs/troubleshooting/), [CLI session/delete/export/import commands](https://opencode.ai/docs/cli/), [server session APIs](https://opencode.ai/docs/server/), and the [official session schema](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/sql.ts).
 
 ## Permanent backup deletion
 

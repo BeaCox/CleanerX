@@ -53,6 +53,23 @@ describe("CleanerX GUI", () => {
     expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveAttribute("data-value", "claudeCode");
   });
 
+  it("exposes OpenCode as a target without claiming unsupported memory cleanup", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+
+    chooseMenuOption("Target Agent", "OpenCode");
+
+    expect(await screen.findByText("Switched to OpenCode")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveAttribute("data-value", "openCode");
+    expect(screen.getByText("1.18.3")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    expect(screen.getByText("No manageable data here yet")).toBeVisible();
+    expect(screen.queryByText(/Reset clears|auto memory is project-scoped/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("textbox", { name: "OpenCode data directory override" })).toBeVisible();
+  });
+
   it("preserves the overview layout while scan data is pending", () => {
     render(<App />);
     expect(screen.getByText("Storage breakdown")).toBeVisible();

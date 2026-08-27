@@ -68,6 +68,7 @@ export const api = {
     return [
       createMockSnapshot("codex").installation,
       createMockSnapshot("claudeCode").installation,
+      createMockSnapshot("openCode").installation,
     ];
   },
 
@@ -133,7 +134,7 @@ export const api = {
     if (item.threadId) {
       return {
         itemId,
-        source: mockSnapshot.installation.kind === "codex" ? "appServer.thread/read" : "claudeTranscript.readOnly",
+        source: mockSnapshot.installation.kind === "codex" ? "appServer.thread/read" : mockSnapshot.installation.kind === "claudeCode" ? "claudeTranscript.readOnly" : "opencodeDb.readOnly",
         truncated: false,
         bytesRead: 236,
         blocks: [
@@ -376,6 +377,8 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
   ];
   if (kind === "claudeCode") {
     sessions.forEach((record) => { record.archived = false; });
+  } else if (kind === "openCode") {
+    sessions.forEach((record) => { record.source = "cli"; record.pinned = false; });
   }
   sessions[1].descendantIds = [sessions[3].id];
   sessions[3].parentThreadId = sessions[1].id;
@@ -385,7 +388,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       category: (record.archived ? "archivedSession" : "session") as StorageCategory,
       title: record.name,
       subtitle: record.cwd || undefined,
-      paths: [kind === "codex" ? `/Users/demo/.codex/sessions/${record.id}.jsonl` : `/Users/demo/.claude/projects/demo/${record.id}.jsonl`],
+      paths: kind === "openCode" ? [] : [kind === "codex" ? `/Users/demo/.codex/sessions/${record.id}.jsonl` : `/Users/demo/.claude/projects/demo/${record.id}.jsonl`],
       projectId: index === 0 ? undefined : index % 2 ? "atlas" : "pulse",
       threadId: record.id,
       sizeBytes: record.sizeBytes,
@@ -394,7 +397,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       recoverable: true,
       defaultSelected: false,
       protected: false,
-      blockedReason: index === 0 ? `Thread is active or loaded in ${kind === "codex" ? "Codex" : "Claude Code"}` : undefined,
+      blockedReason: index === 0 ? `Thread is active or loaded in ${kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : "OpenCode"}` : undefined,
       metadata: { source: record.source, pinned: String(record.pinned) },
     })),
     {
@@ -531,6 +534,32 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
         };
         return item;
       });
+  } else if (kind === "openCode") {
+    items = items
+      .filter((item) => !["memory", "attachment", "generatedImage", "temporary"].includes(item.category))
+      .map((item) => {
+        if (item.category === "log") return {
+          ...item,
+          id: "logs:opencode",
+          title: "OpenCode diagnostic logs",
+          subtitle: "Recognized OpenCode log directory",
+          paths: ["/Users/demo/.local/share/opencode/log"],
+          risk: "review" as const,
+        };
+        if (item.category === "cache") return {
+          ...item,
+          id: "cache:opencode",
+          title: "OpenCode caches",
+          paths: ["/Users/demo/.cache/opencode"],
+        };
+        if (item.category === "protected") return {
+          ...item,
+          id: "protected:opencode:auth.json",
+          subtitle: "OpenCode authentication data",
+          paths: ["/Users/demo/.local/share/opencode/auth.json"],
+        };
+        return item;
+      });
   }
   const categories = ([
     "session",
@@ -561,19 +590,19 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
     scannedAt: new Date().toISOString(),
     installation: {
       kind,
-      home: kind === "codex" ? "/Users/demo/.codex" : "/Users/demo/.claude",
-      binary: kind === "codex" ? "/opt/homebrew/bin/codex" : "/Users/demo/.local/bin/claude",
-      version: kind === "codex" ? "codex-cli 0.145.0" : "2.1.238 (Claude Code)",
-      appSupport: kind === "codex" ? "/Users/demo/Library/Application Support/Codex" : undefined,
+      home: kind === "codex" ? "/Users/demo/.codex" : kind === "claudeCode" ? "/Users/demo/.claude" : "/Users/demo/.local/share/opencode",
+      binary: kind === "codex" ? "/opt/homebrew/bin/codex" : kind === "claudeCode" ? "/Users/demo/.local/bin/claude" : "/Users/demo/.local/bin/opencode",
+      version: kind === "codex" ? "codex-cli 0.145.0" : kind === "claudeCode" ? "2.1.238 (Claude Code)" : "1.18.3",
+      appSupport: kind === "codex" ? "/Users/demo/Library/Application Support/Codex" : kind === "openCode" ? "/Users/demo/.cache/opencode" : undefined,
       running: true,
       capabilities: {
         threadList: true,
         threadDelete: true,
         memory: {
-          canScan: true,
-          canReadContent: true,
+          canScan: kind !== "openCode",
+          canReadContent: kind !== "openCode",
           canResetAll: kind === "codex",
-          canResetScope: true,
+          canResetScope: kind !== "openCode",
           canEditEntries: false,
           canDeleteEntries: kind === "claudeCode",
           canToggleUse: false,

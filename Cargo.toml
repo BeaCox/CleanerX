@@ -3,6 +3,7 @@ members = [
   "crates/cleanerx-core",
   "crates/adapter-codex",
   "crates/adapter-claude",
+  "crates/adapter-opencode",
   "src-tauri",
 ]
 resolver = "2"

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use adapter_claude::ClaudeCodeAdapter;
 use adapter_codex::CodexAdapter;
+use adapter_opencode::OpenCodeAdapter;
 use chrono::{DateTime, Duration, Utc};
 use cleanerx_core::{
     AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
@@ -22,6 +23,7 @@ use uuid::Uuid;
 struct AppState {
     codex_adapter: CodexAdapter,
     claude_adapter: ClaudeCodeAdapter,
+    opencode_adapter: OpenCodeAdapter,
     data_dir: PathBuf,
     settings: Mutex<AppSettings>,
     snapshot: Mutex<Option<InventorySnapshot>>,
@@ -33,6 +35,7 @@ impl AppState {
         match kind {
             AgentKind::Codex => &self.codex_adapter,
             AgentKind::ClaudeCode => &self.claude_adapter,
+            AgentKind::OpenCode => &self.opencode_adapter,
         }
     }
 }
@@ -139,17 +142,21 @@ type CommandResult<T> = Result<T, String>;
 #[tauri::command]
 async fn detect_agents(state: State<'_, AppState>) -> CommandResult<Vec<AgentInstallation>> {
     let settings = state.settings.lock().clone();
-    let (codex, claude) = tokio::join!(
+    let (codex, claude, opencode) = tokio::join!(
         state
             .codex_adapter
             .detect(settings.custom_codex_home.as_deref()),
         state
             .claude_adapter
-            .detect(settings.custom_claude_home.as_deref())
+            .detect(settings.custom_claude_home.as_deref()),
+        state
+            .opencode_adapter
+            .detect(settings.custom_opencode_home.as_deref())
     );
     Ok(vec![
         codex.map_err(error_message)?,
         claude.map_err(error_message)?,
+        opencode.map_err(error_message)?,
     ])
 }
 
@@ -617,6 +624,10 @@ async fn execute_plan(
                     .is_some_and(|id| plan.expanded_session_ids.contains(id))
         })
         .collect();
+    if kind == AgentKind::OpenCode {
+        let current_snapshot = adapter.scan(custom_home(&settings, kind)).await?;
+        validate_opencode_session_revisions(snapshot, &current_snapshot, &selected_items)?;
+    }
     let policy = PathPolicy::new(
         allowed_roots(&snapshot.installation),
         protected_paths(&snapshot.installation),
@@ -630,12 +641,32 @@ async fn execute_plan(
             state.data_dir.join("backups"),
             settings.backup_retention_days,
         )?;
-        let sources = backup_sources(&selected_items, &snapshot.installation)?;
+        let mut sources = backup_sources(&selected_items, &snapshot.installation)?;
+        let export_staging = if kind == AgentKind::OpenCode && !plan.expanded_session_ids.is_empty()
+        {
+            let staging = tempfile::tempdir()?;
+            let exports = adapter
+                .export_sessions(
+                    &current_installation,
+                    &plan.expanded_session_ids,
+                    staging.path(),
+                )
+                .await?;
+            sources.extend(exports.into_iter().map(|path| BackupSource {
+                root_label: "opencode_session_export".into(),
+                root_path: staging.path().to_path_buf(),
+                path,
+            }));
+            Some(staging)
+        } else {
+            None
+        };
         if sources.is_empty() {
             None
         } else {
             let manifest =
                 store.create_backup(plan, kind, snapshot.installation.version.clone(), &sources)?;
+            drop(export_staging);
             write_journal(
                 &state.data_dir,
                 OperationJournal {
@@ -667,17 +698,19 @@ async fn execute_plan(
     for operation in &plan.operations {
         match operation.kind {
             OperationKind::DeleteSession => {
-                if kind == AgentKind::Codex {
+                if matches!(kind, AgentKind::Codex | AgentKind::OpenCode) {
                     adapter
-                        .delete_sessions(&snapshot.installation, &operation.session_ids)
+                        .delete_sessions(&current_installation, &operation.session_ids)
                         .await?;
-                    cleanup_session_artifacts(
-                        &selected_items,
-                        &snapshot.sessions,
-                        &policy,
-                        &identities,
-                        &mut warnings,
-                    )?;
+                    if kind == AgentKind::Codex {
+                        cleanup_session_artifacts(
+                            &selected_items,
+                            &snapshot.sessions,
+                            &policy,
+                            &identities,
+                            &mut warnings,
+                        )?;
+                    }
                 } else {
                     remove_operation_paths(
                         operation,
@@ -711,7 +744,7 @@ async fn execute_plan(
                 deleted_item_ids.extend(operation.item_ids.iter().cloned());
             }
             OperationKind::CleanRegenerable => {
-                if kind == AgentKind::ClaudeCode {
+                if matches!(kind, AgentKind::ClaudeCode | AgentKind::OpenCode) {
                     remove_operation_paths(
                         operation,
                         &selected_items,
@@ -826,14 +859,47 @@ async fn restore_backup(
     let home_label = match kind {
         AgentKind::Codex => "codex_home",
         AgentKind::ClaudeCode => "claude_home",
+        AgentKind::OpenCode => "opencode_home",
     };
     let mut roots = BTreeMap::from([(home_label.into(), PathBuf::from(&installation.home))]);
     if let Some(app_support) = &installation.app_support {
-        roots.insert("codex_app_support".into(), PathBuf::from(app_support));
+        roots.insert(
+            match kind {
+                AgentKind::Codex => "codex_app_support",
+                AgentKind::OpenCode => "opencode_cache",
+                AgentKind::ClaudeCode => "claude_app_support",
+            }
+            .into(),
+            PathBuf::from(app_support),
+        );
+    }
+    let import_staging = (kind == AgentKind::OpenCode)
+        .then(tempfile::tempdir)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    if let Some(staging) = &import_staging {
+        roots.insert(
+            "opencode_session_export".into(),
+            staging.path().to_path_buf(),
+        );
     }
     let manifest = store
         .restore(backup_id, kind, &roots)
         .map_err(error_message)?;
+    if let Some(staging) = &import_staging {
+        let exports = manifest
+            .entries
+            .iter()
+            .filter(|entry| entry.root == "opencode_session_export")
+            .map(|entry| staging.path().join(&entry.relative_path))
+            .collect::<Vec<_>>();
+        if !exports.is_empty() {
+            adapter
+                .import_sessions(&installation, &exports)
+                .await
+                .map_err(error_message)?;
+        }
+    }
     let snapshot = adapter
         .scan(custom_home(&settings, kind))
         .await
@@ -891,6 +957,13 @@ fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
             "Custom Claude Code home must be an absolute path".into(),
         ));
     }
+    if let Some(home) = &settings.custom_opencode_home
+        && !Path::new(home).is_absolute()
+    {
+        return Err(CleanerError::InvalidRequest(
+            "Custom OpenCode data directory must be an absolute path".into(),
+        ));
+    }
     if !(1..=3650).contains(&settings.backup_retention_days)
         || !(1..=365).contains(&settings.log_retention_days)
         || !(1..=24 * 365).contains(&settings.temp_retention_hours)
@@ -906,6 +979,7 @@ fn custom_home(settings: &AppSettings, kind: AgentKind) -> Option<&str> {
     match kind {
         AgentKind::Codex => settings.custom_codex_home.as_deref(),
         AgentKind::ClaudeCode => settings.custom_claude_home.as_deref(),
+        AgentKind::OpenCode => settings.custom_opencode_home.as_deref(),
     }
 }
 
@@ -928,6 +1002,7 @@ fn backup_sources(
                     root_label: match installation.kind {
                         AgentKind::Codex => "codex_home",
                         AgentKind::ClaudeCode => "claude_home",
+                        AgentKind::OpenCode => "opencode_home",
                     }
                     .into(),
                     root_path: home.clone(),
@@ -937,7 +1012,12 @@ fn backup_sources(
                 && path.starts_with(app_support)
             {
                 sources.push(BackupSource {
-                    root_label: "codex_app_support".into(),
+                    root_label: match installation.kind {
+                        AgentKind::Codex => "codex_app_support",
+                        AgentKind::OpenCode => "opencode_cache",
+                        AgentKind::ClaudeCode => "claude_app_support",
+                    }
+                    .into(),
                     root_path: app_support.clone(),
                     path,
                 });
@@ -984,6 +1064,26 @@ fn protected_paths(installation: &AgentInstallation) -> Vec<PathBuf> {
             "remote-settings.json",
             "policy-limits.json",
         ],
+        AgentKind::OpenCode => &[
+            "auth.json",
+            "opencode.json",
+            "opencode.jsonc",
+            "storage",
+            "project",
+            "worktree",
+            "repos",
+            "plans",
+            "plugin",
+            "plugins",
+            "skill",
+            "skills",
+            "command",
+            "commands",
+            "agent",
+            "agents",
+            "rules",
+            "opencode.db",
+        ],
     };
     names.iter().map(|name| home.join(name)).collect()
 }
@@ -995,7 +1095,7 @@ fn capture_mutation_identities(
 ) -> Result<HashMap<PathBuf, FileIdentity>, CleanerError> {
     let mut identities = HashMap::new();
     for item in items {
-        if kind == AgentKind::ClaudeCode {
+        if matches!(kind, AgentKind::ClaudeCode | AgentKind::OpenCode) && !item.paths.is_empty() {
             validate_source_revision(item)?;
         }
         if kind == AgentKind::Codex
@@ -1015,6 +1115,40 @@ fn capture_mutation_identities(
         }
     }
     Ok(identities)
+}
+
+fn validate_opencode_session_revisions(
+    planned: &InventorySnapshot,
+    current: &InventorySnapshot,
+    selected_items: &[&CleanupItem],
+) -> Result<(), CleanerError> {
+    if planned.installation.home != current.installation.home {
+        return Err(CleanerError::Blocked(
+            "OpenCode data directory changed after the cleanup plan was created".into(),
+        ));
+    }
+    let current_by_thread = current
+        .items
+        .iter()
+        .filter_map(|item| item.thread_id.as_deref().map(|id| (id, item)))
+        .collect::<HashMap<_, _>>();
+    for item in selected_items
+        .iter()
+        .filter(|item| item.thread_id.is_some())
+    {
+        let session_id = item.thread_id.as_deref().expect("filtered session item");
+        let current = current_by_thread.get(session_id).ok_or_else(|| {
+            CleanerError::Blocked(format!(
+                "OpenCode session {session_id} changed or disappeared after the scan"
+            ))
+        })?;
+        if item.metadata.get("sourceRevision") != current.metadata.get("sourceRevision") {
+            return Err(CleanerError::Blocked(format!(
+                "OpenCode storage changed after the scan; rescan before deleting session {session_id}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn remove_operation_paths(
@@ -1181,6 +1315,7 @@ pub fn run() {
             app.manage(AppState {
                 codex_adapter: CodexAdapter::new(),
                 claude_adapter: ClaudeCodeAdapter::new(),
+                opencode_adapter: OpenCodeAdapter::new(),
                 data_dir,
                 settings: Mutex::new(settings),
                 snapshot: Mutex::new(None),
@@ -1211,8 +1346,8 @@ pub fn run() {
 mod tests {
     use super::{
         SessionFilter, SessionPageRequest, capture_mutation_identities, inventory_report,
-        load_settings, remove_operation_paths, session_page, validate_settings,
-        validate_source_revision,
+        load_settings, remove_operation_paths, session_page, validate_opencode_session_revisions,
+        validate_settings, validate_source_revision,
     };
     use chrono::Utc;
     use cleanerx_core::{
@@ -1296,6 +1431,12 @@ mod tests {
         let mut invalid_theme = settings;
         invalid_theme.theme = "neon".into();
         assert!(validate_settings(&invalid_theme).is_err());
+
+        let invalid_opencode_home = AppSettings {
+            custom_opencode_home: Some("relative/opencode".into()),
+            ..AppSettings::default()
+        };
+        assert!(validate_settings(&invalid_opencode_home).is_err());
     }
 
     #[test]
@@ -1408,6 +1549,30 @@ mod tests {
         .expect("replacement");
         assert!(validate_source_revision(&item).is_err());
         assert!(transcript.exists());
+    }
+
+    #[test]
+    fn opencode_database_revision_change_blocks_session_mutation() {
+        let mut planned = session_inventory_fixture();
+        planned.installation.kind = AgentKind::OpenCode;
+        planned.installation.home = "/tmp/opencode".into();
+        for item in &mut planned.items {
+            item.paths.clear();
+            item.metadata
+                .insert("sourceRevision".into(), "revision-a".into());
+        }
+        let mut current = planned.clone();
+        current.items[0]
+            .metadata
+            .insert("sourceRevision".into(), "revision-b".into());
+        let selected = planned
+            .items
+            .iter()
+            .filter(|item| item.thread_id.as_deref() == Some("root"))
+            .collect::<Vec<_>>();
+
+        assert!(validate_opencode_session_revisions(&planned, &planned, &selected).is_ok());
+        assert!(validate_opencode_session_revisions(&planned, &current, &selected).is_err());
     }
 
     #[test]

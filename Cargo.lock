@@ -41,6 +41,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "adapter-opencode"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cleanerx-core",
+ "dirs",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -702,6 +719,7 @@ version = "0.1.0"
 dependencies = [
  "adapter-claude",
  "adapter-codex",
+ "adapter-opencode",
  "chrono",
  "cleanerx-core",
  "dirs",

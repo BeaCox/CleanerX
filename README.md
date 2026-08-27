@@ -4,7 +4,7 @@
 
 # CleanerX
 
-CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current MVP supports Codex data on macOS 13+ and is built with Rust, Tauri 2, React, and TypeScript.
+CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, and OpenCode data on macOS 13+ and is built with Rust, Tauri 2, React, and TypeScript.
 
 CleanerX itself does not connect to cloud services, upload data, or collect telemetry. Project paths are used only to organize sessions: CleanerX never recursively scans or modifies source directories.
 
@@ -18,6 +18,7 @@ CleanerX itself does not connect to cloud services, upload data, or collect tele
 - Reports the real disk usage of session rollouts, attachments, generated media, visualizations, logs, caches, and temporary files.
 - Loads transcript, memory, log, and media details only after an explicit user action, using bounded read-only requests. Content bodies are not retained in inventory snapshots.
 - Deletes session trees through the official `thread/delete` operation and shows all affected descendants before confirmation.
+- Uses OpenCode's official session delete/export/import commands while keeping its SQLite database read-only to CleanerX.
 - Probes `memory/reset` independently, so an unsupported memory operation does not disable otherwise supported session cleanup.
 - Supports optional encrypted `.cxb` backups and all-or-nothing restore without overwriting existing data.
 - Protects active and pinned sessions, authentication, configuration, MCP credentials, rules, skills, plugins, browser data, cookies, and source code.
@@ -30,7 +31,7 @@ CleanerX treats deletion as a security boundary:
 | Area | Guarantee |
 | --- | --- |
 | Source projects | Project paths are grouping metadata only and are never recursive scan or cleanup roots. |
-| Session deletion | Mutations use Codex App Server `thread/delete`; CleanerX never writes to private session databases. |
+| Session deletion | Codex uses App Server `thread/delete`; OpenCode uses its documented CLI deletion command; CleanerX never writes private session databases. |
 | Capability failure | Missing or unavailable mutation methods degrade the affected operation to read-only reporting. |
 | Direct file cleanup | Every path must remain under a category-specific allowlisted root. Symlinks, traversal, protected descendants, ownership anomalies, and identity changes are rejected. |
 | Active writers | CleanerX never force-quits Codex or another process. It reports the blocker and lets the user retry. |
@@ -44,14 +45,14 @@ For the complete threat model and vulnerability-reporting process, see [SECURITY
 
 ## Project status
 
-CleanerX is currently an engineering MVP focused on Codex and macOS. There is no signed or notarized public build yet. The repository can build unsigned Apple Silicon and Intel `.app` and DMG artifacts; Windows, Linux, and additional agent adapters remain planned work.
+CleanerX is currently an engineering MVP focused on macOS. There is no signed or notarized public build yet. The repository can build unsigned Apple Silicon and Intel `.app` and DMG artifacts; Windows, Linux, and further adapter hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
 ## Requirements
 
 - macOS 13 or later
-- A local Codex CLI, ChatGPT desktop, or Codex desktop installation for Codex inventory and supported mutations
+- A supported local Codex, Claude Code, or OpenCode installation for that Agent's inventory and mutations
 - [Rust](https://www.rust-lang.org/tools/install) 1.88 or later
 - [Node.js](https://nodejs.org/) 22 or later (CI uses Node.js 24)
 - [pnpm](https://pnpm.io/installation) 11.3.0 or later
@@ -89,14 +90,14 @@ Builds are unsigned. On first launch, macOS may block the application. Use Finde
 
 ## Usage
 
-1. Launch CleanerX and scan the detected Codex installation.
+1. Launch CleanerX, select the target Agent, and scan its detected installation.
 2. Inspect the overview, session tree, media, memory, logs, caches, and temporary data.
 3. Select individual cleanable items or use scoped bulk selection. Nothing is selected by default.
 4. Review the cleanup plan, including expanded session descendants and any blocked items.
 5. Choose whether to create an encrypted backup. This option is off by default.
 6. Confirm the operation. CleanerX performs the cleanup and rescans to verify the result.
 
-You can set a custom absolute `CODEX_HOME` in Settings. When it is empty, CleanerX checks the `CODEX_HOME` environment variable and then `~/.codex`.
+You can set custom absolute data roots in Settings. Codex resolves `CODEX_HOME` then `~/.codex`; Claude Code resolves `CLAUDE_CONFIG_DIR` then `~/.claude`; OpenCode resolves `XDG_DATA_HOME/opencode` then `~/.local/share/opencode`.
 
 ## Read-only mode
 
@@ -117,6 +118,8 @@ CleanerX will not bypass a missing official deletion capability by writing to pr
 | --- | --- |
 | `crates/cleanerx-core` | Domain types, cleanup planning, path validation, backup and restore, hashing, and transaction invariants. |
 | `crates/adapter-codex` | Codex discovery, capability probing, App Server transport, storage classification, and read-only compatibility fallbacks. |
+| `crates/adapter-claude` | Claude Code discovery, documented local-storage classification, bounded previews, and guarded path cleanup. |
+| `crates/adapter-opencode` | OpenCode discovery, recognized-SQLite read-only inventory, and official CLI delete/export/import routes. |
 | `src-tauri` | Narrow application command boundary and cleanup transaction orchestration. |
 | `src` | React and TypeScript presentation layer. |
 

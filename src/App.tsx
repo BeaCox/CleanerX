@@ -399,6 +399,7 @@ export default function App() {
             options={[
               { value: "codex", label: "Codex" },
               { value: "claudeCode", label: "Claude Code" },
+              { value: "openCode", label: "OpenCode" },
             ]}
             variant="agent"
             disabled={!settings || busy !== null}
@@ -865,7 +866,7 @@ function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: Selecti
   const items = snapshot.items.filter((candidate) => candidate.category === "memory");
   useToggleAllShortcut(items, snapshot, selected, selectMany);
   return <div className="page-stack">
-    <div className="alert alert-warning memory-alert"><CircleAlert size={16} /><span>{t(snapshot.installation.kind === "codex" ? "memoryNoticeCodex" : "memoryNoticeClaude")}</span></div>
+    {items.length > 0 && <div className="alert alert-warning memory-alert"><CircleAlert size={16} /><span>{t(snapshot.installation.kind === "codex" ? "memoryNoticeCodex" : "memoryNoticeClaude")}</span></div>}
     {items.length ? <><BulkActions items={items} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut /><div className="items-grid">{items.map((item) => <article className="item-card clickable-card" key={item.id} tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
       <CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} />
       <div className="item-category" style={{ color: categoryColors.memory }}><MemoryStick size={18} /></div>
@@ -962,6 +963,7 @@ function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings
       <h3 className="settings-group-label">{t("settingsGeneral")}</h3>
       <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
       <Setting label={t("claudeHome")} hint={t("claudeHomeHint")}><input aria-label={t("claudeHome")} value={form.customClaudeHome ?? ""} onChange={(event) => setForm({ ...form, customClaudeHome: event.target.value || undefined })} placeholder="~/.claude" /></Setting>
+      <Setting label={t("opencodeHome")} hint={t("opencodeHomeHint")}><input aria-label={t("opencodeHome")} value={form.customOpencodeHome ?? ""} onChange={(event) => setForm({ ...form, customOpencodeHome: event.target.value || undefined })} placeholder="~/.local/share/opencode" /></Setting>
       <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
       <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
     </section>
@@ -1422,10 +1424,12 @@ function contentSourceLabel(source: string, t: (key: string) => string) {
   if (source === "filesystem.readOnly") return t("contentSourceFilesystem");
   if (source === "claudeTranscript.readOnly") return t("contentSourceClaudeTranscript");
   if (source === "claudeMemoryMarkdown.readOnly") return t("contentSourceClaudeMemory");
+  if (source === "opencodeDb.readOnly") return t("contentSourceOpenCodeDatabase");
+  if (source === "opencodeLogs.readOnly") return t("contentSourceOpenCodeLogs");
   if (source === "filesystem.metadataOnly") return t("contentSourceMetadataOnly");
   return source;
 }
-function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : "Claude Code"; }
+function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : "OpenCode"; }
 function displayAgentVersion(snapshot: InventorySnapshot | undefined) {
   if (!snapshot?.installation.version) return "—";
   return snapshot.installation.version

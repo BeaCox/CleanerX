@@ -35,6 +35,7 @@ pub enum AgentKind {
     #[default]
     Codex,
     ClaudeCode,
+    OpenCode,
 }
 
 impl AgentKind {
@@ -42,6 +43,7 @@ impl AgentKind {
         match self {
             Self::Codex => "Codex",
             Self::ClaudeCode => "Claude Code",
+            Self::OpenCode => "OpenCode",
         }
     }
 }
@@ -365,6 +367,7 @@ pub struct AppSettings {
     pub active_agent: AgentKind,
     pub custom_codex_home: Option<String>,
     pub custom_claude_home: Option<String>,
+    pub custom_opencode_home: Option<String>,
     pub locale: String,
     pub theme: String,
     pub backup_retention_days: u32,
@@ -378,6 +381,7 @@ impl Default for AppSettings {
             active_agent: AgentKind::Codex,
             custom_codex_home: None,
             custom_claude_home: None,
+            custom_opencode_home: None,
             locale: "system".into(),
             theme: "system".into(),
             backup_retention_days: 30,

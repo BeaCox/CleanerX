@@ -11,6 +11,7 @@ pub use planner::create_cleanup_plan;
 pub use safety::{FileIdentity, PathPolicy, metadata_revision, safe_remove};
 
 use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 
 /// Compile-time extension point for coding-agent storage adapters.
 #[async_trait]
@@ -33,4 +34,28 @@ pub trait AgentAdapter: Send + Sync {
         session_ids: &[String],
     ) -> Result<Vec<String>, CleanerError>;
     async fn reset_memory(&self, installation: &AgentInstallation) -> Result<(), CleanerError>;
+
+    /// Exports complete session records through the Agent's supported public route.
+    /// The returned files must live directly beneath `destination`.
+    async fn export_sessions(
+        &self,
+        _installation: &AgentInstallation,
+        _session_ids: &[String],
+        _destination: &Path,
+    ) -> Result<Vec<PathBuf>, CleanerError> {
+        Err(CleanerError::Unsupported(
+            "session export is not supported by this Agent".into(),
+        ))
+    }
+
+    /// Restores previously exported sessions through the Agent's supported public route.
+    async fn import_sessions(
+        &self,
+        _installation: &AgentInstallation,
+        _exports: &[PathBuf],
+    ) -> Result<Vec<String>, CleanerError> {
+        Err(CleanerError::Unsupported(
+            "session import is not supported by this Agent".into(),
+        ))
+    }
 }
