@@ -150,7 +150,15 @@ impl AgentAdapter for CodexAdapter {
                         .await
                         .is_ok();
                     capabilities.thread_delete = true;
-                    capabilities.memory_reset = client.supports_memory_reset().await;
+                    let memory_reset = client.supports_memory_reset().await;
+                    capabilities.memory = cleanerx_core::MemoryCapabilities {
+                        can_scan: true,
+                        can_read_content: true,
+                        can_reset_all: memory_reset,
+                        can_reset_scope: memory_reset,
+                        scope: cleanerx_core::MemoryScope::Global,
+                        ..cleanerx_core::MemoryCapabilities::default()
+                    };
                     capabilities.report_only = false;
                 }
                 Err(error) => warnings.push(format!(
@@ -422,7 +430,7 @@ impl AgentAdapter for CodexAdapter {
                 "Quit Codex before resetting global memory".into(),
             ));
         }
-        if !installation.capabilities.memory_reset {
+        if !installation.capabilities.memory.can_reset_all {
             return Err(CleanerError::Unsupported(
                 "memory/reset is not exposed by this Codex version".into(),
             ));
@@ -1937,7 +1945,7 @@ fn scan_caches(
             blocked_reason: running.then(|| "Quit Codex before clearing writable caches".into()),
             metadata: BTreeMap::from([
                 ("regenerable".into(), "true".into()),
-                ("requiresCodexExit".into(), running.to_string()),
+                ("requiresAgentExit".into(), running.to_string()),
             ]),
         });
     }
@@ -1999,7 +2007,7 @@ fn scan_temporary(
                 blocked_reason: running.then(|| "Quit Codex before clearing temporary data".into()),
                 metadata: BTreeMap::from([
                     ("olderThanHours".into(), "24".into()),
-                    ("requiresCodexExit".into(), running.to_string()),
+                    ("requiresAgentExit".into(), running.to_string()),
                 ]),
             });
             index += 1;

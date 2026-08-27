@@ -64,6 +64,7 @@ impl BackupStore {
     pub fn create_backup(
         &self,
         plan: &CleanupPlan,
+        agent: AgentKind,
         agent_version: Option<String>,
         sources: &[BackupSource],
     ) -> Result<BackupManifest, CleanerError> {
@@ -96,7 +97,7 @@ impl BackupStore {
         let mut manifest = BackupManifest {
             format_version: 1,
             id: backup_id,
-            agent: AgentKind::Codex,
+            agent,
             agent_version,
             created_at,
             expires_at: created_at + Duration::days(i64::from(self.retention_days)),
@@ -141,6 +142,7 @@ impl BackupStore {
             original_bytes: manifest.original_bytes,
             item_count: manifest.item_count,
             operation_id: manifest.operation_id,
+            agent: manifest.agent,
         });
         self.save_catalog(&catalog)?;
         Ok(manifest)
@@ -156,6 +158,7 @@ impl BackupStore {
     pub fn restore(
         &self,
         backup_id: Uuid,
+        expected_agent: AgentKind,
         roots: &BTreeMap<String, PathBuf>,
     ) -> Result<BackupManifest, CleanerError> {
         let record = self
@@ -214,6 +217,11 @@ impl BackupStore {
         if manifest.id != backup_id || manifest.format_version != 1 {
             return Err(CleanerError::Backup(
                 "backup identity or format version mismatch".into(),
+            ));
+        }
+        if manifest.agent != expected_agent {
+            return Err(CleanerError::Backup(
+                "backup Agent does not match the selected restore target".into(),
             ));
         }
 
@@ -538,6 +546,7 @@ mod tests {
         let manifest = store
             .create_backup(
                 &plan,
+                AgentKind::Codex,
                 Some("test".into()),
                 &[BackupSource {
                     root_label: "codex_home".into(),
@@ -548,7 +557,9 @@ mod tests {
             .expect("backup");
         fs::remove_file(&source).expect("remove original");
         let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
-        store.restore(manifest.id, &roots).expect("restore");
+        store
+            .restore(manifest.id, AgentKind::Codex, &roots)
+            .expect("restore");
         assert_eq!(fs::read(source).expect("read"), b"private transcript");
 
         let archive_path = PathBuf::from(
@@ -587,6 +598,7 @@ mod tests {
                     original_bytes: 15,
                     item_count: 1,
                     operation_id: Uuid::new_v4(),
+                    agent: AgentKind::Codex,
                 }],
             })
             .expect("catalog");

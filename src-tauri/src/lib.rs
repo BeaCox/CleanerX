@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use adapter_claude::ClaudeCodeAdapter;
 use adapter_codex::CodexAdapter;
 use chrono::{DateTime, Utc};
 use cleanerx_core::{
-    AgentAdapter, AgentInstallation, AppSettings, BackupRecord, BackupSource, BackupStore,
-    CleanerError, CleanupPlan, CleanupResult, FileIdentity, InventorySnapshot, ItemContentDetail,
-    ItemThumbnail, OperationKind, OperationStatus, PathPolicy, StorageCategory,
+    AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
+    BackupStore, CleanerError, CleanupPlan, CleanupResult, FileIdentity, InventorySnapshot,
+    ItemContentDetail, ItemThumbnail, OperationKind, OperationStatus, PathPolicy, StorageCategory,
     create_cleanup_plan, safe_remove,
 };
 use parking_lot::Mutex;
@@ -19,11 +20,21 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 
 struct AppState {
-    adapter: CodexAdapter,
+    codex_adapter: CodexAdapter,
+    claude_adapter: ClaudeCodeAdapter,
     data_dir: PathBuf,
     settings: Mutex<AppSettings>,
     snapshot: Mutex<Option<InventorySnapshot>>,
     plans: Mutex<HashMap<Uuid, CleanupPlan>>,
+}
+
+impl AppState {
+    fn adapter(&self, kind: AgentKind) -> &dyn AgentAdapter {
+        match kind {
+            AgentKind::Codex => &self.codex_adapter,
+            AgentKind::ClaudeCode => &self.claude_adapter,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,21 +51,31 @@ type CommandResult<T> = Result<T, String>;
 
 #[tauri::command]
 async fn detect_agents(state: State<'_, AppState>) -> CommandResult<Vec<AgentInstallation>> {
-    let custom_home = state.settings.lock().custom_codex_home.clone();
-    state
-        .adapter
-        .detect(custom_home.as_deref())
-        .await
-        .map(|installation| vec![installation])
-        .map_err(error_message)
+    let settings = state.settings.lock().clone();
+    let (codex, claude) = tokio::join!(
+        state
+            .codex_adapter
+            .detect(settings.custom_codex_home.as_deref()),
+        state
+            .claude_adapter
+            .detect(settings.custom_claude_home.as_deref())
+    );
+    Ok(vec![
+        codex.map_err(error_message)?,
+        claude.map_err(error_message)?,
+    ])
 }
 
 #[tauri::command]
-async fn scan_storage(state: State<'_, AppState>) -> CommandResult<InventorySnapshot> {
-    let custom_home = state.settings.lock().custom_codex_home.clone();
+async fn scan_storage(
+    target_agent: Option<AgentKind>,
+    state: State<'_, AppState>,
+) -> CommandResult<InventorySnapshot> {
+    let settings = state.settings.lock().clone();
+    let kind = target_agent.unwrap_or(settings.active_agent);
     let snapshot = state
-        .adapter
-        .scan(custom_home.as_deref())
+        .adapter(kind)
+        .scan(custom_home(&settings, kind))
         .await
         .map_err(error_message)?;
     *state.snapshot.lock() = Some(snapshot.clone());
@@ -78,7 +99,7 @@ async fn get_item_content(
         .cloned()
         .ok_or_else(|| format!("Item {item_id} is not part of the current scan"))?;
     state
-        .adapter
+        .adapter(snapshot.installation.kind)
         .load_item_content(&snapshot.installation, &item)
         .await
         .map_err(error_message)
@@ -101,7 +122,7 @@ async fn get_item_thumbnail(
         .cloned()
         .ok_or_else(|| format!("Item {item_id} is not part of the current scan"))?;
     state
-        .adapter
+        .adapter(snapshot.installation.kind)
         .load_item_thumbnail(&snapshot.installation, &item)
         .await
         .map_err(error_message)
@@ -180,19 +201,19 @@ async fn execute_plan(
     create_backup: bool,
 ) -> Result<CleanupResult, CleanerError> {
     let settings = state.settings.lock().clone();
-    let current_installation = state
-        .adapter
-        .detect(settings.custom_codex_home.as_deref())
-        .await?;
+    let kind = snapshot.installation.kind;
+    let adapter = state.adapter(kind);
+    let current_installation = adapter.detect(custom_home(&settings, kind)).await?;
     if current_installation.running
         && plan
             .operations
             .iter()
-            .any(|operation| operation.requires_codex_exit)
+            .any(|operation| operation.requires_agent_exit)
     {
-        return Err(CleanerError::Blocked(
-            "Quit Codex and retry this cleanup plan".into(),
-        ));
+        return Err(CleanerError::Blocked(format!(
+            "Quit {} and retry this cleanup plan",
+            kind.display_name()
+        )));
     }
 
     let selected_items: Vec<_> = snapshot
@@ -210,7 +231,7 @@ async fn execute_plan(
         allowed_roots(&snapshot.installation),
         protected_paths(&snapshot.installation),
     );
-    let identities = capture_mutation_identities(&selected_items, &policy)?;
+    let identities = capture_mutation_identities(&selected_items, &policy, kind)?;
 
     let backup_id = if !create_backup {
         None
@@ -224,7 +245,7 @@ async fn execute_plan(
             None
         } else {
             let manifest =
-                store.create_backup(plan, snapshot.installation.version.clone(), &sources)?;
+                store.create_backup(plan, kind, snapshot.installation.version.clone(), &sources)?;
             write_journal(
                 &state.data_dir,
                 OperationJournal {
@@ -256,55 +277,90 @@ async fn execute_plan(
     for operation in &plan.operations {
         match operation.kind {
             OperationKind::DeleteSession => {
-                state
-                    .adapter
-                    .delete_sessions(&snapshot.installation, &operation.session_ids)
-                    .await?;
-                cleanup_session_artifacts(
-                    &selected_items,
-                    &snapshot.sessions,
-                    &policy,
-                    &identities,
-                    &mut warnings,
-                )?;
+                if kind == AgentKind::Codex {
+                    adapter
+                        .delete_sessions(&snapshot.installation, &operation.session_ids)
+                        .await?;
+                    cleanup_session_artifacts(
+                        &selected_items,
+                        &snapshot.sessions,
+                        &policy,
+                        &identities,
+                        &mut warnings,
+                    )?;
+                } else {
+                    remove_operation_paths(
+                        operation,
+                        &selected_items,
+                        &policy,
+                        &identities,
+                        &mut warnings,
+                    )?;
+                }
                 deleted_item_ids.extend(operation.item_ids.iter().cloned());
             }
             OperationKind::ResetMemory => {
-                state.adapter.reset_memory(&current_installation).await?;
+                if current_installation.capabilities.memory.can_reset_all {
+                    adapter.reset_memory(&current_installation).await?;
+                } else if current_installation.capabilities.memory.can_reset_scope
+                    || current_installation.capabilities.memory.can_delete_entries
+                {
+                    remove_operation_paths(
+                        operation,
+                        &selected_items,
+                        &policy,
+                        &identities,
+                        &mut warnings,
+                    )?;
+                } else {
+                    return Err(CleanerError::Unsupported(format!(
+                        "{} memory deletion is unavailable",
+                        kind.display_name()
+                    )));
+                }
                 deleted_item_ids.extend(operation.item_ids.iter().cloned());
             }
             OperationKind::CleanRegenerable => {
-                for item_id in &operation.item_ids {
-                    let Some(item) = selected_items.iter().find(|item| &item.id == item_id) else {
-                        continue;
-                    };
-                    match item.category {
-                        StorageCategory::Log => clean_logs(item, settings.log_retention_days)?,
-                        StorageCategory::Attachment
-                        | StorageCategory::GeneratedImage
-                        | StorageCategory::Cache
-                        | StorageCategory::Temporary => {
-                            for path in &item.paths {
-                                remove_if_unchanged(
-                                    Path::new(path),
-                                    &policy,
-                                    &identities,
-                                    &mut warnings,
-                                )?;
+                if kind == AgentKind::ClaudeCode {
+                    remove_operation_paths(
+                        operation,
+                        &selected_items,
+                        &policy,
+                        &identities,
+                        &mut warnings,
+                    )?;
+                    deleted_item_ids.extend(operation.item_ids.iter().cloned());
+                } else {
+                    for item_id in &operation.item_ids {
+                        let Some(item) = selected_items.iter().find(|item| &item.id == item_id)
+                        else {
+                            continue;
+                        };
+                        match item.category {
+                            StorageCategory::Log => clean_logs(item, settings.log_retention_days)?,
+                            StorageCategory::Attachment
+                            | StorageCategory::GeneratedImage
+                            | StorageCategory::Cache
+                            | StorageCategory::Temporary => {
+                                for path in &item.paths {
+                                    remove_if_unchanged(
+                                        Path::new(path),
+                                        &policy,
+                                        &identities,
+                                        &mut warnings,
+                                    )?;
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                        deleted_item_ids.push(item.id.clone());
                     }
-                    deleted_item_ids.push(item.id.clone());
                 }
             }
         }
     }
 
-    let verified = state
-        .adapter
-        .scan(settings.custom_codex_home.as_deref())
-        .await?;
+    let verified = adapter.scan(custom_home(&settings, kind)).await?;
     for session_id in &plan.expanded_session_ids {
         if verified
             .sessions
@@ -312,7 +368,8 @@ async fn execute_plan(
             .any(|session| &session.id == session_id)
         {
             return Err(CleanerError::Blocked(format!(
-                "Codex still lists session {session_id}; no direct database deletion was attempted"
+                "{} still lists session {session_id}; no private database repair was attempted",
+                kind.display_name()
             )));
         }
     }
@@ -353,27 +410,42 @@ async fn restore_backup(
     state: State<'_, AppState>,
 ) -> CommandResult<cleanerx_core::BackupManifest> {
     let settings = state.settings.lock().clone();
-    let installation = state
-        .adapter
-        .detect(settings.custom_codex_home.as_deref())
-        .await
-        .map_err(error_message)?;
-    if installation.running {
-        return Err("Quit Codex before restoring a backup".into());
-    }
-    let mut roots = BTreeMap::from([("codex_home".into(), PathBuf::from(&installation.home))]);
-    if let Some(app_support) = &installation.app_support {
-        roots.insert("codex_app_support".into(), PathBuf::from(app_support));
-    }
     let store = BackupStore::new(
         state.data_dir.join("backups"),
         settings.backup_retention_days,
     )
     .map_err(error_message)?;
-    let manifest = store.restore(backup_id, &roots).map_err(error_message)?;
-    let snapshot = state
-        .adapter
-        .scan(settings.custom_codex_home.as_deref())
+    let record = store
+        .list()
+        .map_err(error_message)?
+        .into_iter()
+        .find(|record| record.id == backup_id)
+        .ok_or_else(|| format!("Backup {backup_id} is not in the current catalog"))?;
+    let kind = record.agent;
+    let adapter = state.adapter(kind);
+    let installation = adapter
+        .detect(custom_home(&settings, kind))
+        .await
+        .map_err(error_message)?;
+    if installation.running {
+        return Err(format!(
+            "Quit {} before restoring this backup",
+            kind.display_name()
+        ));
+    }
+    let home_label = match kind {
+        AgentKind::Codex => "codex_home",
+        AgentKind::ClaudeCode => "claude_home",
+    };
+    let mut roots = BTreeMap::from([(home_label.into(), PathBuf::from(&installation.home))]);
+    if let Some(app_support) = &installation.app_support {
+        roots.insert("codex_app_support".into(), PathBuf::from(app_support));
+    }
+    let manifest = store
+        .restore(backup_id, kind, &roots)
+        .map_err(error_message)?;
+    let snapshot = adapter
+        .scan(custom_home(&settings, kind))
         .await
         .map_err(error_message)?;
     *state.snapshot.lock() = Some(snapshot);
@@ -422,6 +494,13 @@ fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
             "Custom Codex home must be an absolute path".into(),
         ));
     }
+    if let Some(home) = &settings.custom_claude_home
+        && !Path::new(home).is_absolute()
+    {
+        return Err(CleanerError::InvalidRequest(
+            "Custom Claude Code home must be an absolute path".into(),
+        ));
+    }
     if !(1..=3650).contains(&settings.backup_retention_days)
         || !(1..=365).contains(&settings.log_retention_days)
         || !(1..=24 * 365).contains(&settings.temp_retention_hours)
@@ -431,6 +510,13 @@ fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
         ));
     }
     Ok(())
+}
+
+fn custom_home(settings: &AppSettings, kind: AgentKind) -> Option<&str> {
+    match kind {
+        AgentKind::Codex => settings.custom_codex_home.as_deref(),
+        AgentKind::ClaudeCode => settings.custom_claude_home.as_deref(),
+    }
 }
 
 fn backup_sources(
@@ -449,7 +535,11 @@ fn backup_sources(
             }
             if path.starts_with(&home) {
                 sources.push(BackupSource {
-                    root_label: "codex_home".into(),
+                    root_label: match installation.kind {
+                        AgentKind::Codex => "codex_home",
+                        AgentKind::ClaudeCode => "claude_home",
+                    }
+                    .into(),
                     root_path: home.clone(),
                     path,
                 });
@@ -477,30 +567,53 @@ fn allowed_roots(installation: &AgentInstallation) -> Vec<PathBuf> {
 
 fn protected_paths(installation: &AgentInstallation) -> Vec<PathBuf> {
     let home = Path::new(&installation.home);
-    [
-        "auth.json",
-        "config.toml",
-        "rules",
-        "skills",
-        "plugins",
-        "state",
-        "installation_id",
-    ]
-    .map(|name| home.join(name))
-    .into_iter()
-    .collect()
+    let names: &[&str] = match installation.kind {
+        AgentKind::Codex => &[
+            "auth.json",
+            "config.toml",
+            "rules",
+            "skills",
+            "plugins",
+            "state",
+            "installation_id",
+        ],
+        AgentKind::ClaudeCode => &[
+            ".credentials.json",
+            "CLAUDE.md",
+            "settings.json",
+            "settings.local.json",
+            "keybindings.json",
+            "plugins",
+            "skills",
+            "commands",
+            "agents",
+            "rules",
+            "hooks",
+            "themes",
+            "backups",
+            "remote-settings.json",
+            "policy-limits.json",
+        ],
+    };
+    names.iter().map(|name| home.join(name)).collect()
 }
 
 fn capture_mutation_identities(
     items: &[&cleanerx_core::CleanupItem],
     policy: &PathPolicy,
+    kind: AgentKind,
 ) -> Result<HashMap<PathBuf, FileIdentity>, CleanerError> {
     let mut identities = HashMap::new();
     for item in items {
-        if matches!(
-            item.category,
-            StorageCategory::Memory | StorageCategory::Log
-        ) {
+        if kind == AgentKind::ClaudeCode {
+            validate_source_revision(item)?;
+        }
+        if kind == AgentKind::Codex
+            && matches!(
+                item.category,
+                StorageCategory::Memory | StorageCategory::Log
+            )
+        {
             continue;
         }
         for path in &item.paths {
@@ -512,6 +625,40 @@ fn capture_mutation_identities(
         }
     }
     Ok(identities)
+}
+
+fn remove_operation_paths(
+    operation: &cleanerx_core::PlannedOperation,
+    selected_items: &[&cleanerx_core::CleanupItem],
+    policy: &PathPolicy,
+    identities: &HashMap<PathBuf, FileIdentity>,
+    warnings: &mut Vec<String>,
+) -> Result<(), CleanerError> {
+    for item_id in &operation.item_ids {
+        let Some(item) = selected_items.iter().find(|item| &item.id == item_id) else {
+            continue;
+        };
+        validate_source_revision(item)?;
+        for path in &item.paths {
+            remove_if_unchanged(Path::new(path), policy, identities, warnings)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_revision(item: &cleanerx_core::CleanupItem) -> Result<(), CleanerError> {
+    let expected = item.metadata.get("sourceRevision").ok_or_else(|| {
+        CleanerError::UnsafePath(format!("missing scan revision for {}", item.id))
+    })?;
+    let paths: Vec<PathBuf> = item.paths.iter().map(PathBuf::from).collect();
+    let current = cleanerx_core::metadata_revision(&paths)?;
+    if &current != expected {
+        return Err(CleanerError::UnsafePath(format!(
+            "{} changed after the inventory scan",
+            item.title
+        )));
+    }
+    Ok(())
 }
 
 fn cleanup_session_artifacts(
@@ -642,7 +789,8 @@ pub fn run() {
             fs::create_dir_all(&data_dir)?;
             let settings = load_settings(&data_dir);
             app.manage(AppState {
-                adapter: CodexAdapter::new(),
+                codex_adapter: CodexAdapter::new(),
+                claude_adapter: ClaudeCodeAdapter::new(),
                 data_dir,
                 settings: Mutex::new(settings),
                 snapshot: Mutex::new(None),
@@ -669,8 +817,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_settings, validate_settings};
-    use cleanerx_core::AppSettings;
+    use super::{
+        capture_mutation_identities, load_settings, remove_operation_paths, validate_settings,
+        validate_source_revision,
+    };
+    use cleanerx_core::{
+        AgentKind, AppSettings, CleanupItem, OperationKind, PathPolicy, PlannedOperation,
+        RiskLevel, StorageCategory, metadata_revision,
+    };
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
 
@@ -704,5 +859,93 @@ mod tests {
         let loaded = load_settings(directory.path());
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
+    }
+
+    #[test]
+    fn claude_revision_change_blocks_cleanup_before_mutation() {
+        let directory = tempdir().expect("Claude data");
+        let transcript = directory.path().join("session.jsonl");
+        fs::write(&transcript, b"first transcript metadata").expect("transcript");
+        let item = claude_item(&transcript);
+        assert!(validate_source_revision(&item).is_ok());
+
+        fs::write(
+            &transcript,
+            b"replacement transcript metadata with a new size",
+        )
+        .expect("replacement");
+        assert!(validate_source_revision(&item).is_err());
+        assert!(transcript.exists());
+    }
+
+    #[test]
+    fn claude_session_cleanup_preserves_configuration_and_source_bytes() {
+        let home = tempdir().expect("Claude home");
+        let source = tempdir().expect("source tree");
+        let transcript = home.path().join("projects/project/session.jsonl");
+        fs::create_dir_all(transcript.parent().expect("transcript parent"))
+            .expect("project bucket");
+        fs::write(&transcript, b"session metadata").expect("transcript");
+        let settings = home.path().join("settings.json");
+        fs::write(&settings, b"protected settings").expect("settings");
+        let source_file = source.path().join("source.rs");
+        fs::write(&source_file, b"fn protected_source() {}").expect("source");
+        let item = claude_item(&transcript);
+        let selected = vec![&item];
+        let policy = PathPolicy::new(vec![home.path().to_path_buf()], vec![settings.clone()]);
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::ClaudeCode)
+            .expect("preflight identities");
+        let operation = PlannedOperation {
+            kind: OperationKind::DeleteSession,
+            item_ids: vec![item.id.clone()],
+            session_ids: vec!["session".into()],
+            paths: item.paths.clone(),
+            size_bytes: item.size_bytes,
+            backup_eligible: true,
+            requires_agent_exit: true,
+            blockers: vec![],
+        };
+        let mut warnings = Vec::new();
+
+        remove_operation_paths(&operation, &selected, &policy, &identities, &mut warnings)
+            .expect("remove session");
+
+        assert!(!transcript.exists());
+        assert_eq!(
+            fs::read(settings).expect("settings bytes"),
+            b"protected settings"
+        );
+        assert_eq!(
+            fs::read(source_file).expect("source bytes"),
+            b"fn protected_source() {}"
+        );
+        assert!(warnings.is_empty());
+    }
+
+    fn claude_item(path: &std::path::Path) -> CleanupItem {
+        let paths = vec![path.to_path_buf()];
+        CleanupItem {
+            id: "session:session".into(),
+            category: StorageCategory::Session,
+            title: "Claude session".into(),
+            subtitle: None,
+            paths: paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            project_id: None,
+            thread_id: Some("session".into()),
+            size_bytes: fs::metadata(path).expect("metadata").len(),
+            modified_at: None,
+            risk: RiskLevel::High,
+            recoverable: true,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::from([(
+                "sourceRevision".into(),
+                metadata_revision(&paths).expect("revision"),
+            )]),
+        }
     }
 }

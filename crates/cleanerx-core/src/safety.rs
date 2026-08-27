@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::CleanerError;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileIdentity {
@@ -11,6 +12,7 @@ pub struct FileIdentity {
     pub device: u64,
     #[cfg(unix)]
     pub inode: u64,
+    pub metadata_revision: String,
 }
 
 impl FileIdentity {
@@ -30,6 +32,7 @@ impl FileIdentity {
             device: metadata.dev(),
             #[cfg(unix)]
             inode: metadata.ino(),
+            metadata_revision: metadata_revision(&[path.to_path_buf()])?,
         })
     }
 }
@@ -85,6 +88,8 @@ impl PathPolicy {
             }
         }
 
+        validate_tree(&canonical)?;
+
         Ok(canonical)
     }
 
@@ -103,6 +108,104 @@ impl PathPolicy {
         }
         Ok(canonical)
     }
+}
+
+/// Produces a stable revision from path names and filesystem identity metadata without reading
+/// file contents. It is suitable for detecting normal writer activity while keeping transcript
+/// and memory bodies out of inventory snapshots.
+pub fn metadata_revision(paths: &[PathBuf]) -> Result<String, CleanerError> {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    let mut hasher = Sha256::new();
+    for path in paths {
+        if !path.exists() {
+            hasher.update(b"missing\0");
+            hasher.update(path.to_string_lossy().as_bytes());
+            continue;
+        }
+        hash_metadata_tree(&path, &path, &mut hasher)?;
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_metadata_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<(), CleanerError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CleanerError::UnsafePath(format!(
+            "symbolic link inside mutation target: {}",
+            path.display()
+        )));
+    }
+    validate_owner(path, &metadata)?;
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    hasher.update(relative.to_string_lossy().as_bytes());
+    hasher.update([0]);
+    hasher.update(metadata.len().to_le_bytes());
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    hasher.update(modified_nanos.to_le_bytes());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
+        hasher.update(metadata.uid().to_le_bytes());
+        hasher.update(metadata.mode().to_le_bytes());
+    }
+    hasher.update(if metadata.is_dir() {
+        b"dir".as_slice()
+    } else {
+        b"file".as_slice()
+    });
+    if metadata.is_dir() {
+        let mut children = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            hash_metadata_tree(root, &child.path(), hasher)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_tree(path: &Path) -> Result<(), CleanerError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CleanerError::UnsafePath(format!(
+            "symbolic links are never mutation targets: {}",
+            path.display()
+        )));
+    }
+    validate_owner(path, &metadata)?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            validate_tree(&entry?.path())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_owner(path: &Path, metadata: &fs::Metadata) -> Result<(), CleanerError> {
+    use std::os::unix::fs::MetadataExt;
+
+    // SAFETY: geteuid has no preconditions and does not dereference pointers.
+    let current_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != current_uid {
+        return Err(CleanerError::UnsafePath(format!(
+            "filesystem ownership mismatch: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_owner(_path: &Path, _metadata: &fs::Metadata) -> Result<(), CleanerError> {
+    Ok(())
 }
 
 fn reject_lexical_escape(path: &Path) -> Result<(), CleanerError> {
@@ -202,5 +305,30 @@ mod tests {
         let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![protected.clone()]);
         assert!(policy.validate_existing(root.path()).is_err());
         assert!(policy.validate_existing(&protected).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlink_anywhere_inside_a_directory_target() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("private"), b"private").expect("outside bytes");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("nested-link"))
+            .expect("nested link");
+        let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
+
+        assert!(policy.validate_existing(root.path()).is_err());
+        assert!(outside.path().join("private").exists());
+    }
+
+    #[test]
+    fn metadata_revision_changes_without_reading_file_contents_into_the_model() {
+        let root = tempfile::tempdir().expect("root");
+        let file = root.path().join("session.jsonl");
+        fs::write(&file, b"one").expect("first bytes");
+        let before = metadata_revision(std::slice::from_ref(&file)).expect("first revision");
+        fs::write(&file, b"longer replacement").expect("replacement bytes");
+        let after = metadata_revision(std::slice::from_ref(&file)).expect("second revision");
+        assert_ne!(before, after);
     }
 }

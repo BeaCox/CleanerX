@@ -8,14 +8,15 @@ The [open-source release plan](open-source-release-plan.md) separates public sou
 
 CleanerX currently has:
 
-- a Rust workspace with `cleanerx-core`, `adapter-codex`, and a narrow Tauri command layer;
-- a React/TypeScript GUI for Codex inventory, cleanup planning, backup listing, and settings;
+- a Rust workspace with `cleanerx-core`, compile-time Codex and Claude Code adapters, and a narrow Tauri command layer;
+- a React/TypeScript GUI for Agent-specific inventory, cleanup planning, backup listing, settings, and a persisted target-Agent switcher in the bottom status deck;
 - a project-rooted session tree with a filtered list alternative and scoped bulk selection;
 - a presentation-only “No project” session root plus updated-time filtering for recent sessions;
 - a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
 - persisted Chinese/English and system-aware light/dark appearance preferences with immediate preview;
 - branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCOx copyright metadata;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
+- Claude Code Home/binary/writer detection, metadata-only session inventory, project auto-memory inventory, guarded local-data cleanup, and Agent-bound backup/restore;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
@@ -93,7 +94,7 @@ Priority: portability before additional Agent adapters.
 
 Priority order: Claude Code, OpenCode, then Pi, subject to documented interface stability.
 
-Claude Code is the first planned entry-level memory editor because its official auto-memory format is user-editable Markdown. OpenCode and Pi do not receive a native memory editor until their official capabilities define one; rules and extension-owned data remain protected or unsupported. See [Agent memory research](memory-management.md).
+Claude Code is the first additional adapter. Its installation detection, read-only inventory, protected-path specification, project memory deletion capability, encrypted backup/restore, writer blocking, guarded cleanup, and post-operation rescan are implemented. Per-entry memory editing remains planned because it needs atomic multi-file index/topic updates. OpenCode and Pi do not receive a native memory editor until their official capabilities define one; rules and extension-owned data remain protected or unsupported. See [Agent memory research](memory-management.md).
 
 Each adapter progresses through the same gates:
 

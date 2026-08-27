@@ -24,6 +24,24 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByText("Recommended")).not.toBeInTheDocument();
   });
 
+  it("switches and persists the target Agent from the bottom status deck", async () => {
+    const first = render(<App />);
+    await screen.findByText("Managed data");
+    const switcher = screen.getByRole("combobox", { name: "Target Agent" });
+    expect(switcher).toHaveValue("codex");
+
+    fireEvent.change(switcher, { target: { value: "claudeCode" } });
+
+    expect(await screen.findByText("Switched to Claude Code")).toBeVisible();
+    expect(switcher).toHaveValue("claudeCode");
+    expect(screen.getByText("2.1.238")).toBeVisible();
+    first.unmount();
+
+    render(<App />);
+    await screen.findByText("Managed data");
+    expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveValue("claudeCode");
+  });
+
   it("preserves the overview layout while scan data is pending", () => {
     render(<App />);
     expect(screen.getByText("Storage breakdown")).toBeVisible();
@@ -264,7 +282,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Memory" }));
     fireEvent.click(screen.getByLabelText("Open details Global Codex memory"));
     dialog = screen.getByRole("dialog", { name: "Global Codex memory" });
-    expect(within(dialog).getByText("Global memory")).toBeVisible();
+    expect(within(dialog).getByText("Automatic memory")).toBeVisible();
     expect(within(dialog).getByText("/Users/demo/.codex/memories_1.sqlite", { selector: "code" })).toBeVisible();
     expect(await within(dialog).findByText(/用户偏好简洁的桌面界面/)).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close details" }));
@@ -316,7 +334,7 @@ describe("CleanerX GUI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete forever" }));
     const dialog = screen.getByRole("dialog", { name: "Permanently delete this backup?" });
-    expect(within(dialog).getByText(/does not remove or modify current Codex data/)).toBeVisible();
+    expect(within(dialog).getByText(/does not remove or modify current Agent data/)).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete backup forever" }));
 
     expect(await screen.findByText("No CleanerX backups yet")).toBeVisible();

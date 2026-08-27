@@ -8,7 +8,7 @@ pub mod safety;
 pub use backup::{BackupSource, BackupStore};
 pub use model::*;
 pub use planner::create_cleanup_plan;
-pub use safety::{FileIdentity, PathPolicy, safe_remove};
+pub use safety::{FileIdentity, PathPolicy, metadata_revision, safe_remove};
 
 use async_trait::async_trait;
 

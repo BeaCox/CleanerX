@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  AgentInstallation,
+  AgentKind,
   BackupRecord,
   CleanupItem,
   CleanupPlan,
@@ -22,6 +24,7 @@ const inTauri = () => Boolean(window.__TAURI_INTERNALS__);
 let mockSnapshot = createMockSnapshot();
 const mockPlans = new Map<string, CleanupPlan>();
 const defaultMockSettings: AppSettings = {
+  activeAgent: "codex",
   locale: "system",
   theme: "system",
   backupRetentionDays: 30,
@@ -38,6 +41,7 @@ let mockBackups: BackupRecord[] = [
     originalBytes: 15_760_000,
     itemCount: 1,
     operationId: "2f6d7c93-2ba1-40d0-a1dd-c6165915389d",
+    agent: "codex",
   },
 ];
 
@@ -54,9 +58,20 @@ const mockPreviewDataUrl = (accent: string, label: string) => `data:image/svg+xm
 `)}`;
 
 export const api = {
-  async scanStorage(): Promise<InventorySnapshot> {
-    if (inTauri()) return invoke("scan_storage");
+  async detectAgents(): Promise<AgentInstallation[]> {
+    if (inTauri()) return invoke("detect_agents");
+    return [
+      createMockSnapshot("codex").installation,
+      createMockSnapshot("claudeCode").installation,
+    ];
+  },
+
+  async scanStorage(targetAgent?: AgentKind): Promise<InventorySnapshot> {
+    if (inTauri()) return invoke("scan_storage", { targetAgent });
     await delay(420);
+    if (targetAgent && mockSnapshot.installation.kind !== targetAgent) {
+      mockSnapshot = createMockSnapshot(targetAgent);
+    }
     mockSnapshot = { ...mockSnapshot, scannedAt: new Date().toISOString() };
     return structuredClone(mockSnapshot);
   },
@@ -98,7 +113,7 @@ export const api = {
     if (item.threadId) {
       return {
         itemId,
-        source: "appServer.thread/read",
+        source: mockSnapshot.installation.kind === "codex" ? "appServer.thread/read" : "claudeTranscript.readOnly",
         truncated: false,
         bytesRead: 236,
         blocks: [
@@ -112,7 +127,7 @@ export const api = {
     if (item.category === "memory") {
       return {
         itemId,
-        source: "recognizedMemoryDb.readOnly",
+        source: mockSnapshot.installation.kind === "codex" ? "recognizedMemoryDb.readOnly" : "claudeMemoryMarkdown.readOnly",
         truncated: false,
         bytesRead: 152,
         blocks: [
@@ -182,6 +197,7 @@ export const api = {
         originalBytes: plan.estimatedBackupBytes,
         itemCount: plan.selectedItemIds.length,
         operationId: plan.id,
+        agent: mockSnapshot.installation.kind,
       }, ...mockBackups];
     }
     return {
@@ -239,7 +255,7 @@ function readMockSettings(): AppSettings {
   }
 }
 
-function createMockSnapshot(): InventorySnapshot {
+function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
   const sessions: SessionRecord[] = [
     session("019f…c47", "CleanerX", "", "appServer", 28_420_000, false, true, 0),
     session("019f…a91", "Design token migration", "/Users/demo/Developer/atlas-web", "vscode", 15_760_000, false, false, 2),
@@ -247,15 +263,18 @@ function createMockSnapshot(): InventorySnapshot {
     session("019d…3f2", "Release checklist", "/Users/demo/Developer/atlas-web", "cli", 5_120_000, true, false, 20),
     session("019c…9b4", "Database indexing review", "/Users/demo/Developer/pulse-api", "vscode", 4_210_000, true, false, 40),
   ];
+  if (kind === "claudeCode") {
+    sessions.forEach((record) => { record.archived = false; });
+  }
   sessions[1].descendantIds = [sessions[3].id];
   sessions[3].parentThreadId = sessions[1].id;
-  const items: CleanupItem[] = [
+  let items: CleanupItem[] = [
     ...sessions.map((record, index) => ({
       id: `session:${record.id}`,
       category: (record.archived ? "archivedSession" : "session") as StorageCategory,
       title: record.name,
       subtitle: record.cwd || undefined,
-      paths: [`/Users/demo/.codex/sessions/${record.id}.jsonl`],
+      paths: [kind === "codex" ? `/Users/demo/.codex/sessions/${record.id}.jsonl` : `/Users/demo/.claude/projects/demo/${record.id}.jsonl`],
       projectId: index === 0 ? undefined : index % 2 ? "atlas" : "pulse",
       threadId: record.id,
       sizeBytes: record.sizeBytes,
@@ -264,7 +283,7 @@ function createMockSnapshot(): InventorySnapshot {
       recoverable: true,
       defaultSelected: false,
       protected: false,
-      blockedReason: index === 0 ? "Thread is active or loaded in Codex" : undefined,
+      blockedReason: index === 0 ? `Thread is active or loaded in ${kind === "codex" ? "Codex" : "Claude Code"}` : undefined,
       metadata: { source: record.source, pinned: String(record.pinned) },
     })),
     {
@@ -360,6 +379,48 @@ function createMockSnapshot(): InventorySnapshot {
       metadata: {},
     },
   ];
+  if (kind === "claudeCode") {
+    items = items
+      .filter((item) => item.category !== "attachment" && item.category !== "generatedImage")
+      .map((item) => {
+        if (item.category === "memory") return {
+          ...item,
+          id: "memory:atlas",
+          title: "atlas-web memory",
+          subtitle: "Claude Code project auto memory",
+          paths: ["/Users/demo/.claude/projects/-Users-demo-Developer-atlas-web/memory"],
+          projectId: "atlas",
+          metadata: { scope: "project", files: "3" },
+        };
+        if (item.category === "log") return {
+          ...item,
+          id: "claude-history",
+          title: "Prompt history",
+          subtitle: "Recognized Claude Code application data",
+          paths: ["/Users/demo/.claude/history.jsonl"],
+          recoverable: true,
+          risk: "review" as const,
+        };
+        if (item.category === "cache") return {
+          ...item,
+          title: "Claude Code caches",
+          paths: ["/Users/demo/.claude/cache"],
+        };
+        if (item.category === "temporary") return {
+          ...item,
+          title: "Claude Code temporary data",
+          paths: ["/Users/demo/.claude/plans"],
+        };
+        if (item.category === "protected") return {
+          ...item,
+          id: "protected:claude:settings.json",
+          title: "settings.json",
+          subtitle: "Claude Code configuration",
+          paths: ["/Users/demo/.claude/settings.json"],
+        };
+        return item;
+      });
+  }
   const categories = ([
     "session",
     "archivedSession",
@@ -388,16 +449,26 @@ function createMockSnapshot(): InventorySnapshot {
     id: crypto.randomUUID(),
     scannedAt: new Date().toISOString(),
     installation: {
-      kind: "codex",
-      home: "/Users/demo/.codex",
-      binary: "/opt/homebrew/bin/codex",
-      version: "codex-cli 0.145.0",
-      appSupport: "/Users/demo/Library/Application Support/Codex",
+      kind,
+      home: kind === "codex" ? "/Users/demo/.codex" : "/Users/demo/.claude",
+      binary: kind === "codex" ? "/opt/homebrew/bin/codex" : "/Users/demo/.local/bin/claude",
+      version: kind === "codex" ? "codex-cli 0.145.0" : "2.1.238 (Claude Code)",
+      appSupport: kind === "codex" ? "/Users/demo/Library/Application Support/Codex" : undefined,
       running: true,
       capabilities: {
         threadList: true,
         threadDelete: true,
-        memoryReset: true,
+        memory: {
+          canScan: true,
+          canReadContent: true,
+          canResetAll: kind === "codex",
+          canResetScope: true,
+          canEditEntries: false,
+          canDeleteEntries: kind === "claudeCode",
+          canToggleUse: false,
+          canToggleGeneration: false,
+          scope: kind === "codex" ? "global" : "project",
+        },
         descendantFilter: true,
         reportOnly: false,
       },

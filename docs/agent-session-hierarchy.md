@@ -18,7 +18,7 @@ A project can contain multiple independent root sessions, so this is a forest ra
 | Agent | Official hierarchy signals | CleanerX mapping |
 | --- | --- | --- |
 | Codex | App Server `thread/list` exposes `parentThreadId` / `ancestorThreadId`; `thread/delete` removes a thread and its spawned descendants. | Project root → root thread → child/subagent threads. |
-| Claude Code | Sessions are associated with a project directory. Forked sessions have independent IDs; subagent transcripts are stored beneath their parent session directory. | Project root → session family → fork/subagent transcript. Independent sessions remain sibling roots. |
+| Claude Code | Sessions are associated with a project bucket. Forked sessions have independent IDs; subagent transcripts are stored beneath their parent session directory. | Project bucket → independent root sessions. Forks remain sibling roots because the documented transcript metadata does not expose a stable parent-session ID; subagent files are included in the owning session's cleanup impact rather than invented as selectable sessions. |
 | OpenCode | Sessions accept a `parentID`, expose a children endpoint, and support forking. The UI provides parent/child/sibling navigation for subagent sessions. | Project root → root session → child/fork sessions. |
 | Pi | Session JSONL entries use `id` and `parentId`, and session files can reference a `parentSession`; `/tree`, `/fork`, and `/clone` expose branching. | Project root → session file lineage. Message-entry branching is intentionally not shown in CleanerX MVP. |
 
@@ -42,6 +42,7 @@ Official references:
 - Project selection operates only on associated Agent data; it never selects or traverses the source directory.
 - Session title, `cwd`, and project association remain independent. A title is never synthesized from the `cwd` directory name, and a title does not establish project membership.
 - A session `cwd` is shown as recognition metadata but does not by itself create a project association. CleanerX requires a recognized Codex project root or an ancestor Git marker; standalone desktop chat workspaces therefore remain under “No project.”
+- For Claude Code, the documented `projects/<project>/` bucket is positive association evidence. CleanerX groups every recognized UUID transcript in that bucket together, records absolute transcript `cwd` values as display roots, and never traverses or mutates those roots. Sessions without a usable `cwd` may still inherit the verified bucket group.
 - The “No project” virtual root sorts sessions by most recent update. A known `cwd` may be shown only as recognition metadata; an absent `cwd` is displayed explicitly and is never inferred from CleanerX's working directory.
 - A parent cleanup remains explicit. The confirmation plan expands and displays every descendant that the Agent's official delete operation will also remove.
 - CleanerX does not inspect message bodies while building the hierarchy. Codex content can be loaded on demand in a bounded detail view; Agent-specific entry-level branching, such as Pi's internal message tree, remains out of scope for the MVP hierarchy.

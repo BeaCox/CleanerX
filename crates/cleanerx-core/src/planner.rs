@@ -10,7 +10,7 @@ use crate::{
 
 /// Builds an immutable cleanup plan from a specific inventory snapshot.
 /// Session descendants are always included so the UI can disclose the full impact of
-/// Codex's cascading `thread/delete` behavior before execution.
+/// an Agent's cascading session-deletion behavior before execution.
 pub fn create_cleanup_plan(
     snapshot: &InventorySnapshot,
     selected_item_ids: &[String],
@@ -56,7 +56,7 @@ pub fn create_cleanup_plan(
     }
 
     // If both an ancestor and its child are selected, only request deletion of the
-    // ancestor. Codex deletes the descendant atomically as part of that operation.
+    // ancestor. The selected Agent deletes the descendant as part of that operation.
     let deletion_roots: Vec<String> = selected_session_ids
         .iter()
         .filter(|candidate| {
@@ -122,14 +122,21 @@ pub fn create_cleanup_plan(
         && (!snapshot.installation.capabilities.thread_delete
             || snapshot.installation.capabilities.report_only)
     {
-        blockers.push("This Codex version does not expose official thread/delete".into());
+        blockers.push(format!(
+            "{} does not expose a supported session deletion route",
+            snapshot.installation.kind.display_name()
+        ));
     }
     if selected
         .iter()
         .any(|item_id| item_by_id[item_id.as_str()].category == StorageCategory::Memory)
-        && !snapshot.installation.capabilities.memory_reset
+        && !(snapshot.installation.capabilities.memory.can_reset_scope
+            || snapshot.installation.capabilities.memory.can_delete_entries)
     {
-        blockers.push("This Codex version does not expose memory/reset".into());
+        blockers.push(format!(
+            "{} does not expose a supported memory deletion route",
+            snapshot.installation.kind.display_name()
+        ));
     }
     blockers.sort();
     blockers.dedup();
@@ -178,7 +185,7 @@ fn blank_operation(kind: OperationKind) -> PlannedOperation {
         paths: Vec::new(),
         size_bytes: 0,
         backup_eligible: false,
-        requires_codex_exit: false,
+        requires_agent_exit: false,
         blockers: Vec::new(),
     }
 }
@@ -193,7 +200,7 @@ fn add_to_operation(
     operation.paths.extend(item.paths.iter().cloned());
     operation.size_bytes = operation.size_bytes.saturating_add(item.size_bytes);
     operation.backup_eligible |= item.recoverable;
-    operation.requires_codex_exit |= matches!(
+    operation.requires_agent_exit |= matches!(
         item.category,
         StorageCategory::Memory
             | StorageCategory::Log
@@ -262,7 +269,13 @@ mod tests {
                 capabilities: AgentCapabilities {
                     thread_list: true,
                     thread_delete: true,
-                    memory_reset: true,
+                    memory: crate::MemoryCapabilities {
+                        can_scan: true,
+                        can_read_content: true,
+                        can_reset_all: true,
+                        can_reset_scope: true,
+                        ..crate::MemoryCapabilities::default()
+                    },
                     descendant_filter: true,
                     report_only: false,
                 },

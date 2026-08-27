@@ -37,6 +37,7 @@ import { cachePreferences } from "./preferenceStore";
 import cleanerXLogo from "../src-tauri/icons/64x64.png";
 import type {
   AppSettings,
+  AgentKind,
   BackupRecord,
   CleanupItem,
   CleanupPlan,
@@ -88,6 +89,7 @@ const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
 export default function App() {
   const { t } = useTranslation();
   const [view, setView] = useState<ViewId>("overview");
+  const [activeAgent, setActiveAgent] = useState<AgentKind>("codex");
   const [snapshot, setSnapshot] = useState<InventorySnapshot>();
   const [backups, setBackups] = useState<BackupRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings>();
@@ -101,11 +103,11 @@ export default function App() {
   const [backupToPurge, setBackupToPurge] = useState<BackupRecord>();
   const loaded = useRef(false);
 
-  const scan = useCallback(async () => {
+  const scan = useCallback(async (targetAgent: AgentKind = activeAgent) => {
     setBusy("scan");
     setError(undefined);
     try {
-      const result = await api.scanStorage();
+      const result = await api.scanStorage(targetAgent);
       setSnapshot(result);
       setSelected((current) => new Set(
         [...current].filter((id) => result.items.some((item) => item.id === id && isItemSelectable(item, result))),
@@ -116,7 +118,7 @@ export default function App() {
     } finally {
       setBusy(null);
     }
-  }, [t]);
+  }, [activeAgent, t]);
 
   useEffect(() => {
     if (loaded.current) return;
@@ -125,10 +127,11 @@ export default function App() {
       .then(([nextSettings, nextBackups]) => {
         cachePreferences(nextSettings);
         setSettings(nextSettings);
+        setActiveAgent(nextSettings.activeAgent);
         setBackups(nextBackups);
+        void scan(nextSettings.activeAgent);
       })
       .catch((reason) => setError(messageOf(reason)));
-    void scan();
   }, [scan]);
 
   useEffect(() => {
@@ -261,6 +264,28 @@ export default function App() {
     }
   };
 
+  const switchAgent = async (targetAgent: AgentKind) => {
+    if (!settings || targetAgent === activeAgent || busy !== null) return;
+    setBusy("scan");
+    setError(undefined);
+    try {
+      const saved = await api.updateSettings({ ...settings, activeAgent: targetAgent });
+      cachePreferences(saved);
+      setSettings(saved);
+      setActiveAgent(targetAgent);
+      setSelected(new Set());
+      setPlan(undefined);
+      setDetailItemId(undefined);
+      const result = await api.scanStorage(targetAgent);
+      setSnapshot(result);
+      setNotice(t("agentSwitched", { agent: agentName(targetAgent) }));
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const storageView = view === "overview" || view === "sessions" || view === "memory" || view === "generated" || view === "logs";
   const detailItem = snapshot?.items.find((item) => item.id === detailItemId);
 
@@ -297,7 +322,7 @@ export default function App() {
       <main className="content-scroll">
         <h1 className="visually-hidden">{t(navItems.find((item) => item.id === view)?.label ?? "overview")}</h1>
         {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
-        {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice")}</strong><span>{t("reportOnlyHelp")}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
+        {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice", { agent: agentName(activeAgent) })}</strong><span>{t("reportOnlyHelp", { agent: agentName(activeAgent) })}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
         {view === "settings" ? (
           settings ? <SettingsView value={settings} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
         ) : view === "backups" ? (
@@ -318,7 +343,19 @@ export default function App() {
       <footer className="status-bar">
         <span className="status-env">
           <span className={`status-dot ${snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
-          Codex {snapshot?.installation.version?.replace("codex-cli ", "") ?? "—"}
+          <label className="visually-hidden" htmlFor="target-agent">{t("targetAgent")}</label>
+          <select
+            id="target-agent"
+            className="agent-switcher"
+            aria-label={t("targetAgent")}
+            value={activeAgent}
+            disabled={!settings || busy !== null}
+            onChange={(event) => void switchAgent(event.target.value as AgentKind)}
+          >
+            <option value="codex">Codex</option>
+            <option value="claudeCode">Claude Code</option>
+          </select>
+          <span className="agent-version">{displayAgentVersion(snapshot)}</span>
         </span>
         {selected.size > 0 && !plan ? (
           <span className="status-selection" role="status">
@@ -608,11 +645,16 @@ function isWithinDays(value: string | undefined, days: number) {
 
 function MemoryView({ snapshot, selected, toggle, selectMany, inspect }: SelectionProps) {
   const { t } = useTranslation();
-  const item = snapshot.items.find((candidate) => candidate.category === "memory");
-  useToggleAllShortcut(item ? [item] : [], snapshot, selected, selectMany);
+  const items = snapshot.items.filter((candidate) => candidate.category === "memory");
+  useToggleAllShortcut(items, snapshot, selected, selectMany);
   return <div className="page-stack">
-    <div className="alert alert-warning memory-alert"><CircleAlert size={16} /><span>{t("memoryNotice")}</span></div>
-    {item ? <section className="panel-card detail-card clickable-card" tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}><div className="item-select-row"><CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} /><div><h3>{item.title}</h3><p>{item.subtitle}</p></div><div className="item-select-actions"><strong>{formatBytes(item.sizeBytes)}</strong></div></div><div className="detail-lines"><span><Archive size={15} />{t("recoverable")}</span><code>{item.paths[0]}</code></div></section> : <EmptyState />}
+    <div className="alert alert-warning memory-alert"><CircleAlert size={16} /><span>{t(snapshot.installation.kind === "codex" ? "memoryNoticeCodex" : "memoryNoticeClaude")}</span></div>
+    {items.length ? <><BulkActions items={items} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut /><div className="items-grid">{items.map((item) => <article className="item-card clickable-card" key={item.id} tabIndex={0} aria-label={`${t("openDetails")} ${item.title}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
+      <CheckBox checked={selected.has(item.id)} disabled={!isItemSelectable(item, snapshot)} onChange={() => toggle(item)} label={item.title} />
+      <div className="item-category" style={{ color: categoryColors.memory }}><MemoryStick size={18} /></div>
+      <div className="item-copy"><span>{t("categoryMemory")}</span><h3>{item.title}</h3>{item.subtitle && <p>{item.subtitle}</p>}<code title={item.paths[0]}>{item.paths[0]}</code>{item.blockedReason && <small className="blocked-copy"><CircleAlert size={13} />{item.blockedReason}</small>}</div>
+      <div className="item-size"><strong>{formatBytes(item.sizeBytes)}</strong><span className={`risk-badge ${item.risk}`}>{t(`risk${capitalize(item.risk)}`)}</span></div>
+    </article>)}</div></> : <EmptyState />}
   </div>;
 }
 
@@ -680,7 +722,7 @@ function MediaCard({ item, snapshot, selected, toggle, inspect }: { item: Cleanu
 
 function BackupsView({ backups, restore, requestPurge, busy }: { backups: BackupRecord[]; restore: (id: string) => void; requestPurge: (backup: BackupRecord) => void; busy: boolean }) {
   const { t } = useTranslation();
-  return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
+  return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{agentName(backup.agent)} · {backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
 function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings: AppSettings) => Promise<void> }) {
@@ -702,6 +744,7 @@ function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsGeneral")}</h3>
       <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
+      <Setting label={t("claudeHome")} hint={t("claudeHomeHint")}><input aria-label={t("claudeHome")} value={form.customClaudeHome ?? ""} onChange={(event) => setForm({ ...form, customClaudeHome: event.target.value || undefined })} placeholder="~/.claude" /></Setting>
       <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
       <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
     </section>
@@ -725,7 +768,7 @@ function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: C
   const session = item.threadId ? snapshot.sessions.find((candidate) => candidate.id === item.threadId) : undefined;
   const project = item.projectId ? snapshot.projects.find((candidate) => candidate.id === item.projectId) : undefined;
   const selectable = isItemSelectable(item, snapshot);
-  const metadata = Object.entries(item.metadata).filter(([key]) => !["source", "status", "pinned"].includes(key));
+  const metadata = Object.entries(item.metadata).filter(([key]) => !["source", "status", "pinned", "sourceRevision"].includes(key));
   useEffect(() => {
     let active = true;
     setContent(undefined);
@@ -784,7 +827,7 @@ function ItemDetailDialog({ item, snapshot, selected, toggle, close }: { item: C
           </div>
           {contentLoading ? <ContentPreviewSkeleton /> : contentError ? (
             <div className="detail-blocker"><CircleAlert size={17} /><div><strong>{t("contentLoadFailed")}</strong><span>{contentError}</span></div></div>
-          ) : content ? <ContentPreview detail={content} /> : null}
+          ) : content ? <ContentPreview detail={content} agent={snapshot.installation.kind} /> : null}
         </section>
 
         <section className="detail-section">
@@ -811,19 +854,19 @@ function DetailFact({ label, value, tone }: { label: string; value: string; tone
   return <div><span>{label}</span><strong className={tone ? `detail-tone ${tone}` : undefined}>{value}</strong></div>;
 }
 
-function ContentPreview({ detail }: { detail: ItemContentDetail }) {
+function ContentPreview({ detail, agent }: { detail: ItemContentDetail; agent: AgentKind }) {
   const { t } = useTranslation();
   return <div className="content-preview">
     {detail.warning && <div className="content-warning"><CircleAlert size={15} /><span>{detail.warning}</span></div>}
-    {detail.blocks.map((block, index) => <ContentBlockView block={block} key={`${block.kind}:${index}`} />)}
+    {detail.blocks.map((block, index) => <ContentBlockView block={block} agent={agent} key={`${block.kind}:${index}`} />)}
     {detail.truncated && <div className="content-limit"><span>{t("contentTruncated")}</span><strong>{formatBytes(detail.bytesRead)}</strong></div>}
   </div>;
 }
 
-function ContentBlockView({ block }: { block: ContentBlock }) {
+function ContentBlockView({ block, agent }: { block: ContentBlock; agent: AgentKind }) {
   const { t } = useTranslation();
   if (block.kind === "message") return <article className={`content-message role-${block.role}`}>
-    <header><strong>{roleLabel(block.role, t)}</strong>{block.phase && <span>{block.phase.replace("final_answer", "final")}</span>}</header>
+    <header><strong>{roleLabel(block.role, agent, t)}</strong>{block.phase && <span>{block.phase.replace("final_answer", "final")}</span>}</header>
     <div className="rendered-text">{block.text}</div>
   </article>;
   if (block.kind === "image") return <figure className="content-image"><img src={block.dataUrl} alt={block.title} /><figcaption>{block.title}</figcaption></figure>;
@@ -956,7 +999,9 @@ function capitalize(value: string) { return `${value.charAt(0).toUpperCase()}${v
 
 function isItemSelectable(item: CleanupItem, snapshot: InventorySnapshot) {
   if (item.protected || item.blockedReason) return false;
-  return item.category !== "memory" || snapshot.installation.capabilities.memoryReset;
+  return item.category !== "memory"
+    || snapshot.installation.capabilities.memory.canResetScope
+    || snapshot.installation.capabilities.memory.canDeleteEntries;
 }
 
 function isInteractiveTarget(target: EventTarget | null) {
@@ -985,7 +1030,7 @@ function metadataLabel(key: string, t: (key: string) => string) {
   const labels: Record<string, string> = {
     retentionDays: "detailsRetentionDays",
     olderThanHours: "detailsOlderThanHours",
-    requiresCodexExit: "detailsRequiresCodexExit",
+    requiresAgentExit: "detailsRequiresAgentExit",
     regenerable: "detailsRegenerable",
     scope: "detailsScope",
     files: "detailsFiles",
@@ -999,7 +1044,7 @@ function metadataLabel(key: string, t: (key: string) => string) {
 }
 
 function metadataValue(key: string, value: string, t: (key: string) => string) {
-  if (["regenerable", "requiresCodexExit"].includes(key)) return value === "true" ? t("yes") : t("no");
+  if (["regenerable", "requiresAgentExit"].includes(key)) return value === "true" ? t("yes") : t("no");
   if (key === "scope" && value === "global") return t("globalScope");
   if (key === "association" && value === "orphaned") return t("orphanedAssociation");
   if (key === "entryType" && value === "directory") return t("directoryEntry");
@@ -1019,9 +1064,9 @@ function relativeTime(value: string, language: string) {
 
 function statusLabel(status: string, t: (key: string) => string) { const normalized = status.toLowerCase(); return normalized === "active" || normalized === "loaded" ? t("active") : t("notLoaded"); }
 function sourceLabel(source: string) { return source === "vscode" ? "Desktop / IDE" : source; }
-function roleLabel(role: string, t: (key: string) => string) {
+function roleLabel(role: string, agent: AgentKind, t: (key: string) => string) {
   if (role === "user") return t("contentRoleUser");
-  if (role === "assistant") return t("contentRoleAssistant");
+  if (role === "assistant") return agentName(agent);
   if (role === "system") return t("contentRoleSystem");
   if (role === "tool") return t("contentRoleTool");
   return role;
@@ -1031,6 +1076,16 @@ function contentSourceLabel(source: string, t: (key: string) => string) {
   if (source === "rollout.readOnlyFallback") return t("contentSourceRollout");
   if (source === "recognizedMemoryDb.readOnly" || source === "recognizedLogDb.readOnly") return t("contentSourceDatabase");
   if (source === "filesystem.readOnly") return t("contentSourceFilesystem");
+  if (source === "claudeTranscript.readOnly") return t("contentSourceClaudeTranscript");
+  if (source === "claudeMemoryMarkdown.readOnly") return t("contentSourceClaudeMemory");
+  if (source === "filesystem.metadataOnly") return t("contentSourceMetadataOnly");
   return source;
+}
+function agentName(kind: AgentKind) { return kind === "codex" ? "Codex" : "Claude Code"; }
+function displayAgentVersion(snapshot: InventorySnapshot | undefined) {
+  if (!snapshot?.installation.version) return "—";
+  return snapshot.installation.version
+    .replace(/^codex-cli\s+/, "")
+    .replace(/\s+\(Claude Code\)$/, "");
 }
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }

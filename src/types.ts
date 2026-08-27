@@ -10,17 +10,30 @@ export type StorageCategory =
   | "protected";
 
 export type RiskLevel = "safe" | "review" | "high" | "protected";
+export type AgentKind = "codex" | "claudeCode";
+
+export interface MemoryCapabilities {
+  canScan: boolean;
+  canReadContent: boolean;
+  canResetAll: boolean;
+  canResetScope: boolean;
+  canEditEntries: boolean;
+  canDeleteEntries: boolean;
+  canToggleUse: boolean;
+  canToggleGeneration: boolean;
+  scope: "global" | "project" | "mixed";
+}
 
 export interface AgentCapabilities {
   threadList: boolean;
   threadDelete: boolean;
-  memoryReset: boolean;
+  memory: MemoryCapabilities;
   descendantFilter: boolean;
   reportOnly: boolean;
 }
 
 export interface AgentInstallation {
-  kind: "codex";
+  kind: AgentKind;
   home: string;
   binary?: string;
   version?: string;
@@ -121,7 +134,7 @@ export interface PlannedOperation {
   paths: string[];
   sizeBytes: number;
   backupEligible: boolean;
-  requiresCodexExit: boolean;
+  requiresAgentExit: boolean;
   blockers: string[];
 }
 
@@ -155,10 +168,13 @@ export interface BackupRecord {
   originalBytes: number;
   itemCount: number;
   operationId: string;
+  agent: AgentKind;
 }
 
 export interface AppSettings {
+  activeAgent: AgentKind;
   customCodexHome?: string;
+  customClaudeHome?: string;
   locale: "system" | "zh" | "en";
   theme: "system" | "light" | "dark";
   backupRetentionDays: number;

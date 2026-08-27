@@ -1,6 +1,6 @@
 # Agent memory research and implementation plan
 
-Status: design proposal, researched 2026-08-27.
+Status: shared capability model and project-level Claude Code cleanup implemented; entry editing remains planned. Researched and updated 2026-08-27.
 
 ## Terminology
 
@@ -17,7 +17,7 @@ Deleting a session does not imply that already consolidated memory is forgotten.
 | Agent | Native automatic memory | Storage and scope | Supported control surface | CleanerX decision |
 | --- | --- | --- | --- | --- |
 | Codex | Yes | Local Codex Home, primarily `memories/`; consolidated state is global to the local host | `/memories` controls use/generation per chat. The documented App Server has no entry-level memory CRUD API. The locally observed Codex 0.145.0 schema exposes capability-probed `memory/reset` and chat memory-mode control, but no list/get/update/delete methods. | Scan metadata, load bounded details on demand, and offer global reset only when the runtime reports the capability. Do not edit generated files or private SQLite. |
-| Claude Code | Yes | `~/.claude/projects/<project>/memory/`, one repository-scoped directory shared by its worktrees; `MEMORY.md` indexes topic Markdown files | Official documentation says auto-memory Markdown files may be edited or deleted at any time and `/memory` opens them. | First candidate for entry-level read/edit/delete. Treat `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/` as protected instructions, not memory. |
+| Claude Code | Yes | `~/.claude/projects/<project>/memory/`, one repository-scoped directory shared by its worktrees; `MEMORY.md` indexes topic Markdown files | Official documentation says auto-memory Markdown files may be edited or deleted at any time and `/memory` opens them. | Scan bounded metadata/content and delete a selected project's complete auto-memory directory through the verified file transaction. Entry editing remains disabled. Treat `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/` as protected instructions, not memory. |
 | OpenCode | No native automatic-memory surface documented | Official persistence is instruction files such as project/global `AGENTS.md`; sessions are separate | The open native auto-memory proposal explicitly describes cross-session learning as absent today. | Do not present rules as memory or add a reset/editor. Detect a future native capability before enabling one. |
 | Pi | No native automatic-memory surface documented | Official persistent context is `AGENTS.md`/`CLAUDE.md`, system-prompt files, sessions, and extension-owned data | Extensions can implement arbitrary storage and UI, so there is no single core memory schema to manage safely. | Keep core instruction files protected. Support memory only through a future adapter for a specific, recognized extension and schema. |
 
@@ -62,13 +62,14 @@ Source: [Pi coding-agent README](https://github.com/earendil-works/pi/blob/main/
 
 ## Core capability model
 
-The current `memory_reset` boolean is sufficient for the Codex MVP but not for multiple Agents. Before the Claude adapter lands, replace it with an explicit compile-time capability description:
+The former `memory_reset` boolean has been replaced with this explicit compile-time capability description:
 
 ```rust
 pub struct MemoryCapabilities {
     pub can_scan: bool,
     pub can_read_content: bool,
     pub can_reset_all: bool,
+    pub can_reset_scope: bool,
     pub can_edit_entries: bool,
     pub can_delete_entries: bool,
     pub can_toggle_use: bool,
@@ -90,7 +91,7 @@ An inventory entry also needs a stable adapter-owned ID, scope, optional project
 - The Memory page renders only capabilities the detected adapter actually supports.
 - Content is loaded only after an explicit detail action and cleared when the detail view closes. Inventory scanning retains metadata, not memory bodies.
 - Codex shows a global memory object with inspect/reset behavior. It must explain that reliable per-project deletion is unavailable after consolidation.
-- Claude Code shows project roots and individual memory entries. Editing opens a Markdown-aware form with a before/after diff; deletion and bulk reset show the affected index and topic files.
+- Claude Code currently shows one cleanup item per project memory directory with bounded Markdown details. Deletion shows and backs up the complete affected index/topic-file set. A future entry editor will add individual topic entries and a Markdown-aware before/after diff.
 - OpenCode and Pi show no native memory editor until a recognized native or extension-specific capability exists.
 - Memory use/generation toggles are settings, not cleanup selections. They must never be silently changed as a side effect of deletion.
 - Instructions remain in a separate protected category and do not appear as editable memory even when an Agent's own UI calls them “memory files.”
@@ -117,16 +118,16 @@ Codex never receives a direct file or SQLite write fallback. Claude Code editing
 - Complete backup, journal, reset, rescan, and restore fault-injection coverage.
 - Keep per-project editing disabled.
 
-### Phase 2 — Shared memory domain model
+### Phase 2 — Shared memory domain model (complete)
 
 - Add `MemoryCapabilities`, `MemoryScope`, `MemoryEntry`, and purpose-specific adapter methods.
 - Keep Tauri commands ID-based: list from the current snapshot, read one entry, prepare an edit/delete plan, execute, and verify.
 - Add capability-driven GUI states and synchronized Chinese/English copy.
 
-### Phase 3 — Claude Code entry editor
+### Phase 3 — Claude Code project cleanup complete; entry editor pending
 
-- Detect the default auto-memory root and an explicit user override without treating general Claude configuration as cleanup data.
-- Parse `MEMORY.md` plus recognized topic Markdown with bounded reads and preserved unknown frontmatter.
+- Detect the default auto-memory root beneath Claude Code Home without treating general Claude configuration as cleanup data. External `autoMemoryDirectory` targets remain unsupported because they are outside the fixed cleanup root.
+- Parse `MEMORY.md` plus topic Markdown only for bounded, explicit detail reads; project cleanup preserves bytes in the optional encrypted backup.
 - Implement entry edit/delete and project reset with optimistic concurrency, encrypted backup, atomic multi-file journaling, and post-write verification.
 - Add fixtures for repository/worktree sharing, custom roots, missing indexes, duplicate links, malformed frontmatter, symlinks, permission failures, and concurrent edits.
 

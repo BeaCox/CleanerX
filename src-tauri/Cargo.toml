@@ -11,6 +11,7 @@ name = "cleanerx_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+adapter-claude = { path = "../crates/adapter-claude" }
 adapter-codex = { path = "../crates/adapter-codex" }
 cleanerx-core = { path = "../crates/cleanerx-core" }
 chrono.workspace = true

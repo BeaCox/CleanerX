@@ -3,6 +3,22 @@
 version = 4
 
 [[package]]
+name = "adapter-claude"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cleanerx-core",
+ "dirs",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "adapter-codex"
 version = "0.1.0"
 dependencies = [
@@ -684,6 +700,7 @@ dependencies = [
 name = "cleanerx-app"
 version = "0.1.0"
 dependencies = [
+ "adapter-claude",
  "adapter-codex",
  "chrono",
  "cleanerx-core",
@@ -710,6 +727,7 @@ dependencies = [
  "dirs",
  "hex",
  "keyring",
+ "libc",
  "parking_lot",
  "rusqlite",
  "serde",

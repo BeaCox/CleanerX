@@ -17,22 +17,71 @@ pub enum CleanerError {
     UnsafePath(String),
     #[error("operation is blocked: {0}")]
     Blocked(String),
-    #[error("Codex integration error: {0}")]
+    #[error("Agent integration error: {0}")]
     Integration(String),
     #[error("backup error: {0}")]
     Backup(String),
     #[error("not found: {0}")]
     NotFound(String),
-    #[error("unsupported Codex capability: {0}")]
+    #[error("unsupported Agent capability: {0}")]
     Unsupported(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentKind {
+    #[default]
     Codex,
+    ClaudeCode,
+}
+
+impl AgentKind {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::ClaudeCode => "Claude Code",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryScope {
+    Global,
+    Project,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryCapabilities {
+    pub can_scan: bool,
+    pub can_read_content: bool,
+    pub can_reset_all: bool,
+    pub can_reset_scope: bool,
+    pub can_edit_entries: bool,
+    pub can_delete_entries: bool,
+    pub can_toggle_use: bool,
+    pub can_toggle_generation: bool,
+    pub scope: MemoryScope,
+}
+
+impl Default for MemoryCapabilities {
+    fn default() -> Self {
+        Self {
+            can_scan: false,
+            can_read_content: false,
+            can_reset_all: false,
+            can_reset_scope: false,
+            can_edit_entries: false,
+            can_delete_entries: false,
+            can_toggle_use: false,
+            can_toggle_generation: false,
+            scope: MemoryScope::Global,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -82,7 +131,7 @@ pub enum OperationStatus {
 pub struct AgentCapabilities {
     pub thread_list: bool,
     pub thread_delete: bool,
-    pub memory_reset: bool,
+    pub memory: MemoryCapabilities,
     pub descendant_filter: bool,
     pub report_only: bool,
 }
@@ -92,7 +141,7 @@ impl Default for AgentCapabilities {
         Self {
             thread_list: false,
             thread_delete: false,
-            memory_reset: false,
+            memory: MemoryCapabilities::default(),
             descendant_filter: false,
             report_only: true,
         }
@@ -240,7 +289,7 @@ pub struct PlannedOperation {
     pub paths: Vec<String>,
     pub size_bytes: u64,
     pub backup_eligible: bool,
-    pub requires_codex_exit: bool,
+    pub requires_agent_exit: bool,
     pub blockers: Vec<String>,
 }
 
@@ -294,6 +343,8 @@ pub struct BackupRecord {
     pub original_bytes: u64,
     pub item_count: usize,
     pub operation_id: Uuid,
+    #[serde(default)]
+    pub agent: AgentKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,8 +360,11 @@ pub struct CleanupResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct AppSettings {
+    pub active_agent: AgentKind,
     pub custom_codex_home: Option<String>,
+    pub custom_claude_home: Option<String>,
     pub locale: String,
     pub theme: String,
     pub backup_retention_days: u32,
@@ -321,7 +375,9 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            active_agent: AgentKind::Codex,
             custom_codex_home: None,
+            custom_claude_home: None,
             locale: "system".into(),
             theme: "system".into(),
             backup_retention_days: 30,
