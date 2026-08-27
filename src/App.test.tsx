@@ -1,6 +1,15 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { api } from "./api";
+import type { CleanupItem, InventorySnapshot, SessionRecord } from "./types";
+
+function chooseMenuOption(label: string, option: string) {
+  const trigger = screen.getByRole("combobox", { name: label });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("option", { name: option }));
+  return trigger;
+}
 
 describe("CleanerX GUI", () => {
   it("uses the CleanerX artwork in the toolbar brand", () => {
@@ -28,18 +37,20 @@ describe("CleanerX GUI", () => {
     const first = render(<App />);
     await screen.findByText("Managed data");
     const switcher = screen.getByRole("combobox", { name: "Target Agent" });
-    expect(switcher).toHaveValue("codex");
+    expect(switcher).toHaveAttribute("data-value", "codex");
 
-    fireEvent.change(switcher, { target: { value: "claudeCode" } });
+    chooseMenuOption("Target Agent", "Claude Code");
 
+    expect(screen.getByText("Storage breakdown")).toBeVisible();
+    expect(screen.getAllByText("Waiting for scan data").length).toBeGreaterThan(0);
     expect(await screen.findByText("Switched to Claude Code")).toBeVisible();
-    expect(switcher).toHaveValue("claudeCode");
+    expect(switcher).toHaveAttribute("data-value", "claudeCode");
     expect(screen.getByText("2.1.238")).toBeVisible();
     first.unmount();
 
     render(<App />);
     await screen.findByText("Managed data");
-    expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveValue("claudeCode");
+    expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveAttribute("data-value", "claudeCode");
   });
 
   it("preserves the overview layout while scan data is pending", () => {
@@ -67,7 +78,6 @@ describe("CleanerX GUI", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("button", { name: "Save settings" })).toBeVisible();
-    expect(screen.queryByText("Scanning…")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Scanning…" })).not.toBeInTheDocument();
   });
 
@@ -176,14 +186,17 @@ describe("CleanerX GUI", () => {
 
     expect(screen.getByRole("button", { name: "Collapse No project" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: "Select sessions with no project" })).toBeDisabled();
-    expect(screen.getByRole("option", { name: "No project" })).toHaveValue("__no_project");
+    const projectFilter = screen.getByRole("combobox", { name: "Filter by project" });
+    fireEvent.click(projectFilter);
+    expect(screen.getByRole("option", { name: "No project" })).toHaveAttribute("aria-selected", "false");
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter by project" }), { target: { value: "__no_project" } });
+    fireEvent.click(screen.getByRole("option", { name: "No project" }));
+    expect(projectFilter).toHaveAttribute("data-value", "__no_project");
     expect(screen.getByRole("checkbox", { name: "CleanerX" })).toBeVisible();
     expect(screen.queryByText("Design token migration")).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter by project" }), { target: { value: "all" } });
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter by updated time" }), { target: { value: "7" } });
+    chooseMenuOption("Filter by project", "All projects");
+    chooseMenuOption("Filter by updated time", "Last 7 days");
     expect(screen.getByText("Design token migration")).toBeVisible();
     expect(screen.queryByText("Fix flaky integration tests")).not.toBeInTheDocument();
 
@@ -207,8 +220,54 @@ describe("CleanerX GUI", () => {
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
 
-    expect(screen.getByRole("option", { name: "Desktop / IDE" })).toHaveValue("vscode");
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter by source" }));
+    expect(screen.getByRole("option", { name: "Desktop / IDE" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getAllByText("Desktop / IDE").length).toBeGreaterThan(1);
+  });
+
+  it("supports keyboard navigation in custom filter menus", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+
+    const projectFilter = screen.getByRole("combobox", { name: "Filter by project" });
+    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
+    expect(projectFilter).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(projectFilter, { key: "ArrowDown" });
+    fireEvent.keyDown(projectFilter, { key: "Enter" });
+
+    expect(projectFilter).toHaveAttribute("data-value", "atlas");
+    expect(projectFilter).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Design token migration")).toBeVisible();
+    expect(screen.queryByText("Fix flaky integration tests")).not.toBeInTheDocument();
+  });
+
+  it("loads large session inventories in bounded batches", async () => {
+    const base = await api.scanStorage("codex");
+    const largeSnapshot = createLargeSessionSnapshot(base, 161);
+    const scan = vi.spyOn(api, "scanStorage").mockResolvedValue(largeSnapshot);
+
+    const view = render(<App />);
+    try {
+      await screen.findByText("Managed data");
+      fireEvent.click(screen.getByRole("button", { name: /Sessions 161/ }));
+
+      expect(screen.getByText("Showing 80 of 161 sessions")).toBeVisible();
+      expect(screen.getByText("Bulk session 079")).toBeVisible();
+      expect(screen.queryByText("Bulk session 080")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show 80 more" }));
+      expect(screen.getByText("Showing 160 of 161 sessions")).toBeVisible();
+      expect(screen.getByText("Bulk session 159")).toBeVisible();
+      expect(screen.queryByText("Bulk session 160")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show 1 more" }));
+      expect(screen.getByText("Bulk session 160")).toBeVisible();
+      expect(screen.queryByText(/Showing \d+ of 161 sessions/)).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      scan.mockRestore();
+    }
   });
 
   it("selects and clears every cleanable item in the current filter", async () => {
@@ -341,3 +400,46 @@ describe("CleanerX GUI", () => {
     expect(screen.getByText("Backup permanently deleted")).toBeVisible();
   });
 });
+
+function createLargeSessionSnapshot(base: InventorySnapshot, count: number): InventorySnapshot {
+  const sessionTemplate = base.sessions[1];
+  const itemTemplate = base.items.find((item) => item.threadId === sessionTemplate.id)!;
+  const sessions: SessionRecord[] = Array.from({ length: count }, (_, index) => ({
+    ...sessionTemplate,
+    id: `bulk-session-${index.toString().padStart(3, "0")}`,
+    name: `Bulk session ${index.toString().padStart(3, "0")}`,
+    cwd: `/Users/demo/Developer/bulk/project-${index}`,
+    archived: false,
+    pinned: false,
+    status: "notLoaded",
+    updatedAt: new Date(Date.now() - index * 60_000).toISOString(),
+    parentThreadId: undefined,
+    descendantIds: [],
+  }));
+  const sessionItems: CleanupItem[] = sessions.map((session) => ({
+    ...itemTemplate,
+    id: `session:${session.id}`,
+    category: "session",
+    title: session.name,
+    subtitle: session.cwd,
+    paths: [`/Users/demo/.codex/sessions/${session.id}.jsonl`],
+    projectId: undefined,
+    threadId: session.id,
+    modifiedAt: session.updatedAt,
+    blockedReason: undefined,
+  }));
+  const otherItems = base.items.filter((item) => !item.threadId);
+  const items = [...sessionItems, ...otherItems];
+  const sessionBytes = sessionItems.reduce((sum, item) => sum + item.sizeBytes, 0);
+  return {
+    ...base,
+    id: crypto.randomUUID(),
+    sessions,
+    projects: [],
+    items,
+    totalBytes: sessionBytes + otherItems.filter((item) => item.category !== "protected").reduce((sum, item) => sum + item.sizeBytes, 0),
+    categories: base.categories
+      .filter((category) => category.category !== "archivedSession")
+      .map((category) => category.category === "session" ? { ...category, itemCount: count, sizeBytes: sessionBytes } : category),
+  };
+}

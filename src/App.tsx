@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   Archive,
@@ -75,6 +85,7 @@ const categoryTranslation: Record<StorageCategory, string> = {
 };
 
 const NO_PROJECT_ID = "__no_project";
+const SESSION_BATCH_SIZE = 80;
 
 const navItems: Array<{ id: ViewId; icon: typeof HardDrive; label: string }> = [
   { id: "overview", icon: HardDrive, label: "overview" },
@@ -266,20 +277,30 @@ export default function App() {
 
   const switchAgent = async (targetAgent: AgentKind) => {
     if (!settings || targetAgent === activeAgent || busy !== null) return;
+    const previousAgent = activeAgent;
+    const previousSnapshot = snapshot;
+    let settingsSaved = false;
     setBusy("scan");
     setError(undefined);
+    setNotice(undefined);
+    setActiveAgent(targetAgent);
+    setSnapshot(undefined);
+    setSelected(new Set());
+    setPlan(undefined);
+    setDetailItemId(undefined);
     try {
       const saved = await api.updateSettings({ ...settings, activeAgent: targetAgent });
+      settingsSaved = true;
       cachePreferences(saved);
       setSettings(saved);
-      setActiveAgent(targetAgent);
-      setSelected(new Set());
-      setPlan(undefined);
-      setDetailItemId(undefined);
       const result = await api.scanStorage(targetAgent);
       setSnapshot(result);
       setNotice(t("agentSwitched", { agent: agentName(targetAgent) }));
     } catch (reason) {
+      if (!settingsSaved) {
+        setActiveAgent(previousAgent);
+        setSnapshot(previousSnapshot);
+      }
       setError(messageOf(reason));
     } finally {
       setBusy(null);
@@ -342,20 +363,19 @@ export default function App() {
 
       <footer className="status-bar">
         <span className="status-env">
-          <span className={`status-dot ${snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
-          <label className="visually-hidden" htmlFor="target-agent">{t("targetAgent")}</label>
-          <select
-            id="target-agent"
-            className="agent-switcher"
-            aria-label={t("targetAgent")}
+          <span className={`status-dot ${busy === "scan" ? "status-scanning" : snapshot?.installation.capabilities.reportOnly ? "status-warning" : ""}`} />
+          <SelectMenu
+            label={t("targetAgent")}
             value={activeAgent}
+            options={[
+              { value: "codex", label: "Codex" },
+              { value: "claudeCode", label: "Claude Code" },
+            ]}
+            variant="agent"
             disabled={!settings || busy !== null}
-            onChange={(event) => void switchAgent(event.target.value as AgentKind)}
-          >
-            <option value="codex">Codex</option>
-            <option value="claudeCode">Claude Code</option>
-          </select>
-          <span className="agent-version">{displayAgentVersion(snapshot)}</span>
+            onChange={(value) => void switchAgent(value as AgentKind)}
+          />
+          <span className="agent-version">{busy === "scan" && !snapshot ? t("scanning") : displayAgentVersion(snapshot)}</span>
         </span>
         {selected.size > 0 && !plan ? (
           <span className="status-selection" role="status">
@@ -477,32 +497,62 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   const [state, setState] = useState("all");
   const [updatedWithin, setUpdatedWithin] = useState("all");
   const [displayMode, setDisplayMode] = useState<"tree" | "list">("tree");
+  const [visibleCount, setVisibleCount] = useState(SESSION_BATCH_SIZE);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(sessionTreeExpansionKeys(snapshot, new Set(snapshot.sessions.map((session) => session.id)))));
-  const hasNoProjectSessions = snapshot.sessions.some((session) => !snapshot.items.find((candidate) => candidate.threadId === session.id)?.projectId);
-  const rows = snapshot.sessions.filter((session) => {
-    const item = snapshot.items.find((candidate) => candidate.threadId === session.id);
-    const matchesQuery = `${session.name} ${session.cwd}`.toLowerCase().includes(query.toLowerCase());
-    const matchesProject = project === "all" || (project === NO_PROJECT_ID ? Boolean(item && !item.projectId) : item?.projectId === project);
-    const matchesSource = source === "all" || session.source === source;
-    const matchesState = state === "all" || (state === "archived" ? session.archived : !session.archived);
-    const matchesUpdated = updatedWithin === "all" || isWithinDays(session.updatedAt, Number(updatedWithin));
-    return matchesQuery && matchesProject && matchesSource && matchesState && matchesUpdated;
-  }).sort(sortSessions);
-  const rowItems = rows
-    .map((session) => snapshot.items.find((candidate) => candidate.threadId === session.id))
+  const itemByThread = useMemo(
+    () => new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item])),
+    [snapshot.items],
+  );
+  const sessionById = useMemo(() => new Map(snapshot.sessions.map((session) => [session.id, session])), [snapshot.sessions]);
+  const childrenByParent = useMemo(() => {
+    const result = new Map<string, SessionRecord[]>();
+    snapshot.sessions.forEach((session) => {
+      if (!session.parentThreadId) return;
+      const children = result.get(session.parentThreadId) ?? [];
+      children.push(session);
+      result.set(session.parentThreadId, children);
+    });
+    result.forEach((children) => children.sort(sortSessions));
+    return result;
+  }, [snapshot.sessions]);
+  const hasNoProjectSessions = useMemo(
+    () => snapshot.sessions.some((session) => !itemByThread.get(session.id)?.projectId),
+    [itemByThread, snapshot.sessions],
+  );
+  const sourceOptions = useMemo(
+    () => [...new Set(snapshot.sessions.map((item) => item.source))].map((value) => ({ value, label: sourceLabel(value) })),
+    [snapshot.sessions],
+  );
+  const rows = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return snapshot.sessions.filter((session) => {
+      const item = itemByThread.get(session.id);
+      const matchesQuery = !normalizedQuery || `${session.name} ${session.cwd}`.toLowerCase().includes(normalizedQuery);
+      const matchesProject = project === "all" || (project === NO_PROJECT_ID ? Boolean(item && !item.projectId) : item?.projectId === project);
+      const matchesSource = source === "all" || session.source === source;
+      const matchesState = state === "all" || (state === "archived" ? session.archived : !session.archived);
+      const matchesUpdated = updatedWithin === "all" || isWithinDays(session.updatedAt, Number(updatedWithin));
+      return matchesQuery && matchesProject && matchesSource && matchesState && matchesUpdated;
+    }).sort(sortSessions);
+  }, [itemByThread, project, query, snapshot.sessions, source, state, updatedWithin]);
+  useEffect(() => setVisibleCount(SESSION_BATCH_SIZE), [displayMode, project, query, snapshot.id, source, state, updatedWithin]);
+  const displayedRows = useMemo(() => rows.slice(0, visibleCount), [rows, visibleCount]);
+  const rowItems = displayedRows
+    .map((session) => itemByThread.get(session.id))
     .filter((item): item is CleanupItem => Boolean(item));
-  const matchingSessionIds = new Set(rows.map((session) => session.id));
+  const matchingSessionIds = new Set(displayedRows.map((session) => session.id));
   const visibleSessionIds = includeSessionAncestors(snapshot.sessions, matchingSessionIds);
   const expansionKeys = sessionTreeExpansionKeys(snapshot, visibleSessionIds);
   const allExpanded = expansionKeys.length > 0 && expansionKeys.every((key) => expanded.has(key));
+  const remainingCount = Math.max(0, rows.length - displayedRows.length);
   useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
   return <section className="panel-card table-panel session-panel">
     <div className="filter-row session-filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
-      <select aria-label={t("projectFilter")} value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}{hasNoProjectSessions && <option value={NO_PROJECT_ID}>{t("noProject")}</option>}</select>
-      <select aria-label={t("sourceFilter")} value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
-      <select aria-label={t("stateFilter")} value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
-      <select aria-label={t("updatedFilter")} value={updatedWithin} onChange={(event) => setUpdatedWithin(event.target.value)}><option value="all">{t("allTime")}</option><option value="7">{t("last7Days")}</option><option value="30">{t("last30Days")}</option></select>
+      <SelectMenu label={t("projectFilter")} value={project} onChange={setProject} options={[{ value: "all", label: t("allProjects") }, ...snapshot.projects.map((item) => ({ value: item.id, label: item.name })), ...(hasNoProjectSessions ? [{ value: NO_PROJECT_ID, label: t("noProject") }] : [])]} />
+      <SelectMenu label={t("sourceFilter")} value={source} onChange={setSource} options={[{ value: "all", label: t("allSources") }, ...sourceOptions]} />
+      <SelectMenu label={t("stateFilter")} value={state} onChange={setState} options={[{ value: "all", label: t("allStates") }, { value: "active", label: t("activeOnly") }, { value: "archived", label: t("archivedOnly") }]} />
+      <SelectMenu label={t("updatedFilter")} value={updatedWithin} onChange={setUpdatedWithin} options={[{ value: "all", label: t("allTime") }, { value: "7", label: t("last7Days") }, { value: "30", label: t("last30Days") }]} />
     </div>
     <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut>
       <div className="view-switcher" aria-label={t("viewMode")}>
@@ -512,17 +562,21 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
       {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? <ChevronsUp size={14} /> : <ChevronsDown size={14} />}{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
     </BulkActions>
     {displayMode === "tree" ? (
-      <SessionTreeTable snapshot={snapshot} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />
-    ) : <SessionListTable snapshot={snapshot} rows={rows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
+      <SessionTreeTable snapshot={snapshot} sessionById={sessionById} itemByThread={itemByThread} childrenByParent={childrenByParent} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />
+    ) : <SessionListTable snapshot={snapshot} itemByThread={itemByThread} rows={displayedRows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
+    {remainingCount > 0 && <div className="session-progressive-footer">
+      <span>{t("sessionsShown", { shown: displayedRows.length, total: rows.length })}</span>
+      <button type="button" className="secondary-button" onClick={() => setVisibleCount((count) => Math.min(rows.length, count + SESSION_BATCH_SIZE))}>{t("loadMoreSessions", { count: Math.min(SESSION_BATCH_SIZE, remainingCount) })}<ChevronDown size={14} /></button>
+    </div>}
     {!rows.length && <EmptyState />}
   </section>;
 }
 
-function SessionListTable({ snapshot, rows, selected, toggle, inspect }: SelectionProps & { rows: SessionRecord[] }) {
+function SessionListTable({ snapshot, itemByThread, rows, selected, toggle, inspect }: SelectionProps & { itemByThread: Map<string, CleanupItem>; rows: SessionRecord[] }) {
   const { t } = useTranslation();
   return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th className="session-col-project">{t("project")}</th><th className="session-col-source">{t("source")}</th><th className="session-col-updated">{t("updated")}</th><th className="session-col-size">{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
-        const item = snapshot.items.find((candidate) => candidate.threadId === session.id)!;
+        const item = itemByThread.get(session.id)!;
         const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name ?? t("noProject");
         return <tr key={session.id} className={`clickable-data-row ${item.blockedReason ? "row-blocked" : ""}`} tabIndex={0} aria-label={`${t("openDetails")} ${session.name}`} onClick={(event) => { if (!isInteractiveTarget(event.target)) inspect(item); }} onKeyDown={(event) => { if (event.key === "Enter" && !isInteractiveTarget(event.target)) inspect(item); }}>
           <td><CheckBox checked={selected.has(item.id)} disabled={Boolean(item.blockedReason)} onChange={() => toggle(item)} label={session.name} /></td>
@@ -533,10 +587,8 @@ function SessionListTable({ snapshot, rows, selected, toggle, inspect }: Selecti
     </tbody></table></div>;
 }
 
-function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect, expanded, toggleExpanded }: SelectionProps & { visibleSessionIds: Set<string>; matchingSessionIds: Set<string>; expanded: Set<string>; toggleExpanded: (key: string) => void }) {
+function SessionTreeTable({ snapshot, sessionById, itemByThread, childrenByParent, visibleSessionIds, matchingSessionIds, selected, toggle, selectMany, inspect, expanded, toggleExpanded }: SelectionProps & { sessionById: Map<string, SessionRecord>; itemByThread: Map<string, CleanupItem>; childrenByParent: Map<string, SessionRecord[]>; visibleSessionIds: Set<string>; matchingSessionIds: Set<string>; expanded: Set<string>; toggleExpanded: (key: string) => void }) {
   const { t } = useTranslation();
-  const sessionById = new Map(snapshot.sessions.map((session) => [session.id, session]));
-  const itemByThread = new Map(snapshot.items.filter((item) => item.threadId).map((item) => [item.threadId!, item]));
   const assigned = new Set(snapshot.projects.flatMap((project) => project.sessionIds));
   const noProjectIds = [...visibleSessionIds].filter((id) => !assigned.has(id));
   const projects: ProjectGroup[] = [
@@ -547,9 +599,8 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
   const renderSession = (session: SessionRecord, projectIds: Set<string>, depth: number): ReactNode[] => {
     const item = itemByThread.get(session.id);
     if (!item) return [];
-    const children = snapshot.sessions
-      .filter((candidate) => candidate.parentThreadId === session.id && projectIds.has(candidate.id) && visibleSessionIds.has(candidate.id))
-      .sort(sortSessions);
+    const children = (childrenByParent.get(session.id) ?? [])
+      .filter((candidate) => projectIds.has(candidate.id) && visibleSessionIds.has(candidate.id));
     const key = `session:${session.id}`;
     const isExpanded = expanded.has(key);
     const contextOnly = !matchingSessionIds.has(session.id);
@@ -612,8 +663,11 @@ function sessionTreeExpansionKeys(snapshot: InventorySnapshot, visibleSessionIds
     .filter((project) => project.sessionIds.some((id) => visibleSessionIds.has(id)))
     .map((project) => `project:${project.id}`);
   if ([...visibleSessionIds].some((id) => !assigned.has(id))) keys.push(`project:${NO_PROJECT_ID}`);
+  const visibleParentIds = new Set(snapshot.sessions
+    .filter((session) => visibleSessionIds.has(session.id) && session.parentThreadId)
+    .map((session) => session.parentThreadId!));
   keys.push(...snapshot.sessions
-    .filter((session) => visibleSessionIds.has(session.id) && snapshot.sessions.some((candidate) => candidate.parentThreadId === session.id && visibleSessionIds.has(candidate.id)))
+    .filter((session) => visibleSessionIds.has(session.id) && visibleParentIds.has(session.id))
     .map((session) => `session:${session.id}`));
   return keys;
 }
@@ -936,6 +990,129 @@ function BulkActions({ items, snapshot, selected, selectMany, shortcut = false, 
     <button type="button" className="secondary-button bulk-select-button" disabled={!selectable.length} onClick={() => selectMany(selectable, !allSelected)}>{allSelected ? <X size={14} /> : <Check size={14} />}{allSelected ? t("deselectAllResults") : t("selectAllResults")}</button>
     <span>{t("selectionScope", { selected: selectedCount, total: selectable.length })}{shortcut && <kbd>⌘/Ctrl A</kbd>}</span>
     {children}
+  </div>;
+}
+
+interface SelectMenuOption {
+  value: string;
+  label: string;
+}
+
+function SelectMenu({ label, value, options, onChange, disabled = false, variant = "filter" }: { label: string; value: string; options: SelectMenuOption[]; onChange: (value: string) => void; disabled?: boolean; variant?: "filter" | "agent" }) {
+  const menuId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const selectedOption = options[selectedIndex];
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOutside);
+    return () => window.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  const openMenu = (index = selectedIndex) => {
+    if (disabled || !options.length) return;
+    setActiveIndex(index);
+    setOpen(true);
+  };
+  const choose = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    setActiveIndex(index);
+    setOpen(false);
+    if (option.value !== value) onChange(option.value);
+    triggerRef.current?.focus();
+  };
+  const move = (amount: number) => {
+    setActiveIndex((current) => (current + amount + options.length) % options.length);
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) openMenu(); else move(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Home" && open) {
+      event.preventDefault();
+      setActiveIndex(0);
+      return;
+    }
+    if (event.key === "End" && open) {
+      event.preventDefault();
+      setActiveIndex(options.length - 1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (open) choose(activeIndex); else openMenu();
+      return;
+    }
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (event.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const start = open ? activeIndex + 1 : selectedIndex + 1;
+      const normalized = event.key.toLocaleLowerCase();
+      const match = [...options, ...options]
+        .slice(start, start + options.length)
+        .findIndex((option) => option.label.toLocaleLowerCase().startsWith(normalized));
+      if (match >= 0) {
+        event.preventDefault();
+        openMenu((start + match) % options.length);
+      }
+    }
+  };
+
+  return <div ref={rootRef} className={`select-menu select-menu-${variant} ${open ? "select-menu-open" : ""}`}>
+    <button
+      ref={triggerRef}
+      type="button"
+      className="select-menu-trigger"
+      role="combobox"
+      aria-label={label}
+      aria-haspopup="listbox"
+      aria-controls={open ? `${menuId}-listbox` : undefined}
+      aria-expanded={open}
+      aria-activedescendant={open ? `${menuId}-option-${activeIndex}` : undefined}
+      data-value={value}
+      disabled={disabled}
+      onClick={() => open ? setOpen(false) : openMenu()}
+      onKeyDown={onKeyDown}
+    >
+      <span title={selectedOption?.label}>{selectedOption?.label ?? value}</span>
+      <ChevronDown size={variant === "agent" ? 12 : 14} aria-hidden="true" />
+    </button>
+    {open && <div id={`${menuId}-listbox`} className="select-menu-popover" role="listbox" aria-label={label}>
+      {options.map((option, index) => <button
+        id={`${menuId}-option-${index}`}
+        type="button"
+        role="option"
+        aria-selected={option.value === value}
+        className={`${index === activeIndex ? "option-active" : ""} ${option.value === value ? "option-selected" : ""}`}
+        key={option.value}
+        onPointerMove={() => setActiveIndex(index)}
+        onClick={() => choose(index)}
+      >
+        <span title={option.label}>{option.label}</span>
+        {option.value === value && <Check size={13} aria-hidden="true" />}
+      </button>)}
+    </div>}
   </div>;
 }
 
