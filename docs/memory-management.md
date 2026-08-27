@@ -1,6 +1,6 @@
-# Agent memory research and implementation plan
+# Agent memory capability and safety model
 
-Status: shared capability model and project-level Claude Code cleanup implemented; entry editing remains planned. Researched and updated 2026-08-27.
+Status: shared capability model and project-level Claude Code cleanup implemented. Claude Code entry editing is not yet implemented; all unfinished work is tracked only in the [development roadmap](roadmap.md). Researched and updated 2026-08-27.
 
 ## Terminology
 
@@ -17,7 +17,7 @@ Deleting a session does not imply that already consolidated memory is forgotten.
 | Agent | Native automatic memory | Storage and scope | Supported control surface | CleanerX decision |
 | --- | --- | --- | --- | --- |
 | Codex | Yes | Local Codex Home, primarily `memories/`; consolidated state is global to the local host | `/memories` controls use/generation per chat. The documented App Server has no entry-level memory CRUD API. The locally observed Codex 0.145.0 schema exposes capability-probed `memory/reset` and chat memory-mode control, but no list/get/update/delete methods. | Scan metadata, load bounded details on demand, and offer global reset only when the runtime reports the capability. Do not edit generated files or private SQLite. |
-| Claude Code | Yes | `~/.claude/projects/<project>/memory/`, one repository-scoped directory shared by its worktrees; `MEMORY.md` indexes topic Markdown files | Official documentation says auto-memory Markdown files may be edited or deleted at any time and `/memory` opens them. | Scan bounded metadata/content and delete a selected project's complete auto-memory directory through the verified file transaction. Entry editing remains disabled. Treat `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/` as protected instructions, not memory. |
+| Claude Code | Yes | `~/.claude/projects/<project>/memory/`, one repository-scoped directory shared by its worktrees; `MEMORY.md` indexes topic Markdown files | Official documentation says auto-memory Markdown files may be edited or deleted at any time and `/memory` opens them. | Scan bounded metadata/content and delete a selected project's complete auto-memory directory through the verified file transaction. Entry editing is not yet supported by CleanerX. Treat `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/` as protected instructions, not memory. |
 | OpenCode | No native automatic-memory surface documented | Official persistence is instruction files such as project/global `AGENTS.md`; sessions are separate | The open native auto-memory proposal explicitly describes cross-session learning as absent today. | Do not present rules as memory or add a reset/editor. Detect a future native capability before enabling one. |
 | Pi | No native automatic-memory surface documented | Official persistent context is `AGENTS.md`/`CLAUDE.md`, system-prompt files, sessions, and extension-owned data | Extensions can implement arbitrary storage and UI, so there is no single core memory schema to manage safely. | Keep core instruction files protected. Support memory only through a future adapter for a specific, recognized extension and schema. |
 
@@ -44,6 +44,14 @@ Claude Code explicitly separates user-authored instructions from auto memory. Au
 This makes Claude Code suitable for an editor, but not for blind file manipulation. CleanerX must preserve unknown frontmatter, keep the index and topic files consistent, and avoid all instruction/configuration paths.
 
 Source: [Claude Code memory documentation](https://code.claude.com/docs/en/memory)
+
+#### Why CleanerX does not edit these Markdown files yet
+
+The Markdown format is not a reason to prohibit editing. Claude Code's documented project auto-memory files are user-editable, so CleanerX may provide an editor once its mutation path meets the same safety bar as cleanup and restore. The current disabled control means **not yet supported by CleanerX**, not **forbidden by Claude Code** or **inherently read-only**. User-facing copy should preserve that distinction.
+
+A project memory is a coordinated file set rather than one independent text file: `MEMORY.md` indexes topic files, topic files may contain known and unknown frontmatter, and one repository-scoped directory can be shared by multiple worktrees. A safe editor therefore must avoid losing unknown fields or unrelated topics, detect a newer Claude Code write before committing, keep index/topic changes consistent, journal multi-file changes atomically, and verify the result by rescanning. The concrete implementation work is centralized in [M4 of the development roadmap](roadmap.md#m4--additional-agent-adapters).
+
+This permission applies only to Claude Code **automatic memory** beneath the recognized project memory root. `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, and other instructions or configuration remain protected even though they are also Markdown.
 
 ### OpenCode
 
@@ -91,7 +99,7 @@ An inventory entry also needs a stable adapter-owned ID, scope, optional project
 - The Memory page renders only capabilities the detected adapter actually supports.
 - Content is loaded only after an explicit detail action and cleared when the detail view closes. Inventory scanning retains metadata, not memory bodies.
 - Codex shows a global memory object with inspect/reset behavior. It must explain that reliable per-project deletion is unavailable after consolidation.
-- Claude Code currently shows one cleanup item per project memory directory with bounded Markdown details. Deletion shows and backs up the complete affected index/topic-file set. A future entry editor will add individual topic entries and a Markdown-aware before/after diff.
+- Claude Code currently shows one cleanup item per project memory directory with bounded Markdown details. Project reset affects the complete index/topic-file set. CleanerX does not currently expose individual topic editing and must describe it as not yet supported rather than prohibited.
 - OpenCode and Pi show no native memory editor until a recognized native or extension-specific capability exists.
 - Memory use/generation toggles are settings, not cleanup selections. They must never be silently changed as a side effect of deletion.
 - Instructions remain in a separate protected category and do not appear as editable memory even when an Agent's own UI calls them “memory files.”
@@ -102,45 +110,17 @@ All memory mutations follow the repository safety invariants:
 
 1. Resolve the item from the current snapshot beneath an Agent-specific memory root; reject user-supplied paths, symlinks, traversal, ownership anomalies, and changed file identities.
 2. Require the Agent and other detected writers to exit. CleanerX never force-quits them.
-3. Create and verify an atomically committed encrypted backup before changing recoverable memory data.
+3. If the user selects backup, create and verify an atomically committed encrypted backup before mutation. Without a backup, state clearly in the review that the change is irreversible.
 4. Revalidate the source revision immediately before mutation. A stale editor must fail rather than overwrite newer Agent output.
 5. For file-backed memory, write to a sibling temporary file, fsync, validate Markdown/frontmatter, and atomically rename. A multi-file index/topic change is journaled and all-or-nothing.
 6. Rescan after mutation and verify the expected entry/hash state. Unknown schemas or capabilities degrade to read-only.
 
-Codex never receives a direct file or SQLite write fallback. Claude Code editing is allowed only because the Agent's official documentation defines those auto-memory files as user-editable plain Markdown.
+Codex never receives a direct file or SQLite write fallback. Claude Code editing is permitted only because the Agent's official documentation defines those auto-memory files as user-editable plain Markdown.
 
-## Delivery plan
-
-### Phase 1 — Codex memory hardening
-
-- Keep bounded content rendering and separate `memory/reset` capability probing.
-- Add versioned fixtures for memory directories, recognized databases, unknown schemas, concurrent writers, and reset failures.
-- Complete backup, journal, reset, rescan, and restore fault-injection coverage.
-- Keep per-project editing disabled.
-
-### Phase 2 — Shared memory domain model (complete)
-
-- Add `MemoryCapabilities`, `MemoryScope`, `MemoryEntry`, and purpose-specific adapter methods.
-- Keep Tauri commands ID-based: list from the current snapshot, read one entry, prepare an edit/delete plan, execute, and verify.
-- Add capability-driven GUI states and synchronized Chinese/English copy.
-
-### Phase 3 — Claude Code project cleanup complete; entry editor pending
-
-- Detect the default auto-memory root beneath Claude Code Home without treating general Claude configuration as cleanup data. External `autoMemoryDirectory` targets remain unsupported because they are outside the fixed cleanup root.
-- Parse `MEMORY.md` plus topic Markdown only for bounded, explicit detail reads; project cleanup preserves bytes in the optional encrypted backup.
-- Implement entry edit/delete and project reset with optimistic concurrency, encrypted backup, atomic multi-file journaling, and post-write verification.
-- Add fixtures for repository/worktree sharing, custom roots, missing indexes, duplicate links, malformed frontmatter, symlinks, permission failures, and concurrent edits.
-
-### Phase 4 — Re-evaluate OpenCode and Pi
-
-- Recheck official releases for a native memory API/schema.
-- If Pi support depends on an extension, identify the extension and exact version at compile time; unknown extension data remains untouched.
-- Never reinterpret rules, prompts, or system files as automatic memory merely to fill the UI.
-
-## Acceptance criteria for editing
+## Entry-editing acceptance criteria
 
 - Codex memory remains read/reset-only unless a public entry-level API becomes available.
 - Claude edits round-trip without losing unknown frontmatter or unrelated topic files.
-- A stale source hash, running writer, unverified backup, unknown schema, or path-safety failure prevents the first mutation.
+- A stale source hash, running writer, unknown schema, or path-safety failure prevents the first mutation. When backup is selected, an unverified backup also prevents mutation.
 - Restore reproduces every original byte and the Agent can load the restored memory afterward.
 - Rules, instructions, auth, configuration, skills, plugins, sessions, and source directories remain byte-identical during memory-only operations.

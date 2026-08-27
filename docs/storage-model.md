@@ -42,7 +42,7 @@ Title, working directory, and project association are three independent fields. 
 
 Content preview is separate from inventory. The Tauri boundary accepts only an item ID from the current snapshot, selects the adapter from that snapshot, resolves its known paths on the Rust side, rejects symlinks and paths outside the selected Agent's fixed roots, and applies block/byte limits. Recognized memory and log schemas are queried read-only; unknown SQLite/JSONL schemas and unsupported binaries produce an explicit unavailable preview instead of a guessed query or raw dump. The Codex media gallery uses a separate thumbnail command that reads at most the first supported image (PNG, JPEG, GIF, or WebP) up to 5 MB from a visible attachment/generated item; it cannot return text or enumerate content into the frontend. Protected authentication and configuration content is never opened.
 
-Memory semantics and future entry-editing routes are specified in [Agent memory research and implementation plan](memory-management.md). Instructions and rules remain protected even when an Agent presents them alongside memory in its own UI.
+Memory semantics and entry-editing safety requirements are specified in the [Agent memory capability and safety model](memory-management.md). Unfinished implementation work is tracked only in the [development roadmap](roadmap.md). Instructions and rules remain protected even when an Agent presents them alongside memory in its own UI.
 
 ## Transaction states
 

@@ -150,7 +150,7 @@ Use `TARGET=<rust-target-triple>` with the bundle commands when building for an 
 - [Development roadmap](docs/roadmap.md)
 - [Storage and transaction model](docs/storage-model.md)
 - [Agent session hierarchy](docs/agent-session-hierarchy.md)
-- [Agent memory research](docs/memory-management.md)
+- [Agent memory capability and safety model](docs/memory-management.md)
 - [Security policy](SECURITY.md)
 
 CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations. Runtime capabilities are negotiated because Codex evolves independently of CleanerX.
