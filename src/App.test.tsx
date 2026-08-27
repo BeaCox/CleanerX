@@ -62,12 +62,34 @@ describe("CleanerX GUI", () => {
     expect(await screen.findByText("Switched to OpenCode")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Target Agent" })).toHaveAttribute("data-value", "openCode");
     expect(screen.getByText("1.18.3")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    expect(await screen.findByRole("checkbox", { name: "CleanerX" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Memory" }));
     expect(screen.getByText("No manageable data here yet")).toBeVisible();
     expect(screen.queryByText(/Reset clears|auto memory is project-scoped/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("textbox", { name: "OpenCode data directory override" })).toBeVisible();
+  });
+
+  it("allows an inactive OpenCode session while keeping online backup unavailable", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    chooseMenuOption("Target Agent", "OpenCode");
+    await screen.findByText("Switched to OpenCode");
+
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    expect(await screen.findByRole("checkbox", { name: "CleanerX" })).toBeDisabled();
+    const inactive = screen.getByRole("checkbox", { name: "Design token migration" });
+    expect(inactive).toBeEnabled();
+    fireEvent.click(inactive);
+    fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
+
+    expect(await screen.findByRole("dialog", { name: "Review cleanup plan" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /Create an encrypted backup first/ })).toBeDisabled();
+    expect(screen.getByText(/Session backup is unavailable while OpenCode is running/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Clean without backup" })).toBeEnabled();
   });
 
   it("preserves the overview layout while scan data is pending", () => {
@@ -98,7 +120,7 @@ describe("CleanerX GUI", () => {
     expect(screen.queryByRole("button", { name: "Scanning…" })).not.toBeInTheDocument();
   });
 
-  it("previews and persists interface language and appearance", async () => {
+  it("previews and persists interface language, appearance, and text size", async () => {
     const first = render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -112,6 +134,10 @@ describe("CleanerX GUI", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(document.documentElement.style.colorScheme).toBe("dark");
 
+    fireEvent.click(screen.getByRole("button", { name: "最大" }));
+    expect(screen.getByRole("button", { name: "最大" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.dataset.textSize).toBe("extraLarge");
+
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
     expect(await screen.findByText("设置已保存")).toBeVisible();
     first.unmount();
@@ -121,14 +147,19 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.getByRole("button", { name: "中文" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "深色" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "最大" })).toHaveAttribute("aria-pressed", "true");
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.textSize).toBe("extraLarge");
 
     fireEvent.click(screen.getByRole("button", { name: "浅色" }));
     fireEvent.click(screen.getByRole("button", { name: "English" }));
+    fireEvent.click(screen.getByRole("button", { name: "Standard" }));
     expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.textSize).toBe("standard");
     fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(await screen.findByRole("button", { name: "概览" })).toBeVisible();
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.textSize).toBe("extraLarge");
   });
 
   it("filters sessions before a detail is opened", async () => {

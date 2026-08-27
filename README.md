@@ -18,7 +18,7 @@ CleanerX itself does not connect to cloud services, upload data, or collect tele
 - Reports the real disk usage of session rollouts, attachments, generated media, visualizations, logs, caches, and temporary files.
 - Loads transcript, memory, log, and media details only after an explicit user action, using bounded read-only requests. Content bodies are not retained in inventory snapshots.
 - Deletes session trees through the official `thread/delete` operation and shows all affected descendants before confirmation.
-- Uses OpenCode's official session delete/export/import commands while keeping its SQLite database read-only to CleanerX.
+- Uses OpenCode's official CLI while offline and a strictly verified loopback Server API for inactive-session deletion while OpenCode is running, while keeping its SQLite database read-only to CleanerX.
 - Probes `memory/reset` independently, so an unsupported memory operation does not disable otherwise supported session cleanup.
 - Supports optional encrypted `.cxb` backups and all-or-nothing restore without overwriting existing data.
 - Protects active and pinned sessions, authentication, configuration, MCP credentials, rules, skills, plugins, browser data, cookies, and source code.
@@ -31,7 +31,7 @@ CleanerX treats deletion as a security boundary:
 | Area | Guarantee |
 | --- | --- |
 | Source projects | Project paths are grouping metadata only and are never recursive scan or cleanup roots. |
-| Session deletion | Codex uses App Server `thread/delete`; OpenCode uses its documented CLI deletion command; CleanerX never writes private session databases. |
+| Session deletion | Codex uses App Server `thread/delete`; OpenCode uses its documented CLI while offline or a verified loopback Server API for inactive sessions; CleanerX never writes private session databases. |
 | Capability failure | Missing or unavailable mutation methods degrade the affected operation to read-only reporting. |
 | Direct file cleanup | Every path must remain under a category-specific allowlisted root. Symlinks, traversal, protected descendants, ownership anomalies, and identity changes are rejected. |
 | Active writers | CleanerX never force-quits Codex or another process. It reports the blocker and lets the user retry. |

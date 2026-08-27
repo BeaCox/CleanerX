@@ -226,6 +226,7 @@ export interface AppSettings {
   customOpencodeHome?: string;
   locale: "system" | "zh" | "en";
   theme: "system" | "light" | "dark";
+  textSize: "standard" | "large" | "extraLarge";
   backupRetentionDays: number;
   logRetentionDays: number;
   tempRetentionHours: number;

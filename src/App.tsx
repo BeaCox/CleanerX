@@ -953,19 +953,23 @@ function SettingsView({ value, onSave }: { value: AppSettings; onSave: (settings
     setForm(value);
   }, [value]);
   useEffect(() => () => { void applyPreferences(persistedPreferences.current); }, []);
-  useEffect(() => watchSystemPreferences(form), [form.locale, form.theme]);
+  useEffect(() => watchSystemPreferences(form), [form.locale, form.theme, form.textSize]);
   const preview = (next: AppSettings) => {
     setForm(next);
     void applyPreferences(next);
   };
   return <form className="settings-form" onSubmit={(event) => { event.preventDefault(); setSaving(true); void onSave(form).finally(() => setSaving(false)); }}>
     <section className="settings-group">
-      <h3 className="settings-group-label">{t("settingsGeneral")}</h3>
+      <h3 className="settings-group-label">{t("settingsInterface")}</h3>
+      <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
+      <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
+      <Setting label={t("textSize")} hint={t("textSizeHint")}><div className="segmented" role="group" aria-label={t("textSize")}><button type="button" className={form.textSize === "standard" ? "active" : ""} aria-pressed={form.textSize === "standard"} onClick={() => preview({ ...form, textSize: "standard" })}>{t("textSizeStandard")}</button><button type="button" className={form.textSize === "large" ? "active" : ""} aria-pressed={form.textSize === "large"} onClick={() => preview({ ...form, textSize: "large" })}>{t("textSizeLarge")}</button><button type="button" className={form.textSize === "extraLarge" ? "active" : ""} aria-pressed={form.textSize === "extraLarge"} onClick={() => preview({ ...form, textSize: "extraLarge" })}>{t("textSizeExtraLarge")}</button></div></Setting>
+    </section>
+    <section className="settings-group">
+      <h3 className="settings-group-label">{t("settingsAgentPaths")}</h3>
       <Setting label={t("codexHome")} hint={t("codexHomeHint")}><input aria-label={t("codexHome")} value={form.customCodexHome ?? ""} onChange={(event) => setForm({ ...form, customCodexHome: event.target.value || undefined })} placeholder="~/.codex" /></Setting>
       <Setting label={t("claudeHome")} hint={t("claudeHomeHint")}><input aria-label={t("claudeHome")} value={form.customClaudeHome ?? ""} onChange={(event) => setForm({ ...form, customClaudeHome: event.target.value || undefined })} placeholder="~/.claude" /></Setting>
       <Setting label={t("opencodeHome")} hint={t("opencodeHomeHint")}><input aria-label={t("opencodeHome")} value={form.customOpencodeHome ?? ""} onChange={(event) => setForm({ ...form, customOpencodeHome: event.target.value || undefined })} placeholder="~/.local/share/opencode" /></Setting>
-      <Setting label={t("language")}><div className="segmented" role="group" aria-label={t("language")}><button type="button" className={form.locale === "system" ? "active" : ""} aria-pressed={form.locale === "system"} onClick={() => preview({ ...form, locale: "system" })}>{t("system")}</button><button type="button" className={form.locale === "zh" ? "active" : ""} aria-pressed={form.locale === "zh"} onClick={() => preview({ ...form, locale: "zh" })}>{t("chinese")}</button><button type="button" className={form.locale === "en" ? "active" : ""} aria-pressed={form.locale === "en"} onClick={() => preview({ ...form, locale: "en" })}>{t("english")}</button></div></Setting>
-      <Setting label={t("appearance")}><div className="segmented" role="group" aria-label={t("appearance")}><button type="button" className={form.theme === "system" ? "active" : ""} aria-pressed={form.theme === "system"} onClick={() => preview({ ...form, theme: "system" })}><Monitor size={14} />{t("system")}</button><button type="button" className={form.theme === "light" ? "active" : ""} aria-pressed={form.theme === "light"} onClick={() => preview({ ...form, theme: "light" })}><Sun size={14} />{t("light")}</button><button type="button" className={form.theme === "dark" ? "active" : ""} aria-pressed={form.theme === "dark"} onClick={() => preview({ ...form, theme: "dark" })}><Moon size={14} />{t("dark")}</button></div></Setting>
     </section>
     <section className="settings-group">
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>
@@ -1111,6 +1115,7 @@ function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, ex
   const selected = snapshot.items.filter((item) => plan.selectedItemIds.includes(item.id));
   const descendantCount = Math.max(0, plan.expandedSessionIds.length - selected.filter((item) => item.threadId).length);
   const canBackup = plan.estimatedBackupBytes > 0;
+  const backupRequiresExit = canBackup && snapshot.installation.kind === "openCode" && snapshot.installation.running;
   const displayedBackupBytes = createBackup ? plan.estimatedBackupBytes : 0;
   const withoutBackup = canBackup && !createBackup;
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !executing) close(); }}><section className="review-dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
@@ -1119,8 +1124,8 @@ function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, ex
     <div className="review-metrics"><div><span>{t("affected")}</span><strong>{selected.length}</strong></div><div><span>{t("descendants")}</span><strong>{descendantCount}</strong></div><div><span>{t("backupSize")}</span><strong>{formatBytes(displayedBackupBytes)}</strong></div><div><span>{t("netGain")}</span><strong>{formatBytes(Math.max(0, plan.estimatedBytes - displayedBackupBytes * 0.62))}</strong></div></div>
     <div className="impact-list">{selected.slice(0, 6).map((item) => <div key={item.id}><span style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</span><div><strong>{item.title}</strong><span>{t(categoryTranslation[item.category])}</span></div><strong>{formatBytes(item.sizeBytes)}</strong></div>)}</div>
     {plan.blockers.length > 0 && <div className="blocker-box"><CircleAlert size={18} /><div><strong>{t("blockers")}</strong>{plan.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}</div></div>}
-    {canBackup && <label className="backup-option"><input type="checkbox" checked={createBackup} disabled={executing} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><strong>{t("createBackupOption")}</strong></label>}
-    {withoutBackup && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t("noBackupWarning")}</span></div>}
+    {canBackup && <label className="backup-option"><input type="checkbox" checked={createBackup} disabled={executing || backupRequiresExit} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><strong>{t("createBackupOption")}</strong></label>}
+    {withoutBackup && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t(backupRequiresExit ? "opencodeBackupRequiresExit" : "noBackupWarning")}</span></div>}
     <div className="modal-actions"><button className="secondary-button" onClick={close} disabled={executing}>{t("cancel")}</button><button className="primary-button danger-primary" onClick={execute} disabled={plan.blockers.length > 0 || executing}>{executing && <LoaderCircle size={16} className="spinning" />}{executing ? t("executing") : createBackup && canBackup ? t("backupAndExecute") : t("executeWithoutBackup")}</button></div>
   </section></div>;
 }

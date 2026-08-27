@@ -225,6 +225,7 @@ mod tests {
             .expect("plan");
         assert_eq!(plan.expanded_session_ids, vec!["child", "root"]);
         assert_eq!(plan.operations[0].session_ids, vec!["root"]);
+        assert!(!plan.operations[0].requires_agent_exit);
     }
 
     #[test]

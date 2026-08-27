@@ -32,6 +32,7 @@ const defaultMockSettings: AppSettings = {
   activeAgent: "codex",
   locale: "system",
   theme: "system",
+  textSize: "large",
   backupRetentionDays: 30,
   logRetentionDays: 7,
   tempRetentionHours: 24,
@@ -545,12 +546,14 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
           subtitle: "Recognized OpenCode log directory",
           paths: ["/Users/demo/.local/share/opencode/log"],
           risk: "review" as const,
+          blockedReason: "OpenCode is running; quit it before cleaning writable application data",
         };
         if (item.category === "cache") return {
           ...item,
           id: "cache:opencode",
           title: "OpenCode caches",
           paths: ["/Users/demo/.cache/opencode"],
+          blockedReason: "OpenCode is running; quit it before cleaning writable application data",
         };
         if (item.category === "protected") return {
           ...item,

@@ -15,10 +15,10 @@ describe("UI preferences", () => {
   });
 
   it("caches only recognized preference values", () => {
-    cachePreferences({ locale: "zh", theme: "dark" });
-    expect(readCachedPreferences()).toEqual({ locale: "zh", theme: "dark" });
+    cachePreferences({ locale: "zh", theme: "dark", textSize: "extraLarge" });
+    expect(readCachedPreferences()).toEqual({ locale: "zh", theme: "dark", textSize: "extraLarge" });
 
-    window.localStorage.setItem("cleanerx.ui-preferences.v1", JSON.stringify({ locale: "xx", theme: "neon" }));
+    window.localStorage.setItem("cleanerx.ui-preferences.v1", JSON.stringify({ locale: "xx", theme: "neon", textSize: "giant" }));
     expect(readCachedPreferences()).toBeUndefined();
   });
 });

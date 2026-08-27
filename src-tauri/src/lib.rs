@@ -943,6 +943,14 @@ fn validate_settings(settings: &AppSettings) -> Result<(), CleanerError> {
             "Unsupported appearance setting".into(),
         ));
     }
+    if !matches!(
+        settings.text_size.as_str(),
+        "standard" | "large" | "extraLarge"
+    ) {
+        return Err(CleanerError::InvalidRequest(
+            "Unsupported interface text size".into(),
+        ));
+    }
     if let Some(home) = &settings.custom_codex_home
         && !Path::new(home).is_absolute()
     {
@@ -1420,7 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_locale_and_theme_settings() {
+    fn validates_interface_preference_settings() {
         let settings = AppSettings::default();
         assert!(validate_settings(&settings).is_ok());
 
@@ -1431,6 +1439,12 @@ mod tests {
         let mut invalid_theme = settings;
         invalid_theme.theme = "neon".into();
         assert!(validate_settings(&invalid_theme).is_err());
+
+        let invalid_text_size = AppSettings {
+            text_size: "giant".into(),
+            ..AppSettings::default()
+        };
+        assert!(validate_settings(&invalid_text_size).is_err());
 
         let invalid_opencode_home = AppSettings {
             custom_opencode_home: Some("relative/opencode".into()),
@@ -1455,6 +1469,7 @@ mod tests {
         let loaded = load_settings(directory.path());
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
+        assert_eq!(loaded.text_size, "large");
     }
 
     fn session_inventory_fixture() -> InventorySnapshot {

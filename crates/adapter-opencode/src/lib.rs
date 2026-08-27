@@ -1,9 +1,11 @@
-//! OpenCode storage discovery and supported CLI session operations.
+//! OpenCode storage discovery and supported CLI/Server API session operations.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
-use std::io::{BufRead as _, BufReader};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration as StdDuration, SystemTime};
@@ -28,6 +30,9 @@ const CONTENT_TEXT_LIMIT: usize = 512 * 1024;
 const CONTENT_BLOCK_LIMIT: usize = 200;
 const CONTENT_ROW_LIMIT: i64 = 64 * 1024;
 const COMMAND_TIMEOUT: StdDuration = StdDuration::from_secs(120);
+const SERVER_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const SERVER_RESPONSE_LIMIT: usize = 1024 * 1024;
+const SERVER_DIRECTORY_LIMIT: usize = 128;
 
 const PROTECTED_NAMES: &[&str] = &[
     "auth.json",
@@ -51,6 +56,44 @@ const PROTECTED_NAMES: &[&str] = &[
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeAdapter;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LocalServerEndpoint {
+    address: SocketAddr,
+}
+
+#[derive(Debug, Clone)]
+struct WriterProcess {
+    endpoint: Option<LocalServerEndpoint>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeProbe {
+    writers: Vec<WriterProcess>,
+}
+
+impl RuntimeProbe {
+    fn running(&self) -> bool {
+        !self.writers.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SessionProbeRecord {
+    id: String,
+    directory: String,
+    parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum SessionAccess {
+    Offline,
+    Verified {
+        active_ids: HashSet<String>,
+        endpoints: Vec<LocalServerEndpoint>,
+    },
+    Unavailable(String),
+}
 
 impl OpenCodeAdapter {
     pub fn new() -> Self {
@@ -90,7 +133,6 @@ impl AgentAdapter for OpenCodeAdapter {
         } else {
             None
         };
-        let running = opencode_is_running();
         let mut warnings = Vec::new();
         if !home.exists() {
             warnings.push(format!(
@@ -110,6 +152,11 @@ impl AgentAdapter for OpenCodeAdapter {
             .as_deref()
             .and_then(|path| open_database(path).ok())
             .is_some_and(|connection| recognized_schema(&connection).is_ok());
+        let running = database
+            .as_deref()
+            .map(runtime_for_database)
+            .map(|runtime| runtime.running())
+            .unwrap_or_else(opencode_is_running);
         if database.is_some() && !recognized_database {
             warnings.push(
                 "OpenCode database schema is not recognized; its contents remain read-only".into(),
@@ -117,7 +164,7 @@ impl AgentAdapter for OpenCodeAdapter {
         }
         if running {
             warnings.push(
-                "OpenCode is running; quit all OpenCode clients before deleting or restoring data"
+                "OpenCode is running; inactive session deletion requires a verified loopback Server API, while logs, caches, export, and restore remain blocked"
                     .into(),
             );
         }
@@ -150,7 +197,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let mut items = Vec::new();
 
         if let Some(database) = select_database(&home, &mut warnings) {
-            match scan_database(&database, installation.running) {
+            match scan_database(&database, &mut warnings) {
                 Ok((found_sessions, found_projects, found_items)) => {
                     sessions = found_sessions;
                     projects = found_projects;
@@ -253,11 +300,7 @@ impl AgentAdapter for OpenCodeAdapter {
         installation: &AgentInstallation,
         session_ids: &[String],
     ) -> Result<Vec<String>, CleanerError> {
-        validate_offline_installation(installation)?;
-        let binary = installation
-            .binary
-            .as_deref()
-            .ok_or_else(|| CleanerError::NotFound("OpenCode executable".into()))?;
+        validate_opencode_installation(installation)?;
         let database = database_for_installation(installation)?;
         let connection = open_database(&database)?;
         recognized_schema(&connection)?;
@@ -273,7 +316,7 @@ impl AgentAdapter for OpenCodeAdapter {
 
         let mut deleted = Vec::new();
         for session_id in session_ids {
-            run_delete(binary, &database, session_id).await?;
+            delete_session_safely(installation, &database, session_id).await?;
             deleted.push(session_id.clone());
         }
         Ok(deleted)
@@ -558,7 +601,7 @@ fn table_has_columns(connection: &Connection, table: &str, required: &[&str]) ->
     require_columns(connection, table, required).is_ok()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DatabaseSession {
     id: String,
     title: String,
@@ -575,7 +618,19 @@ struct DatabaseSession {
 
 type DatabaseInventory = (Vec<SessionRecord>, Vec<ProjectGroup>, Vec<CleanupItem>);
 
-fn scan_database(database: &Path, running: bool) -> Result<DatabaseInventory, CleanerError> {
+fn scan_database(
+    database: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<DatabaseInventory, CleanerError> {
+    let runtime = runtime_for_database(database);
+    scan_database_with_runtime(database, warnings, &runtime)
+}
+
+fn scan_database_with_runtime(
+    database: &Path,
+    warnings: &mut Vec<String>,
+    runtime: &RuntimeProbe,
+) -> Result<DatabaseInventory, CleanerError> {
     let connection = open_database(database)?;
     recognized_schema(&connection)?;
     let revisions = database_revision_paths(database);
@@ -633,12 +688,35 @@ fn scan_database(database: &Path, running: bool) -> Result<DatabaseInventory, Cl
         .iter()
         .map(|session| session.id.clone())
         .collect::<HashSet<_>>();
-    let blocker = running
-        .then(|| "OpenCode is running; quit it before deleting session data".into())
-        .or(safety_blocker);
+    let probe_records = records
+        .iter()
+        .map(|session| SessionProbeRecord {
+            id: session.id.clone(),
+            directory: session.directory.clone(),
+            parent_id: session.parent_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let access = inspect_session_access(runtime, &probe_records);
+    let access_unavailable = matches!(&access, SessionAccess::Unavailable(_));
+    let (active_ids, runtime_blocker) = match &access {
+        SessionAccess::Offline => (HashSet::new(), None),
+        SessionAccess::Verified { active_ids, .. } => {
+            warnings.push(
+                "Verified OpenCode's loopback Server API; busy and retrying sessions remain blocked while inactive sessions can be deleted"
+                    .into(),
+            );
+            (active_ids.clone(), None)
+        }
+        SessionAccess::Unavailable(reason) => {
+            warnings.push(reason.clone());
+            (HashSet::new(), Some(reason.clone()))
+        }
+    };
+    let global_blocker = safety_blocker.or(runtime_blocker);
     let mut sessions = Vec::new();
     let mut items = Vec::new();
     for session in &records {
+        let active = active_ids.contains(&session.id);
         let descendants = descendants(&session.id, &child_map, &ids);
         let name = if session.title.trim().is_empty() {
             format!("OpenCode session {}", short_id(&session.id))
@@ -653,7 +731,14 @@ fn scan_database(database: &Path, running: bool) -> Result<DatabaseInventory, Cl
             source: "cli".into(),
             archived: session.archived,
             pinned: false,
-            status: if running { "loaded" } else { "notLoaded" }.into(),
+            status: if active {
+                "active"
+            } else if access_unavailable {
+                "loaded"
+            } else {
+                "notLoaded"
+            }
+            .into(),
             created_at: session.created_at,
             updated_at: session.updated_at,
             size_bytes: session.size_bytes,
@@ -689,7 +774,12 @@ fn scan_database(database: &Path, running: bool) -> Result<DatabaseInventory, Cl
             recoverable: true,
             default_selected: false,
             protected: false,
-            blocked_reason: blocker.clone(),
+            blocked_reason: global_blocker.clone().or_else(|| {
+                active.then(|| {
+                    "OpenCode reports this session as busy or retrying; wait for it to become idle and rescan"
+                        .into()
+                })
+            }),
             metadata,
         });
     }
@@ -1185,18 +1275,125 @@ fn content_notice(item: &CleanupItem, source: &str, text: &str) -> ItemContentDe
     }
 }
 
-fn validate_offline_installation(installation: &AgentInstallation) -> Result<(), CleanerError> {
+fn validate_opencode_installation(installation: &AgentInstallation) -> Result<(), CleanerError> {
     if installation.kind != AgentKind::OpenCode {
         return Err(CleanerError::InvalidRequest(
             "OpenCode operation used a different Agent installation".into(),
         ));
     }
-    if installation.running || opencode_is_running() {
+    Ok(())
+}
+
+fn validate_offline_installation(installation: &AgentInstallation) -> Result<(), CleanerError> {
+    validate_opencode_installation(installation)?;
+    let database = database_for_installation(installation)?;
+    if runtime_for_database(&database).running() {
         return Err(CleanerError::Blocked(
-            "Quit all OpenCode clients before changing session data".into(),
+            "Quit all related OpenCode clients before exporting or restoring session data".into(),
         ));
     }
     Ok(())
+}
+
+async fn delete_session_safely(
+    installation: &AgentInstallation,
+    database: &Path,
+    session_id: &str,
+) -> Result<(), CleanerError> {
+    let runtime = runtime_for_database(database);
+    delete_session_with_runtime(installation, database, session_id, &runtime).await
+}
+
+async fn delete_session_with_runtime(
+    installation: &AgentInstallation,
+    database: &Path,
+    session_id: &str,
+    runtime: &RuntimeProbe,
+) -> Result<(), CleanerError> {
+    let connection = open_database(database)?;
+    recognized_schema(&connection)?;
+    let scope = session_mutation_scope(&connection, session_id)?;
+    drop(connection);
+
+    match inspect_session_access(runtime, &scope) {
+        SessionAccess::Offline => {
+            let binary = installation
+                .binary
+                .as_deref()
+                .ok_or_else(|| CleanerError::NotFound("OpenCode executable".into()))?;
+            run_delete(binary, database, session_id).await
+        }
+        SessionAccess::Unavailable(reason) => Err(CleanerError::Blocked(reason)),
+        SessionAccess::Verified {
+            active_ids,
+            endpoints,
+        } => {
+            let mut blocked = scope
+                .iter()
+                .filter(|session| active_ids.contains(&session.id))
+                .map(|session| session.id.clone())
+                .collect::<Vec<_>>();
+            blocked.sort();
+            if !blocked.is_empty() {
+                return Err(CleanerError::Blocked(format!(
+                    "OpenCode reports active session data in this deletion scope: {}",
+                    blocked.join(", ")
+                )));
+            }
+            let endpoint = endpoints.first().ok_or_else(|| {
+                CleanerError::Blocked(
+                    "OpenCode is running but no verified loopback Server API is available".into(),
+                )
+            })?;
+            let directory = scope
+                .iter()
+                .find(|session| session.id == session_id)
+                .map(|session| session.directory.as_str())
+                .ok_or_else(|| CleanerError::NotFound(format!("OpenCode session {session_id}")))?;
+            delete_via_server(*endpoint, session_id, directory)
+        }
+    }
+}
+
+fn session_mutation_scope(
+    connection: &Connection,
+    root: &str,
+) -> Result<Vec<SessionProbeRecord>, CleanerError> {
+    let mut statement = connection.prepare("SELECT id, directory, parent_id FROM session")?;
+    let records = statement
+        .query_map([], |row| {
+            Ok(SessionProbeRecord {
+                id: row.get(0)?,
+                directory: row.get(1)?,
+                parent_id: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let by_id = records
+        .iter()
+        .map(|session| (session.id.as_str(), session))
+        .collect::<HashMap<_, _>>();
+    if !by_id.contains_key(root) {
+        return Err(CleanerError::NotFound(format!("OpenCode session {root}")));
+    }
+    let mut scope = Vec::new();
+    let mut pending = vec![root.to_owned()];
+    let mut seen = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(session) = by_id.get(id.as_str()) {
+            scope.push((*session).clone());
+            pending.extend(
+                records
+                    .iter()
+                    .filter(|candidate| candidate.parent_id.as_deref() == Some(id.as_str()))
+                    .map(|candidate| candidate.id.clone()),
+            );
+        }
+    }
+    Ok(scope)
 }
 
 async fn run_delete(binary: &str, database: &Path, session_id: &str) -> Result<(), CleanerError> {
@@ -1417,34 +1614,444 @@ fn find_opencode_binary() -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
+fn runtime_for_database(database: &Path) -> RuntimeProbe {
+    let system = System::new_all();
+    let writers = system
+        .processes()
+        .values()
+        .filter(|process| is_opencode_process(process))
+        .filter(|process| !is_remote_client(process.cmd()))
+        .filter_map(
+            |process| match process_targets_database(process.environ(), database) {
+                Some(false) => None,
+                Some(true) => Some(WriterProcess {
+                    endpoint: explicit_loopback_endpoint(process.cmd()),
+                }),
+                None => Some(WriterProcess { endpoint: None }),
+            },
+        )
+        .collect();
+    RuntimeProbe { writers }
+}
+
 fn opencode_is_running() -> bool {
     let system = System::new_all();
-    system.processes().values().any(|process| {
-        let names = [
-            Some(process.name().to_string_lossy().to_ascii_lowercase()),
-            process
-                .exe()
-                .and_then(Path::file_name)
-                .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+    system.processes().values().any(is_opencode_process)
+}
+
+fn is_opencode_process(process: &sysinfo::Process) -> bool {
+    let fixed_names = [
+        Some(process.name().to_string_lossy().to_ascii_lowercase()),
+        process
+            .exe()
+            .and_then(Path::file_name)
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+    ];
+    fixed_names
+        .into_iter()
+        .flatten()
+        .chain(
             process
                 .cmd()
-                .first()
-                .and_then(|value| Path::new(value).file_name())
+                .iter()
+                .take(2)
+                .filter_map(|value| Path::new(value).file_name())
                 .map(|value| value.to_string_lossy().to_ascii_lowercase()),
-        ];
-        names.into_iter().flatten().any(|name| {
-            matches!(
-                name.as_str(),
-                "opencode" | "opencode.exe" | "opencode2" | "opencode2.exe"
-            ) || name.starts_with("opencode-")
-                || name.starts_with("opencode2-")
-        })
+        )
+        .any(|name| is_opencode_process_name(&name))
+}
+
+fn is_opencode_process_name(name: &str) -> bool {
+    matches!(
+        name,
+        "opencode" | "opencode.exe" | "opencode2" | "opencode2.exe"
+    ) || name.starts_with("opencode-")
+        || name.starts_with("opencode2-")
+}
+
+fn is_remote_client(arguments: &[OsString]) -> bool {
+    arguments.iter().skip(1).any(|argument| {
+        let argument = argument.to_string_lossy();
+        argument == "attach" || argument == "--attach" || argument.starts_with("--attach=")
     })
+}
+
+fn process_targets_database(environment: &[OsString], database: &Path) -> Option<bool> {
+    if environment.is_empty() {
+        return None;
+    }
+    let data_root = process_environment_value(environment, "XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            process_environment_value(environment, "HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local/share"))
+        })?
+        .join("opencode");
+    if let Some(value) = process_environment_value(environment, "OPENCODE_DB") {
+        if value == ":memory:" {
+            return Some(false);
+        }
+        let configured = PathBuf::from(value);
+        let configured = if configured.is_absolute() {
+            configured
+        } else {
+            data_root.join(configured)
+        };
+        return Some(paths_match(&configured, database));
+    }
+    Some(
+        database
+            .parent()
+            .is_some_and(|parent| paths_match(parent, &data_root)),
+    )
+}
+
+fn process_environment_value(environment: &[OsString], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    environment.iter().find_map(|entry| {
+        entry
+            .to_string_lossy()
+            .strip_prefix(&prefix)
+            .map(str::to_owned)
+    })
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn explicit_loopback_endpoint(arguments: &[OsString]) -> Option<LocalServerEndpoint> {
+    let port = argument_value(arguments, "--port")?.parse::<u16>().ok()?;
+    if port == 0 {
+        return None;
+    }
+    let hostname = argument_value(arguments, "--hostname")
+        .unwrap_or_else(|| "127.0.0.1".into())
+        .to_ascii_lowercase();
+    let ip = match hostname.as_str() {
+        "localhost" | "127.0.0.1" | "0.0.0.0" => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "::1" | "[::1]" | "::" | "[::]" => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => hostname
+            .parse::<IpAddr>()
+            .ok()
+            .filter(IpAddr::is_loopback)?,
+    };
+    Some(LocalServerEndpoint {
+        address: SocketAddr::new(ip, port),
+    })
+}
+
+fn argument_value(arguments: &[OsString], name: &str) -> Option<String> {
+    for (index, argument) in arguments.iter().enumerate().skip(1) {
+        let argument = argument.to_string_lossy();
+        if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
+            return Some(value.to_owned());
+        }
+        if argument == name {
+            return arguments
+                .get(index + 1)
+                .map(|value| value.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+fn inspect_session_access(runtime: &RuntimeProbe, records: &[SessionProbeRecord]) -> SessionAccess {
+    if !runtime.running() {
+        return SessionAccess::Offline;
+    }
+    if runtime
+        .writers
+        .iter()
+        .any(|writer| writer.endpoint.is_none())
+    {
+        return SessionAccess::Unavailable(unverified_server_message());
+    }
+    let endpoints = runtime
+        .writers
+        .iter()
+        .filter_map(|writer| writer.endpoint)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if endpoints.is_empty() {
+        return SessionAccess::Unavailable(unverified_server_message());
+    }
+
+    let directories = records
+        .iter()
+        .map(|session| session.directory.clone())
+        .collect::<BTreeSet<_>>();
+    if directories.len() > SERVER_DIRECTORY_LIMIT {
+        return SessionAccess::Unavailable(format!(
+            "OpenCode is running across more than {SERVER_DIRECTORY_LIMIT} session directories; quit it before deleting sessions"
+        ));
+    }
+    let sample = records.first();
+    let mut active_ids = HashSet::new();
+    for endpoint in &endpoints {
+        let health = match server_json::<ServerHealth>(*endpoint, "GET", "/global/health") {
+            Ok(health) if health.healthy => health,
+            _ => return SessionAccess::Unavailable(unverified_server_message()),
+        };
+        let _ = health;
+        if let Some(sample) = sample {
+            let path = session_server_path(&sample.id, &sample.directory);
+            let found = match server_json::<ServerSession>(*endpoint, "GET", &path) {
+                Ok(found) => found,
+                Err(_) => return SessionAccess::Unavailable(unverified_server_message()),
+            };
+            if found.id != sample.id
+                || !paths_match(Path::new(&found.directory), Path::new(&sample.directory))
+            {
+                return SessionAccess::Unavailable(unverified_server_message());
+            }
+        }
+        for directory in &directories {
+            let path = format!(
+                "/session/status?directory={}",
+                percent_encode_query(directory)
+            );
+            let statuses = match server_json::<HashMap<String, ServerSessionStatus>>(
+                *endpoint, "GET", &path,
+            ) {
+                Ok(statuses) => statuses,
+                Err(_) => return SessionAccess::Unavailable(unverified_server_message()),
+            };
+            active_ids.extend(statuses.into_iter().filter_map(|(id, status)| {
+                matches!(status.kind.as_str(), "busy" | "retry").then_some(id)
+            }));
+        }
+    }
+    SessionAccess::Verified {
+        active_ids,
+        endpoints,
+    }
+}
+
+fn unverified_server_message() -> String {
+    "OpenCode is running without a verified loopback Server API; quit it or relaunch it with an explicit loopback --port before deleting sessions".into()
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerHealth {
+    healthy: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerSession {
+    id: String,
+    directory: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerSessionStatus {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+fn session_server_path(session_id: &str, directory: &str) -> String {
+    format!(
+        "/session/{session_id}?directory={}",
+        percent_encode_query(directory)
+    )
+}
+
+fn delete_via_server(
+    endpoint: LocalServerEndpoint,
+    session_id: &str,
+    directory: &str,
+) -> Result<(), CleanerError> {
+    let deleted = server_json::<bool>(
+        endpoint,
+        "DELETE",
+        &session_server_path(session_id, directory),
+    )?;
+    if !deleted {
+        return Err(CleanerError::Integration(format!(
+            "OpenCode Server API did not delete session {session_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn server_json<T: serde::de::DeserializeOwned>(
+    endpoint: LocalServerEndpoint,
+    method: &str,
+    path: &str,
+) -> Result<T, CleanerError> {
+    let body = server_request(endpoint, method, path)?;
+    serde_json::from_slice(&body).map_err(CleanerError::Json)
+}
+
+fn server_request(
+    endpoint: LocalServerEndpoint,
+    method: &str,
+    path: &str,
+) -> Result<Vec<u8>, CleanerError> {
+    if !endpoint.address.ip().is_loopback() || !path.starts_with('/') {
+        return Err(CleanerError::UnsafePath(format!(
+            "OpenCode Server API endpoint {}",
+            endpoint.address
+        )));
+    }
+    let mut stream = TcpStream::connect_timeout(&endpoint.address, SERVER_TIMEOUT)?;
+    stream.set_read_timeout(Some(SERVER_TIMEOUT))?;
+    stream.set_write_timeout(Some(SERVER_TIMEOUT))?;
+    let host = match endpoint.address.ip() {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}:{}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        endpoint.address.port()
+    )?;
+    stream.flush()?;
+    let mut response = Vec::new();
+    loop {
+        let mut buffer = [0_u8; 8192];
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(length) => {
+                response.extend_from_slice(&buffer[..length]);
+                if response.len() > SERVER_RESPONSE_LIMIT {
+                    return Err(CleanerError::Integration(
+                        "OpenCode Server API response exceeded the safety limit".into(),
+                    ));
+                }
+                if http_response_complete(&response) {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && http_response_complete(&response) =>
+            {
+                break;
+            }
+            Err(error) => return Err(CleanerError::Io(error)),
+        }
+    }
+    parse_http_response(&response)
+}
+
+fn http_response_complete(response: &[u8]) -> bool {
+    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let Ok(headers) = std::str::from_utf8(&response[..header_end]) else {
+        return false;
+    };
+    let body = &response[header_end + 4..];
+    for line in headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value
+                .trim()
+                .parse::<usize>()
+                .is_ok_and(|length| body.len() >= length);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            && value.to_ascii_lowercase().contains("chunked")
+        {
+            return decode_chunked_body(body).is_ok();
+        }
+    }
+    false
+}
+
+fn parse_http_response(response: &[u8]) -> Result<Vec<u8>, CleanerError> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| CleanerError::Integration("Invalid OpenCode Server API response".into()))?;
+    let headers = std::str::from_utf8(&response[..header_end]).map_err(|_| {
+        CleanerError::Integration("Invalid OpenCode Server API response headers".into())
+    })?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| CleanerError::Integration("Invalid OpenCode Server API status".into()))?;
+    if status != 200 {
+        return Err(CleanerError::Integration(format!(
+            "OpenCode Server API returned HTTP {status}"
+        )));
+    }
+    let body = &response[header_end + 4..];
+    let chunked = headers.lines().skip(1).any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+        })
+    });
+    if chunked {
+        decode_chunked_body(body)
+    } else {
+        Ok(body.to_vec())
+    }
+}
+
+fn decode_chunked_body(mut input: &[u8]) -> Result<Vec<u8>, CleanerError> {
+    let mut output = Vec::new();
+    loop {
+        let line_end = input
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| CleanerError::Integration("Invalid chunked response".into()))?;
+        let size = std::str::from_utf8(&input[..line_end])
+            .ok()
+            .and_then(|line| line.split(';').next())
+            .and_then(|value| usize::from_str_radix(value.trim(), 16).ok())
+            .ok_or_else(|| CleanerError::Integration("Invalid chunked response".into()))?;
+        input = &input[line_end + 2..];
+        if size == 0 {
+            return Ok(output);
+        }
+        if input.len() < size + 2 || &input[size..size + 2] != b"\r\n" {
+            return Err(CleanerError::Integration(
+                "Truncated chunked response".into(),
+            ));
+        }
+        output.extend_from_slice(&input[..size]);
+        if output.len() > SERVER_RESPONSE_LIMIT {
+            return Err(CleanerError::Integration(
+                "OpenCode Server API response exceeded the safety limit".into(),
+            ));
+        }
+        input = &input[size + 2..];
+    }
+}
+
+fn percent_encode_query(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(*byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     const ROOT_ID: &str = "ses_root111111111111111111111";
     const CHILD_ID: &str = "ses_child2222222222222222222";
@@ -1615,6 +2222,363 @@ mod tests {
 
         assert!(error.to_string().contains("refused"));
         assert!(!database.exists());
+    }
+
+    #[test]
+    fn only_explicit_loopback_ports_are_discoverable() {
+        let loopback = [
+            OsString::from("opencode"),
+            OsString::from("serve"),
+            OsString::from("--port=4096"),
+        ];
+        assert_eq!(
+            explicit_loopback_endpoint(&loopback),
+            Some(LocalServerEndpoint {
+                address: "127.0.0.1:4096".parse().expect("socket address"),
+            })
+        );
+
+        let dynamic = [
+            OsString::from("opencode"),
+            OsString::from("--port"),
+            OsString::from("0"),
+        ];
+        assert_eq!(explicit_loopback_endpoint(&dynamic), None);
+
+        let remote = [
+            OsString::from("opencode"),
+            OsString::from("serve"),
+            OsString::from("--port"),
+            OsString::from("4096"),
+            OsString::from("--hostname"),
+            OsString::from("192.0.2.10"),
+        ];
+        assert_eq!(explicit_loopback_endpoint(&remote), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_process_probe_matches_an_explicit_database() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = tempfile::tempdir().expect("process fixture");
+        let binary = fixture.path().join("opencode");
+        let database = fixture.path().join("opencode.db");
+        fs::write(&binary, "#!/bin/sh\nsleep 5\n").expect("mock executable");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).expect("executable");
+        fs::write(&database, b"database identity").expect("database path");
+        let mut child = std::process::Command::new(&binary)
+            .arg("serve")
+            .arg("--port=41837")
+            .env("OPENCODE_DB", &database)
+            .spawn()
+            .expect("mock OpenCode process");
+
+        let runtime = (0..20)
+            .find_map(|_| {
+                let runtime = runtime_for_database(&database);
+                if runtime.running() {
+                    Some(runtime)
+                } else {
+                    std::thread::sleep(StdDuration::from_millis(25));
+                    None
+                }
+            })
+            .expect("running OpenCode process");
+        child.kill().expect("stop mock process");
+        child.wait().expect("reap mock process");
+
+        assert_eq!(runtime.writers.len(), 1);
+    }
+
+    #[test]
+    #[ignore = "requires a local OpenCode installation"]
+    fn live_verifies_an_isolated_loopback_server() {
+        let binary = find_opencode_binary().expect("OpenCode executable");
+        let fixture = tempfile::tempdir().expect("isolated OpenCode home");
+        let database = fixture.path().join("opencode.db");
+        let project = fixture.path().join("project");
+        fs::create_dir_all(&project).expect("isolated project directory");
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("available port");
+            listener.local_addr().expect("listener address").port()
+        };
+        let mut child = std::process::Command::new(binary)
+            .arg("--pure")
+            .arg("serve")
+            .arg(format!("--port={port}"))
+            .env("OPENCODE_DB", &database)
+            .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
+            .env("OPENCODE_DISABLE_MODELS_FETCH", "1")
+            .env("OPENCODE_DISABLE_PROJECT_CONFIG", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("isolated OpenCode server");
+
+        let verified = (0..100).find_map(|_| {
+            let runtime = runtime_for_database(&database);
+            let endpoint = runtime.writers.iter().find_map(|writer| writer.endpoint)?;
+            match server_json::<ServerHealth>(endpoint, "GET", "/global/health") {
+                Ok(health) if health.healthy => Some(endpoint),
+                _ => {
+                    std::thread::sleep(StdDuration::from_millis(50));
+                    None
+                }
+            }
+        });
+        let endpoint = verified.expect("verified loopback server");
+        assert_eq!(
+            endpoint,
+            LocalServerEndpoint {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            }
+        );
+        let directory = project.to_string_lossy().into_owned();
+        let created = server_json::<ServerSession>(
+            endpoint,
+            "POST",
+            &format!("/session?directory={}", percent_encode_query(&directory)),
+        )
+        .expect("create isolated session");
+        assert!(paths_match(
+            Path::new(&created.directory),
+            Path::new(&directory)
+        ));
+        let runtime = runtime_for_database(&database);
+        assert!(matches!(
+            inspect_session_access(
+                &runtime,
+                &[SessionProbeRecord {
+                    id: created.id.clone(),
+                    directory: created.directory.clone(),
+                    parent_id: None,
+                }]
+            ),
+            SessionAccess::Verified { ref active_ids, .. } if active_ids.is_empty()
+        ));
+        delete_via_server(endpoint, &created.id, &created.directory)
+            .expect("delete isolated session");
+        let connection = open_database(&database).expect("isolated database");
+        recognized_schema(&connection).expect("recognized isolated schema");
+        assert!(!session_exists(&connection, &created.id).expect("deleted session state"));
+        drop(connection);
+
+        child.kill().expect("stop isolated OpenCode server");
+        child.wait().expect("reap isolated OpenCode server");
+    }
+
+    #[test]
+    fn an_unverifiable_writer_keeps_every_session_blocked() {
+        let access = inspect_session_access(
+            &RuntimeProbe {
+                writers: vec![WriterProcess { endpoint: None }],
+            },
+            &probe_records(),
+        );
+
+        assert!(matches!(access, SessionAccess::Unavailable(_)));
+    }
+
+    #[test]
+    fn verified_server_status_blocks_only_busy_sessions() {
+        let fixture = tempfile::tempdir().expect("OpenCode fixture");
+        let database = fixture.path().join("opencode.db");
+        create_database(&database);
+        let (endpoint, requests, handle) =
+            mock_server(3, format!(r#"{{"{CHILD_ID}":{{"type":"busy"}}}}"#));
+        let (_, _, items) = scan_database_with_runtime(
+            &database,
+            &mut Vec::new(),
+            &RuntimeProbe {
+                writers: vec![WriterProcess {
+                    endpoint: Some(endpoint),
+                }],
+            },
+        )
+        .expect("running inventory");
+        handle.join().expect("mock server");
+
+        assert!(
+            items
+                .iter()
+                .find(|item| item.thread_id.as_deref() == Some(ROOT_ID))
+                .expect("idle root")
+                .blocked_reason
+                .is_none()
+        );
+        assert!(
+            items
+                .iter()
+                .find(|item| item.thread_id.as_deref() == Some(CHILD_ID))
+                .expect("busy child")
+                .blocked_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("busy or retrying"))
+        );
+        assert_eq!(requests.lock().expect("requests").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn running_deletion_uses_verified_server_api_for_an_idle_scope() {
+        let fixture = tempfile::tempdir().expect("OpenCode fixture");
+        let database = fixture.path().join("opencode.db");
+        create_database(&database);
+        let (endpoint, requests, handle) = mock_server(4, "{}".into());
+        let installation = fixture_installation(fixture.path());
+
+        delete_session_with_runtime(
+            &installation,
+            &database,
+            ROOT_ID,
+            &RuntimeProbe {
+                writers: vec![WriterProcess {
+                    endpoint: Some(endpoint),
+                }],
+            },
+        )
+        .await
+        .expect("server deletion");
+        handle.join().expect("mock server");
+
+        let requests = requests.lock().expect("requests");
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.starts_with(&format!("DELETE /session/{ROOT_ID}?")))
+        );
+    }
+
+    #[tokio::test]
+    async fn active_descendant_blocks_server_deletion_before_mutation() {
+        let fixture = tempfile::tempdir().expect("OpenCode fixture");
+        let database = fixture.path().join("opencode.db");
+        create_database(&database);
+        let (endpoint, requests, handle) =
+            mock_server(3, format!(r#"{{"{CHILD_ID}":{{"type":"retry"}}}}"#));
+        let installation = fixture_installation(fixture.path());
+
+        let error = delete_session_with_runtime(
+            &installation,
+            &database,
+            ROOT_ID,
+            &RuntimeProbe {
+                writers: vec![WriterProcess {
+                    endpoint: Some(endpoint),
+                }],
+            },
+        )
+        .await
+        .expect_err("active descendant must block deletion");
+        handle.join().expect("mock server");
+
+        assert!(error.to_string().contains(CHILD_ID));
+        assert!(
+            requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .all(|request| !request.starts_with("DELETE "))
+        );
+        assert!(
+            session_exists(&open_database(&database).expect("database"), ROOT_ID)
+                .expect("root still exists")
+        );
+    }
+
+    fn probe_records() -> Vec<SessionProbeRecord> {
+        vec![
+            SessionProbeRecord {
+                id: ROOT_ID.into(),
+                directory: "/tmp/example".into(),
+                parent_id: None,
+            },
+            SessionProbeRecord {
+                id: CHILD_ID.into(),
+                directory: "/tmp/example".into(),
+                parent_id: Some(ROOT_ID.into()),
+            },
+        ]
+    }
+
+    fn fixture_installation(home: &Path) -> AgentInstallation {
+        AgentInstallation {
+            kind: AgentKind::OpenCode,
+            home: home.to_string_lossy().into_owned(),
+            binary: None,
+            version: Some("test".into()),
+            app_support: None,
+            running: true,
+            capabilities: AgentCapabilities {
+                thread_list: true,
+                thread_delete: true,
+                memory: MemoryCapabilities::default(),
+                descendant_filter: true,
+                report_only: false,
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    type MockRequests = Arc<Mutex<Vec<String>>>;
+
+    fn mock_server(
+        expected_requests: usize,
+        statuses: String,
+    ) -> (LocalServerEndpoint, MockRequests, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock server listener");
+        let endpoint = LocalServerEndpoint {
+            address: listener.local_addr().expect("listener address"),
+        };
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let handle = thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("mock request");
+                stream
+                    .set_read_timeout(Some(StdDuration::from_secs(2)))
+                    .expect("read timeout");
+                let mut request_bytes = Vec::new();
+                while !request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let mut buffer = [0_u8; 1024];
+                    let length = stream.read(&mut buffer).expect("read request");
+                    if length == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..length]);
+                }
+                let request = String::from_utf8_lossy(&request_bytes);
+                let request_line = request.lines().next().unwrap_or_default().to_owned();
+                captured
+                    .lock()
+                    .expect("captured requests")
+                    .push(request_line.clone());
+                let body = if request_line.starts_with("GET /global/health ") {
+                    r#"{"healthy":true,"version":"test"}"#.to_owned()
+                } else if request_line.starts_with("GET /session/status?") {
+                    statuses.clone()
+                } else if request_line.starts_with("GET /session/") {
+                    let id = request_line
+                        .strip_prefix("GET /session/")
+                        .and_then(|value| value.split('?').next())
+                        .unwrap_or(ROOT_ID);
+                    format!(r#"{{"id":"{id}","directory":"/tmp/example"}}"#)
+                } else if request_line.starts_with("DELETE /session/") {
+                    "true".to_owned()
+                } else {
+                    "null".to_owned()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .expect("write response");
+                stream.flush().expect("flush response");
+            }
+        });
+        (endpoint, requests, handle)
     }
 
     fn create_database(path: &Path) {

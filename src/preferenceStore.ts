@@ -1,10 +1,11 @@
 import type { AppSettings } from "./types";
 
-export type UiPreferences = Pick<AppSettings, "locale" | "theme">;
+export type UiPreferences = Pick<AppSettings, "locale" | "theme" | "textSize">;
 
 export const defaultUiPreferences: UiPreferences = {
   locale: "system",
   theme: "system",
+  textSize: "large",
 };
 
 const storageKey = "cleanerx.ui-preferences.v1";
@@ -14,8 +15,8 @@ export function readCachedPreferences(): UiPreferences | undefined {
     const stored = window.localStorage.getItem(storageKey);
     if (!stored) return undefined;
     const value = JSON.parse(stored) as Partial<UiPreferences>;
-    if (!isLocale(value.locale) || !isTheme(value.theme)) return undefined;
-    return { locale: value.locale, theme: value.theme };
+    if (!isLocale(value.locale) || !isTheme(value.theme) || !isTextSize(value.textSize)) return undefined;
+    return { locale: value.locale, theme: value.theme, textSize: value.textSize };
   } catch {
     return undefined;
   }
@@ -23,7 +24,8 @@ export function readCachedPreferences(): UiPreferences | undefined {
 
 export function cachePreferences(preferences: UiPreferences) {
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(preferences));
+    const { locale, theme, textSize } = preferences;
+    window.localStorage.setItem(storageKey, JSON.stringify({ locale, theme, textSize }));
   } catch {
     // The native settings file remains authoritative when WebView storage is unavailable.
   }
@@ -57,4 +59,8 @@ function isLocale(value: unknown): value is AppSettings["locale"] {
 
 function isTheme(value: unknown): value is AppSettings["theme"] {
   return value === "system" || value === "light" || value === "dark";
+}
+
+function isTextSize(value: unknown): value is AppSettings["textSize"] {
+  return value === "standard" || value === "large" || value === "extraLarge";
 }

@@ -8,6 +8,7 @@ export async function applyPreferences(preferences: UiPreferences) {
 
   root.lang = language === "zh" ? "zh-CN" : "en";
   root.dataset.theme = theme;
+  root.dataset.textSize = preferences.textSize;
   root.style.colorScheme = theme;
 
   if (i18n.resolvedLanguage !== language) await i18n.changeLanguage(language);
