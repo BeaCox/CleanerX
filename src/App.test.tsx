@@ -77,9 +77,13 @@ describe("CleanerX GUI", () => {
     expect(screen.getByText("Release checklist")).toBeVisible();
     expect(screen.queryByText("Expansion only changes the view, not cleanup selection.")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    const collapseAll = screen.getByRole("button", { name: "Collapse all" });
+    expect(collapseAll.querySelector("svg")).toBeInTheDocument();
+    fireEvent.click(collapseAll);
     expect(screen.queryByText("Release checklist")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    const expandAll = screen.getByRole("button", { name: "Expand all" });
+    expect(expandAll.querySelector("svg")).toBeInTheDocument();
+    fireEvent.click(expandAll);
     expect(screen.getByText("Release checklist")).toBeVisible();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search sessions or paths…" }), { target: { value: "Release checklist" } });
@@ -115,6 +119,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select all results" }));
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Deselect all results" })).toHaveClass("secondary-button", "bulk-select-button");
 
     expect(screen.queryByRole("button", { name: "Clear current results" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Deselect all results" }));
@@ -130,6 +135,7 @@ describe("CleanerX GUI", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select project data atlas-web" }));
     expect(screen.getByRole("checkbox", { name: "Design token migration" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Release checklist" })).toBeChecked();
+    expect(within(screen.getByRole("row", { name: /Select project data atlas-web/ })).getAllByRole("cell")).toHaveLength(5);
     expect(screen.getByText("2 selected")).toBeVisible();
   });
 

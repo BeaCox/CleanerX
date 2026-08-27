@@ -7,6 +7,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleAlert,
   Database,
   FolderCode,
@@ -439,19 +441,20 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
   const expansionKeys = sessionTreeExpansionKeys(snapshot, visibleSessionIds);
   const allExpanded = expansionKeys.length > 0 && expansionKeys.every((key) => expanded.has(key));
   useToggleAllShortcut(rowItems, snapshot, selected, selectMany);
-  return <section className="panel-card table-panel">
-    <div className="filter-row">
+  return <section className="panel-card table-panel session-panel">
+    <div className="filter-row session-filter-row">
       <label className="search-box"><Search size={16} /><input aria-label={t("filterSessions")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("filterSessions")} /></label>
       <select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">{t("allProjects")}</option>{snapshot.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
       <select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">{t("allSources")}</option>{[...new Set(snapshot.sessions.map((item) => item.source))].map((item) => <option key={item} value={item}>{sourceLabel(item)}</option>)}</select>
       <select value={state} onChange={(event) => setState(event.target.value)}><option value="all">{t("allStates")}</option><option value="active">{t("activeOnly")}</option><option value="archived">{t("archivedOnly")}</option></select>
+    </div>
+    <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut>
       <div className="view-switcher" aria-label={t("viewMode")}>
         <button type="button" className={displayMode === "tree" ? "active" : ""} aria-pressed={displayMode === "tree"} onClick={() => setDisplayMode("tree")}><GitBranch size={14} />{t("treeView")}</button>
         <button type="button" className={displayMode === "list" ? "active" : ""} aria-pressed={displayMode === "list"} onClick={() => setDisplayMode("list")}><List size={14} />{t("listView")}</button>
       </div>
-      {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
-    </div>
-    <BulkActions items={rowItems} snapshot={snapshot} selected={selected} selectMany={selectMany} shortcut />
+      {displayMode === "tree" && expansionKeys.length > 0 && <button type="button" className="secondary-button tree-expansion-button" onClick={() => setExpanded(allExpanded ? new Set() : new Set(expansionKeys))}>{allExpanded ? <ChevronsUp size={14} /> : <ChevronsDown size={14} />}{allExpanded ? t("collapseAll") : t("expandAll")}</button>}
+    </BulkActions>
     {displayMode === "tree" ? (
       <SessionTreeTable snapshot={snapshot} visibleSessionIds={visibleSessionIds} matchingSessionIds={matchingSessionIds} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} expanded={expanded} toggleExpanded={(key) => setExpanded((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />
     ) : <SessionListTable snapshot={snapshot} rows={rows} selected={selected} toggle={toggle} selectMany={selectMany} inspect={inspect} />}
@@ -461,7 +464,7 @@ function SessionsView({ snapshot, selected, toggle, selectMany, inspect }: Selec
 
 function SessionListTable({ snapshot, rows, selected, toggle, inspect }: SelectionProps & { rows: SessionRecord[] }) {
   const { t } = useTranslation();
-  return <div className="table-scroll"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th>{t("project")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead><tbody>
+  return <div className="table-scroll session-list-table"><table><thead><tr><th aria-label={t("selected")} /><th>{t("name")}</th><th>{t("project")}</th><th>{t("source")}</th><th>{t("updated")}</th><th>{t("size")}</th></tr></thead><tbody>
       {rows.map((session) => {
         const item = snapshot.items.find((candidate) => candidate.threadId === session.id)!;
         const projectName = snapshot.projects.find((candidate) => candidate.sessionIds.includes(session.id))?.name;
@@ -527,14 +530,16 @@ function SessionTreeTable({ snapshot, visibleSessionIds, matchingSessionIds, sel
     return [<tbody className="tree-project" key={project.id}>
       <tr className="tree-project-row">
         <td><CheckBox checked={allSelected} disabled={!selectableItems.length} onChange={toggleProject} label={`${t("selectProject")} ${project.name}`} /></td>
-        <td colSpan={4}>
+        <td>
           <button type="button" className="project-tree-toggle" aria-expanded={isExpanded} aria-label={`${isExpanded ? t("collapse") : t("expand")} ${project.name}`} onClick={() => toggleExpanded(projectKey)}>
             {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             <span className="project-icon compact"><FolderCode size={16} /></span>
             <span className="project-tree-copy"><strong>{project.name}</strong><code>{project.roots[0] ?? t("ungrouped")}</code></span>
-            <span className="project-tree-stats"><span><Bot size={13} />{sessions.length}</span><strong>{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></span>
           </button>
         </td>
+        <td />
+        <td />
+        <td><strong className="project-size">{formatBytes(sessions.reduce((sum, session) => sum + session.sizeBytes, 0))}</strong></td>
       </tr>
       {isExpanded && roots.flatMap((session) => renderSession(session, projectIds, 0))}
     </tbody>];
@@ -842,14 +847,15 @@ function PurgeBackupDialog({ backup, close, purge, purging }: { backup: BackupRe
   </div>;
 }
 
-function BulkActions({ items, snapshot, selected, selectMany, shortcut = false }: { items: CleanupItem[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: CleanupItem[], shouldSelect: boolean) => void; shortcut?: boolean }) {
+function BulkActions({ items, snapshot, selected, selectMany, shortcut = false, children }: { items: CleanupItem[]; snapshot: InventorySnapshot; selected: Set<string>; selectMany: (items: CleanupItem[], shouldSelect: boolean) => void; shortcut?: boolean; children?: ReactNode }) {
   const { t } = useTranslation();
   const selectable = items.filter((item) => isItemSelectable(item, snapshot));
   const selectedCount = selectable.filter((item) => selected.has(item.id)).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
   return <div className="bulk-actions" role="toolbar" aria-label={t("bulkSelection")}>
-    <button type="button" className="text-button" disabled={!selectable.length} onClick={() => selectMany(selectable, !allSelected)}>{allSelected ? <X size={14} /> : <Check size={14} />}{allSelected ? t("deselectAllResults") : t("selectAllResults")}</button>
+    <button type="button" className="secondary-button bulk-select-button" disabled={!selectable.length} onClick={() => selectMany(selectable, !allSelected)}>{allSelected ? <X size={14} /> : <Check size={14} />}{allSelected ? t("deselectAllResults") : t("selectAllResults")}</button>
     <span>{t("selectionScope", { selected: selectedCount, total: selectable.length })}{shortcut && <kbd>⌘/Ctrl A</kbd>}</span>
+    {children}
   </div>;
 }
 
