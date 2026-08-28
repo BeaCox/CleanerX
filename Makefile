@@ -1,6 +1,7 @@
 PNPM ?= pnpm
 CARGO ?= cargo
 TARGET_ARG := $(if $(TARGET),--target $(TARGET),)
+CONFIG_ARG := $(if $(CONFIG),--config $(CONFIG),)
 LINUX_PROFILE ?= release
 WINDOWS_PROFILE ?= release
 
@@ -54,16 +55,16 @@ dev:
 	$(PNPM) tauri dev
 
 app:
-	$(PNPM) tauri build $(TARGET_ARG) --bundles app
+	$(PNPM) tauri build $(CONFIG_ARG) $(TARGET_ARG) --bundles app
 
 dmg:
-	$(PNPM) tauri build $(TARGET_ARG) --bundles dmg
+	$(PNPM) tauri build $(CONFIG_ARG) $(TARGET_ARG) --bundles dmg
 
 bundles:
-	$(PNPM) tauri build $(TARGET_ARG) --bundles app,dmg
+	$(PNPM) tauri build $(CONFIG_ARG) $(TARGET_ARG) --bundles app,dmg
 
 linux:
-	$(PNPM) tauri build $(TARGET_ARG) --bundles deb,appimage
+	$(PNPM) tauri build $(CONFIG_ARG) $(TARGET_ARG) --bundles deb,appimage
 
 smoke-linux:
 	@test "$$(uname -s)" = "Linux" || { echo "smoke-linux requires Linux" >&2; exit 2; }
@@ -73,7 +74,7 @@ smoke-linux:
 		if test $$status -ne 124; then cat target/linux-smoke.log >&2; exit $$status; fi
 
 windows:
-	$(PNPM) tauri build $(TARGET_ARG) --bundles nsis,msi
+	$(PNPM) tauri build $(CONFIG_ARG) $(TARGET_ARG) --bundles nsis,msi
 
 smoke-windows:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1 -Profile $(WINDOWS_PROFILE)

@@ -58,6 +58,8 @@ The maintainer will validate the report privately, bound the affected route, and
 - Backup identities stay in the native platform credential store: macOS Keychain, Linux Secret Service, or Windows Credential Manager. A missing or failing credential backend disables backup creation rather than weakening encryption.
 - CleanerX does not force-quit Codex or another writer.
 - Inventory may retain one normalized, 96-character first-user-message excerpt only as an unnamed pi session title, matching pi's own selector; no additional transcript content is retained by the scan.
-- There is no telemetry, crash upload, cloud connection, updater, background daemon, or general shell/filesystem command exposed to the GUI.
+- There is no telemetry, crash upload, cloud synchronization, background daemon, or general shell/filesystem command exposed to the GUI. The sole built-in network action is a user-initiated HTTPS update check against the fixed CleanerX GitHub Releases endpoint; it sends no Agent data and never runs on a timer or at startup.
+- Application updates use Tauri's official updater through three purpose-specific Rust commands. The webview cannot choose an endpoint, public key, target file, or shell command. Update installation requires a manifest-selected artifact whose Tauri signature verifies against the public key embedded in the installed build.
+- The updater signing private key is absent from the repository and release artifacts. Release automation receives it only through GitHub Actions secrets; the maintainer's recovery copy stays in the native credential store. Operating-system signing remains a separate trust layer: the updater signature does not make an artifact Apple-notarized or establish a Microsoft publisher identity.
 
 Implementation details and qualified mutation routes are maintained in the [storage and transaction model](docs/storage-model.md) and [compatibility matrix](docs/compatibility.md).

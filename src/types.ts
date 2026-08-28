@@ -258,6 +258,26 @@ export interface AppSettings {
   tempRetentionHours: number;
 }
 
+export type AppUpdateSupport = "available" | "linuxPackage" | "unsupportedPlatform";
+
+export interface AppUpdateMetadata {
+  version: string;
+  currentVersion: string;
+  notes?: string;
+  date?: string;
+}
+
+export interface AppUpdateStatus {
+  currentVersion: string;
+  support: AppUpdateSupport;
+  update?: AppUpdateMetadata;
+}
+
+export type AppUpdateEvent =
+  | { event: "Started"; data: { contentLength?: number } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Finished" };
+
 export type ViewId =
   | "overview"
   | "sessions"
