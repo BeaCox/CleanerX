@@ -45,7 +45,7 @@ For the complete threat model and vulnerability-reporting process, see [SECURITY
 
 ## Project status
 
-CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts and unsigned x86_64 Linux `.deb`/AppImage artifacts. Linux packages are built and smoke-tested on Ubuntu 22.04 in GitHub Actions; Windows and further adapter hardening remain planned work.
+CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts and unsigned x86_64 Linux `.deb`/AppImage artifacts. Regular CI compiles and smoke-tests a debug Linux desktop application on Ubuntu 22.04; installable Linux packages are built only by the dedicated manual or `v*` tag workflow. Windows and further adapter hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
@@ -102,7 +102,7 @@ To build the Linux packages on an x86_64 Linux host:
 make linux
 ```
 
-The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. The Linux CI job also launches the release binary under Xvfb and uploads both packages as the `CleanerX-linux-x86_64-unsigned` workflow artifact.
+The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. Normal pushes and pull requests do not build release-mode packages: they compile a debug Linux application and launch it under Xvfb. Run the **Linux unsigned bundles** workflow manually, or push a `v*` tag, to build, smoke-test, inspect, and upload both packages as the short-lived `CleanerX-linux-x86_64-unsigned` workflow artifact. This workflow does not create a GitHub Release.
 
 Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Do not bypass Gatekeeper for binaries from an untrusted source.
 
@@ -157,7 +157,7 @@ The root `Makefile` is the stable entry point for local development and CI:
 | `make dmg` | Build an unsigned macOS DMG. |
 | `make bundles` | Build the `.app` and DMG in one Tauri invocation. |
 | `make linux` | Build unsigned Linux `.deb` and AppImage packages. |
-| `make smoke-linux` | Launch the built Linux release binary under Xvfb for a native smoke test. |
+| `make smoke-linux` | Launch the built Linux binary under Xvfb for a native smoke test; pass `LINUX_PROFILE=debug` for a debug build. |
 
 Run the complete validation pipeline before submitting a change:
 

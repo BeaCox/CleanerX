@@ -1,6 +1,7 @@
 PNPM ?= pnpm
 CARGO ?= cargo
 TARGET_ARG := $(if $(TARGET),--target $(TARGET),)
+LINUX_PROFILE ?= release
 
 .DEFAULT_GOAL := help
 
@@ -16,7 +17,7 @@ help:
 	@echo "  make dmg               Build an unsigned macOS DMG"
 	@echo "  make bundles           Build both .app and DMG in one Tauri run"
 	@echo "  make linux             Build unsigned Linux .deb and AppImage bundles"
-	@echo "  make smoke-linux       Launch the release binary under Xvfb for 8 seconds"
+	@echo "  make smoke-linux       Launch the Linux binary under Xvfb for 8 seconds"
 	@echo "  make app TARGET=...    Build for an explicit Rust target triple"
 
 setup:
@@ -63,7 +64,7 @@ linux:
 
 smoke-linux:
 	@test "$$(uname -s)" = "Linux" || { echo "smoke-linux requires Linux" >&2; exit 2; }
-	@test -x target/release/cleanerx-app || { echo "build the Linux release binary first with 'make linux'" >&2; exit 2; }
+	@test -x target/$(LINUX_PROFILE)/cleanerx-app || { echo "missing target/$(LINUX_PROFILE)/cleanerx-app" >&2; exit 2; }
 	@mkdir -p target
-	@status=0; timeout --signal=TERM 8s xvfb-run -a target/release/cleanerx-app >target/linux-smoke.log 2>&1 || status=$$?; \
+	@status=0; timeout --signal=TERM 8s xvfb-run -a target/$(LINUX_PROFILE)/cleanerx-app >target/linux-smoke.log 2>&1 || status=$$?; \
 		if test $$status -ne 124; then cat target/linux-smoke.log >&2; exit $$status; fi

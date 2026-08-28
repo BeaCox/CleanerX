@@ -4,30 +4,121 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+
 jobs:
-  core:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      web: ${{ steps.paths.outputs.web }}
+      app: ${{ steps.paths.outputs.app }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify changed files
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          base_sha="$PUSH_BASE_SHA"
+          head_sha="$GITHUB_SHA"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+            head_sha="$PR_HEAD_SHA"
+          fi
+
+          rust=false
+          web=false
+          app=false
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]] || \
+             ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
+             ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+            rust=true
+            web=true
+            app=true
+            echo "Could not resolve the comparison range; running every check."
+          else
+            while IFS= read -r path; do
+              [[ -n "$path" ]] || continue
+              echo "$path"
+              case "$path" in
+                .github/workflows/*|Makefile)
+                  rust=true
+                  web=true
+                  app=true
+                  ;;
+                Cargo.toml|Cargo.lock|crates/*|src-tauri/*)
+                  rust=true
+                  app=true
+                  ;;
+                package.json|pnpm-lock.yaml|pnpm-workspace.yaml|index.html|src/*|vite.config.*|vitest.config.*|tsconfig*.json)
+                  web=true
+                  app=true
+                  ;;
+              esac
+            done < <(git diff --name-only "$base_sha" "$head_sha")
+          fi
+
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "Selected checks: rust=$rust web=$web app=$app"
+
+  portability:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-2025]
+        os: [macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi --all-targets -- -D warnings
-      - run: cargo test -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi
+        with:
+          shared-key: portability-${{ matrix.os }}
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Clippy core and adapters
+        run: cargo clippy -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi --all-targets -- -D warnings
+      - name: Test core and adapters
+        run: cargo test -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi
 
   frontend:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.3.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -36,30 +127,31 @@ jobs:
       - run: pnpm build
 
   linux-app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install Tauri and smoke-test system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            curl \
             dbus-x11 \
-            file \
             gnome-keyring \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
-            patchelf \
-            wget \
             xvfb
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.3.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -67,9 +159,23 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-app-debug-v1
+          save-if: ${{ github.event_name == 'push' }}
       - run: pnpm install --frozen-lockfile
-      - run: make check
+      - name: Build frontend assets
+        run: pnpm build
+      - name: Check Rust formatting
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo fmt --all -- --check
+      - name: Clippy workspace
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test workspace
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo test --workspace
       - name: Verify Linux Secret Service backup and restore
+        if: needs.changes.outputs.rust == 'true'
         run: |
           mkdir -p \
             "$RUNNER_TEMP/cleanerx-keyring/data" \
@@ -84,16 +190,7 @@ jobs:
             CLEANERX_LINUX_SECRET_SERVICE_TEST=1 \
               cargo test -p cleanerx-core live_linux_secret_service_backup_round_trip -- --ignored
           ' _ "$RUNNER_TEMP/cleanerx-keyring"
-      - run: make linux
-      - run: make smoke-linux
-      - name: Inspect Linux packages
-        run: |
-          dpkg-deb --info target/release/bundle/deb/*.deb
-          file target/release/bundle/appimage/*.AppImage
-      - uses: actions/upload-artifact@v4
-        with:
-          name: CleanerX-linux-x86_64-unsigned
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/appimage/*.AppImage
-          if-no-files-found: error
+      - name: Build Linux debug application
+        run: cargo build -p cleanerx-app
+      - name: Smoke-test Linux application
+        run: make smoke-linux LINUX_PROFILE=debug
