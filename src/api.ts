@@ -301,13 +301,13 @@ export const api = {
 
   async getAppUpdateStatus(): Promise<AppUpdateStatus> {
     if (inTauri()) return invoke("get_app_update_status");
-    return { currentVersion: "0.1.0-alpha.1", support: "available" };
+    return { currentVersion: "0.1.0", support: "available" };
   },
 
   async checkForAppUpdate(): Promise<AppUpdateStatus> {
     if (inTauri()) return invoke("check_for_app_update");
     await delay(180);
-    return { currentVersion: "0.1.0-alpha.1", support: "available" };
+    return { currentVersion: "0.1.0", support: "available" };
   },
 
   async installAppUpdate(onEvent: (event: AppUpdateEvent) => void): Promise<void> {
