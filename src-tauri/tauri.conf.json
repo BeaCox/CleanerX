@@ -29,10 +29,14 @@
     "targets": ["app", "dmg"],
     "publisher": "BeaCOx",
     "copyright": "Copyright © 2026 BeaCOx",
+    "category": "Utility",
+    "shortDescription": "Inspect and safely clean local coding-agent storage.",
+    "longDescription": "CleanerX is a local-only desktop utility for reviewing and safely cleaning storage created by supported coding agents.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
     ],

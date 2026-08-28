@@ -2185,22 +2185,50 @@ fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>
 
 fn find_codex_binary() -> Option<PathBuf> {
     let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let search_path = env::var_os("PATH");
+    let home = dirs::home_dir();
+    codex_binary_candidates(
+        executable_name,
+        search_path.as_deref(),
+        home.as_deref(),
+        cfg!(unix),
+        cfg!(target_os = "macos"),
+    )
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+fn codex_binary_candidates(
+    executable_name: &str,
+    search_path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+    unix_like: bool,
+    macos: bool,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(path) = env::var_os("PATH") {
+    if let Some(path) = search_path {
         for directory in env::split_paths(&path) {
             candidates.push(directory.join(executable_name));
         }
     }
-    #[cfg(target_os = "macos")]
-    candidates.extend([
-        PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
-        PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-    ]);
-    if let Some(home) = dirs::home_dir() {
+    if unix_like {
+        candidates.extend([
+            PathBuf::from("/usr/local/bin").join(executable_name),
+            PathBuf::from("/usr/bin").join(executable_name),
+        ]);
+    }
+    if macos {
+        candidates.extend([
+            PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
+            PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
+            PathBuf::from("/opt/homebrew/bin/codex"),
+        ]);
+    }
+    if let Some(home) = home {
         candidates.extend([
             home.join(".local/bin").join(executable_name),
+            home.join(".local/share/pnpm").join(executable_name),
+            home.join(".npm-global/bin").join(executable_name),
             home.join(".volta/bin").join(executable_name),
             home.join(".asdf/shims").join(executable_name),
             home.join(".bun/bin").join(executable_name),
@@ -2223,7 +2251,7 @@ fn find_codex_binary() -> Option<PathBuf> {
             candidates.extend(nvm_candidates);
         }
     }
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    candidates
 }
 
 fn codex_app_support() -> Option<PathBuf> {
@@ -2383,6 +2411,18 @@ fn is_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_candidates_cover_linux_desktop_install_locations() {
+        let home = tempfile::tempdir().expect("binary fixture home");
+        let candidates = codex_binary_candidates("codex", None, Some(home.path()), true, false);
+
+        assert!(candidates.contains(&PathBuf::from("/usr/local/bin/codex")));
+        assert!(candidates.contains(&PathBuf::from("/usr/bin/codex")));
+        assert!(candidates.contains(&home.path().join(".local/bin/codex")));
+        assert!(candidates.contains(&home.path().join(".local/share/pnpm/codex")));
+        assert!(candidates.contains(&home.path().join(".npm-global/bin/codex")));
+    }
 
     #[test]
     fn home_precedence_prefers_override() {

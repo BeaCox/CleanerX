@@ -22,7 +22,8 @@ CleanerX currently has:
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
-- cross-platform Rust checks and frontend tests in CI.
+- unsigned x86_64 Linux `.deb` and AppImage builds on Ubuntu 22.04, with a native Xvfb launch smoke test and an isolated Secret Service backup/restore round trip;
+- cross-platform Rust checks for all four adapters and frontend tests in CI.
 
 This is an engineering MVP, not yet a promise that every Codex storage revision or crash boundary has production-grade coverage.
 
@@ -135,10 +136,14 @@ Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0
 
 Priority: portability before additional Agent adapters.
 
-- Extract platform services for application data paths, process detection, control transport, file ownership checks, atomic replacement, and secure key storage.
-- Use Windows Credential Manager and Linux Secret Service/keyring implementations without weakening `.cxb` encryption.
-- Add Windows junction/reparse-point and Linux symlink/mount-boundary safety fixtures.
-- Create Tauri installers/packages and native smoke tests while keeping platform-specific mutation categories disabled until validated.
+The Linux foundation is implemented: XDG/home data resolution, process probing, common desktop-launch executable locations, Unix ownership and same-device mount-boundary checks, Linux Secret Service-backed `.cxb` encryption, `.deb`/AppImage packages, and a native CI smoke test. Linux uses the same fail-closed mutation routes and protected-path invariants as macOS.
+
+Remaining work in this combined milestone is Windows-specific:
+
+- extract and validate Windows application-data, process, control-transport, atomic-replacement, and secure-key-storage behavior;
+- use Windows Credential Manager without weakening `.cxb` encryption;
+- add Windows junction and reparse-point safety fixtures; and
+- create and smoke-test Windows installers before enabling mutation categories there.
 
 ### Exit criteria
 

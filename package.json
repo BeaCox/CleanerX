@@ -10,6 +10,7 @@
     "build:app": "tauri build --bundles app",
     "build:dmg": "tauri build --bundles dmg",
     "build:bundles": "tauri build --bundles app,dmg",
+    "build:linux": "tauri build --bundles deb,appimage",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"
