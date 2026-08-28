@@ -156,9 +156,23 @@ jobs:
         if: matrix.platform == 'macos'
         env:
           APPLE_SIGNING_IDENTITY: "-"
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: make bundles TARGET=${{ matrix.target }} CONFIG=src-tauri/tauri.updater.conf.json
+      - name: Verify macOS DMG layout
+        if: matrix.platform == 'macos'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmg_paths=(target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg)
+          if [[ ${#dmg_paths[@]} -ne 1 ]]; then
+            echo "Expected exactly one macOS DMG for layout verification." >&2
+            exit 1
+          fi
+          ./scripts/verify-macos-dmg.sh "${dmg_paths[0]}"
       - name: Build Linux bundles
         if: matrix.platform == 'linux'
         env:

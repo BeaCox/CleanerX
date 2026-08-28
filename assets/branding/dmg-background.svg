@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440">
+  <rect width="760" height="440" fill="#f4f1ea" />
+  <rect x="24.5" y="24.5" width="711" height="391" rx="8" fill="none" stroke="#c9c2b6" />
+
+  <g fill="#605a50" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, monospace" font-size="11" letter-spacing="1.2">
+    <text x="48" y="54">CLEANERX / MACOS INSTALLER</text>
+    <text x="712" y="54" text-anchor="end">LOCAL-ONLY UTILITY</text>
+  </g>
+
+  <g fill="#23201a" font-family="-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif">
+    <text x="48" y="94" font-size="28" font-weight="650">Install CleanerX</text>
+    <text x="48" y="119" fill="#605a50" font-size="14">Drag the app into Applications. Nothing else is installed.</text>
+  </g>
+
+  <line x1="48" y1="140.5" x2="712" y2="140.5" stroke="#c9c2b6" />
+
+  <g fill="#605a50" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, monospace" font-size="10" letter-spacing="1">
+    <text x="230" y="164" text-anchor="middle">01 / CLEANERX.APP</text>
+    <text x="530" y="164" text-anchor="middle">02 / APPLICATIONS</text>
+  </g>
+
+  <rect x="154.5" y="178.5" width="151" height="151" rx="12" fill="#eee9df" stroke="#d4cdc1" stroke-dasharray="3 4" />
+  <rect x="454.5" y="178.5" width="151" height="151" rx="12" fill="#eee9df" stroke="#d4cdc1" stroke-dasharray="3 4" />
+
+  <g fill="#23201a" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, monospace" font-size="9" letter-spacing="0.9">
+    <text x="380" y="207" text-anchor="middle">DRAG TO INSTALL</text>
+  </g>
+  <line x1="336" y1="231" x2="419" y2="231" stroke="#23201a" stroke-width="2" />
+  <path d="M 419 224 L 431 231 L 419 238 Z" fill="#23201a" />
+
+  <rect x="24" y="368" width="712" height="48" rx="0 0 8 8" fill="#ebe5da" />
+  <circle cx="49" cy="392" r="4" fill="#a84235" />
+  <g fill="#4f493f" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, monospace" font-size="10" letter-spacing="0.55">
+    <text x="62" y="396">UNSIGNED BUILD / macOS MAY ASK FOR APPROVAL ON FIRST LAUNCH</text>
+    <text x="712" y="396" text-anchor="end">FINDER → OPEN</text>
+  </g>
+</svg>

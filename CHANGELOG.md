@@ -16,6 +16,7 @@ Initial public release for bounded cross-platform and Agent compatibility.
 - Optional age-encrypted backups for complete plans with a supported restore route.
 - Atomic operation journal, startup recovery, post-mutation rescans, and all-or-nothing restore preflight and rollback.
 - Unsigned macOS, Linux, and Windows packaging with SHA-256 checksums and build metadata.
+- A guided macOS DMG install layout with CI checks for its Finder metadata and tracked background.
 - User-initiated Tauri updates with a pinned public key and signed updater artifacts.
 
 ### Safety boundary
