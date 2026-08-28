@@ -13,6 +13,7 @@ This directory contains the detailed product, compatibility, architecture, and r
 | what remains unfinished and what blocks a supported release | [Development roadmap](roadmap.md) |
 | how source preview, alpha, beta, unsigned artifacts, and `v0.1.0` are gated | [Open-source release policy](open-source-release-plan.md) |
 | how application update checks, signatures, platform packages, and release feeds work | [Application update strategy](update-strategy.md) |
+| what changed in the first alpha and which release checks remain | [`v0.1.0-alpha.1` release checklist](releases/v0.1.0-alpha.1.md) and the [changelog](../CHANGELOG.md) |
 | the security boundary or how to report a vulnerability | [Security policy](../SECURITY.md) |
 | how to prepare and verify a contribution | [Contributor guide](../CONTRIBUTING.md) |
 | repository-wide constraints for coding agents | [Agent instructions](../AGENTS.md) |

@@ -282,7 +282,7 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publish GitHub Release
+    name: Create draft GitHub Release
     needs: [validate, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -318,7 +318,7 @@ jobs:
           checksum_file="CleanerX_${RELEASE_VERSION}_SHA256SUMS.txt"
           rm -f "release-assets/$checksum_file"
           (cd release-assets && sha256sum * > "$checksum_file")
-      - name: Publish release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_WARNING: |
@@ -332,6 +332,7 @@ jobs:
           fi
           gh release create "$GITHUB_REF_NAME" release-assets/* \
             --verify-tag \
+            --draft \
             --title "CleanerX $GITHUB_REF_NAME" \
             --generate-notes \
             --notes "$RELEASE_WARNING" \
