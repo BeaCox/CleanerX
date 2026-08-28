@@ -319,15 +319,14 @@ pub fn allocated_size(path: &Path) -> Result<u64, CleanerError> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn rejects_symlink_escape() {
         let root = tempfile::tempdir().expect("root");
         let outside = tempfile::tempdir().expect("outside");
         let link = root.path().join("link");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
         let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
-        #[cfg(unix)]
         assert!(policy.validate_existing(&link).is_err());
     }
 
