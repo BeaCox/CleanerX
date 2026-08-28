@@ -44,8 +44,7 @@ Priority: required before making the repository public as a source preview. It d
 ### Public project controls
 
 - Keep the root documentation explicit about engineering-preview status, irreversible cleanup without backup, supported platforms, build prerequisites, read-only degradation, and unsigned-build policy.
-- Add a sanitized compatibility-report template covering CleanerX, OS, Agent, transport, and capability versions while warning users not to attach private Agent data.
-- Enable required CI, private vulnerability reporting, focused issue forms, and a pull-request template with safety, fixture, documentation, and `make check` checks.
+- Enable private vulnerability reporting when the repository becomes public.
 - Label only bounded, non-mutation work for first-time contributors.
 
 ### Exit criteria
@@ -70,11 +69,9 @@ Priority: required before promoting a public mutation-capable binary. Source cod
 
 - Reopen every selected encrypted backup from disk before mutation, decrypt it, validate the manifest identity and format, verify every archived hash, and durably flush the archive and containing directory where supported.
 - Prevent `.cxb.partial` files, incomplete verification, catalog failures, or orphan archives from being treated as committed backups.
-- Stage and hash the full restore before mutation; preflight every root, destination, ownership rule, path boundary, and conflict; then complete all destinations or roll back every committed destination.
-- Journal cross-filesystem restore fallback explicitly instead of silently substituting copy for rename.
-- Exercise every journal transition with fault injection: before and after archive creation, archive verification, catalog commit, each destination commit or rollback, each cleanup mutation route, and rescan verification.
+- Complete fault injection for the remaining journal transitions: before and after archive creation, archive verification, catalog commit, each cleanup mutation route, and rescan verification. Restore already covers both sides of every destination commit and rollback.
 - Add startup recovery UI that can continue verification, restore a committed backup, or safely terminate an incomplete operation.
-- Preserve an operation's committed `backup_id` after later failure and retain enough immutable plan/progress data to explain which mutations completed.
+- Retain enough immutable plan/progress data to explain which mutations completed after a later failure.
 - Never infer completion from journal state alone; rescan and verify the affected inventory.
 - Add concurrent-writer and file-identity-change fixtures for each direct file category.
 

@@ -12,6 +12,7 @@ pub use planner::create_cleanup_plan;
 pub use platform::{atomic_replace_file, configure_background_command};
 pub use safety::{
     FileIdentity, PathPolicy, metadata_revision, safe_remove, validate_existing_beneath,
+    validate_new_file_destination,
 };
 
 use async_trait::async_trait;

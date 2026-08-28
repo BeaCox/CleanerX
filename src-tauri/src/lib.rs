@@ -12,7 +12,7 @@ use cleanerx_core::{
     BackupStore, CategorySummary, CleanerError, CleanupItem, CleanupPlan, CleanupResult,
     FileIdentity, InventorySnapshot, ItemContentDetail, ItemThumbnail, OperationKind,
     OperationStatus, PathPolicy, SessionRecord, StorageCategory, atomic_replace_file,
-    create_cleanup_plan, safe_remove,
+    create_cleanup_plan, safe_remove, validate_existing_beneath,
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -583,16 +583,7 @@ async fn execute_cleanup(
 
     let result = execute_plan(&state, &plan, &snapshot, create_backup).await;
     if let Err(error) = &result {
-        let _ = write_journal(
-            &state.data_dir,
-            OperationJournal {
-                operation_id: plan.id,
-                status: OperationStatus::Failed,
-                updated_at: Utc::now(),
-                backup_id: None,
-                message: Some(error.to_string()),
-            },
-        );
+        let _ = record_failed_operation(&state.data_dir, plan.id, error);
     }
     result.map_err(error_message)
 }
@@ -1321,11 +1312,46 @@ fn clean_logs(item: &cleanerx_core::CleanupItem, retention_days: u32) -> Result<
 }
 
 fn write_journal(data_dir: &Path, journal: OperationJournal) -> Result<(), CleanerError> {
-    save_json_atomic(
-        &data_dir
-            .join("operations")
-            .join(format!("{}.json", journal.operation_id)),
-        &journal,
+    save_json_atomic(&journal_path(data_dir, journal.operation_id), &journal)
+}
+
+fn journal_path(data_dir: &Path, operation_id: Uuid) -> PathBuf {
+    data_dir
+        .join("operations")
+        .join(format!("{operation_id}.json"))
+}
+
+fn read_journal(
+    data_dir: &Path,
+    operation_id: Uuid,
+) -> Result<Option<OperationJournal>, CleanerError> {
+    let operations = data_dir.join("operations");
+    let path = journal_path(data_dir, operation_id);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(_) => {
+            let path = validate_existing_beneath(&path, &[operations])?;
+            Ok(Some(serde_json::from_reader(fs::File::open(path)?)?))
+        }
+    }
+}
+
+fn record_failed_operation(
+    data_dir: &Path,
+    operation_id: Uuid,
+    error: &CleanerError,
+) -> Result<(), CleanerError> {
+    let backup_id = read_journal(data_dir, operation_id)?.and_then(|journal| journal.backup_id);
+    write_journal(
+        data_dir,
+        OperationJournal {
+            operation_id,
+            status: OperationStatus::Failed,
+            updated_at: Utc::now(),
+            backup_id,
+            message: Some(error.to_string()),
+        },
     )
 }
 
@@ -1412,9 +1438,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionFilter, SessionPageRequest, allowed_roots, capture_mutation_identities,
-        inventory_report, load_settings, protected_paths, remove_operation_paths, session_page,
+        OperationJournal, SessionFilter, SessionPageRequest, allowed_roots,
+        capture_mutation_identities, inventory_report, load_settings, protected_paths,
+        read_journal, record_failed_operation, remove_operation_paths, session_page,
         validate_opencode_session_revisions, validate_settings, validate_source_revision,
+        write_journal,
     };
     use chrono::Utc;
     use cleanerx_core::{
@@ -1535,6 +1563,43 @@ mod tests {
         assert_eq!(loaded.locale, "system");
         assert_eq!(loaded.theme, "system");
         assert_eq!(loaded.text_size, "standard");
+    }
+
+    #[test]
+    fn failed_operation_preserves_the_committed_backup_id() {
+        let data_dir = tempdir().expect("operation journal directory");
+        let operation_id = Uuid::new_v4();
+        let backup_id = Uuid::new_v4();
+        write_journal(
+            data_dir.path(),
+            OperationJournal {
+                operation_id,
+                status: cleanerx_core::OperationStatus::Deleting,
+                updated_at: Utc::now(),
+                backup_id: Some(backup_id),
+                message: None,
+            },
+        )
+        .expect("deleting journal");
+
+        record_failed_operation(
+            data_dir.path(),
+            operation_id,
+            &cleanerx_core::CleanerError::Blocked("injected deletion failure".into()),
+        )
+        .expect("failed journal");
+
+        let journal = read_journal(data_dir.path(), operation_id)
+            .expect("read journal")
+            .expect("journal exists");
+        assert_eq!(journal.status, cleanerx_core::OperationStatus::Failed);
+        assert_eq!(journal.backup_id, Some(backup_id));
+        assert!(
+            journal
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("injected deletion failure"))
+        );
     }
 
     #[test]

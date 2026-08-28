@@ -20,7 +20,7 @@ CleanerX itself does not connect to cloud services, upload data, or collect tele
 - Deletes session trees through the official `thread/delete` operation and shows all affected descendants before confirmation.
 - Uses OpenCode's official CLI while offline and a strictly verified loopback Server API for inactive-session deletion while OpenCode is running, while keeping its SQLite database read-only to CleanerX.
 - Probes `memory/reset` independently, so an unsupported memory operation does not disable otherwise supported session cleanup.
-- Supports optional encrypted `.cxb` backups and all-or-nothing restore without overwriting existing data.
+- Supports optional encrypted `.cxb` backups and preflighted restore that never overwrites existing data and rolls back committed files after an in-process failure. Crash-interruption recovery remains an M1 release gate.
 - Protects active and pinned sessions, authentication, configuration, MCP credentials, rules, skills, plugins, browser data, cookies, and source code.
 - Provides English and Chinese localization, system-aware light and dark themes, keyboard navigation, and reduced-motion support.
 
@@ -36,7 +36,7 @@ CleanerX treats deletion as a security boundary:
 | Direct file cleanup | Every path must remain under a category-specific allowlisted root. Symlinks, traversal, protected descendants, ownership anomalies, and identity changes are rejected. |
 | Active writers | CleanerX never force-quits Codex or another process. It reports the blocker and lets the user retry. |
 | Backups | Backups are opt-in. When selected, the encrypted archive is verified and atomically committed before mutation starts. |
-| Restore | Manifest hashes and every destination are checked before the first move. Existing IDs and paths are never overwritten. |
+| Restore | Manifest hashes, roots, ownership, path boundaries, and every destination are checked before commit. Existing IDs and paths are never overwritten; in-process failures roll back committed files. Crash-interruption recovery remains an M1 release gate. |
 | Privacy | There is no telemetry, crash upload, cloud synchronization, updater, background daemon, or unrestricted shell/filesystem API. |
 
 Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain, the Linux desktop Secret Service, or Windows Credential Manager. Archives are written as sibling `.partial` files, atomically replaced with native same-directory semantics, and reopened to verify the committed manifest and every payload hash before cleanup can begin. If the native credential store is unavailable, backup creation fails before cleanup begins.

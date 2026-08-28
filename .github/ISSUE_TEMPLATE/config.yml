@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/BeaCox/CleanerX/security/advisories/new
+    about: Never publish credentials, transcripts, memory data, journals, or backup archives in an issue.
+  - name: Read the security policy
+    url: https://github.com/BeaCox/CleanerX/blob/main/SECURITY.md
+    about: Review CleanerX's protected-data boundaries and private reporting guidance.
