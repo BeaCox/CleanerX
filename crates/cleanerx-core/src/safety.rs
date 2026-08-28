@@ -353,9 +353,7 @@ fn is_redirecting_file(_path: &Path, metadata: &fs::Metadata) -> Result<bool, Cl
     {
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-        return Ok(windows_file_information(_path)?.dwFileAttributes
-            & FILE_ATTRIBUTE_REPARSE_POINT
-            != 0);
+        Ok(windows_file_information(_path)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
     }
     #[cfg(not(windows))]
     Ok(false)
