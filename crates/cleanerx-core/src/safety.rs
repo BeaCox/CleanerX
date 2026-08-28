@@ -46,6 +46,23 @@ impl FileIdentity {
             metadata_revision: metadata_revision(&[path.to_path_buf()])?,
         })
     }
+
+    /// Returns whether two captures refer to the same filesystem object, ignoring normal metadata
+    /// changes such as a directory mtime update while its staged restore files are created/removed.
+    pub fn same_object(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.device == other.device && self.inode == other.inode
+        }
+        #[cfg(windows)]
+        {
+            self.volume_serial == other.volume_serial && self.file_index == other.file_index
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            self.len == other.len && self.modified_nanos == other.modified_nanos
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +127,105 @@ pub fn validate_existing_beneath(
     allowed_roots: &[PathBuf],
 ) -> Result<PathBuf, CleanerError> {
     resolve_existing_beneath(path, allowed_roots).map(|(canonical, _)| canonical)
+}
+
+/// Preflights a not-yet-existing file destination beneath one fixed restore root.
+///
+/// Existing path components are checked without following symbolic links or Windows reparse
+/// points. Ownership and filesystem/volume identity must match the root, and the final destination
+/// must not exist in any form, including as a dangling redirect.
+pub fn validate_new_file_destination(
+    root: &Path,
+    destination: &Path,
+) -> Result<PathBuf, CleanerError> {
+    reject_lexical_escape(root)?;
+    reject_lexical_escape(destination)?;
+
+    let root_metadata = fs::symlink_metadata(root)?;
+    if !root_metadata.is_dir() || is_redirecting_file(root, &root_metadata)? {
+        return Err(CleanerError::UnsafePath(format!(
+            "restore root is not a plain directory: {}",
+            root.display()
+        )));
+    }
+    validate_owner(root, &root_metadata)?;
+    let canonical_root = root.canonicalize()?;
+    let relative = destination
+        .strip_prefix(root)
+        .or_else(|_| destination.strip_prefix(&canonical_root))
+        .map_err(|_| {
+            CleanerError::UnsafePath(format!(
+                "restore target is outside its fixed root: {}",
+                destination.display()
+            ))
+        })?;
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CleanerError::UnsafePath(destination.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    let expected_device = {
+        use std::os::unix::fs::MetadataExt as _;
+        root_metadata.dev()
+    };
+    #[cfg(windows)]
+    let expected_device = u64::from(windows_file_information(root)?.dwVolumeSerialNumber);
+    #[cfg(not(any(unix, windows)))]
+    let expected_device = 0;
+
+    let resolved = canonical_root.join(relative);
+    let mut current = canonical_root;
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(part) = component else {
+            unreachable!("restore components were validated")
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if is_redirecting_file(&current, &metadata)? {
+                    return Err(CleanerError::UnsafePath(format!(
+                        "symbolic link or reparse point in restore path: {}",
+                        current.display()
+                    )));
+                }
+                validate_owner(&current, &metadata)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt as _;
+                    validate_device_boundary(&current, expected_device, metadata.dev())?;
+                }
+                #[cfg(windows)]
+                validate_device_boundary(
+                    &current,
+                    expected_device,
+                    u64::from(windows_file_information(&current)?.dwVolumeSerialNumber),
+                )?;
+                #[cfg(not(any(unix, windows)))]
+                validate_device_boundary(&current, expected_device, expected_device)?;
+
+                if index + 1 == components.len() {
+                    return Err(CleanerError::Blocked(format!(
+                        "restore target already exists: {}",
+                        destination.display()
+                    )));
+                }
+                if !metadata.is_dir() {
+                    return Err(CleanerError::UnsafePath(format!(
+                        "non-directory component in restore path: {}",
+                        current.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(resolved),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("an existing final destination returns a blocker")
 }
 
 fn resolve_existing_beneath(

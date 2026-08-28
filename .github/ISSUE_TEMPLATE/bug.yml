@@ -1,0 +1,84 @@
+name: Product bug
+description: Report a reproducible CleanerX defect without attaching private Agent data.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        CleanerX handles private local Agent data. Do not attach transcripts, credentials, memory contents, logs, operation journals, `.cxb` archives, or screenshots containing private paths/content. Report possible protected-data mutation through a private security advisory instead.
+  - type: input
+    id: cleanerx_version
+    attributes:
+      label: CleanerX version or commit
+      placeholder: v0.1.0-beta.1 or 294b4e4
+    validations:
+      required: true
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: Operating system
+      options:
+        - macOS 13 or later
+        - x86_64 Linux
+        - x86_64 Windows 10/11
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Codex
+        - Claude Code
+        - OpenCode
+        - pi
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Affected operation
+      options:
+        - Detection or scan
+        - Inventory or filtering
+        - Item detail or thumbnail
+        - Cleanup review
+        - Cleanup execution
+        - Backup creation or listing
+        - Restore
+        - Settings or interface
+        - Build or packaging
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction steps
+      description: Use temporary/demo paths and redact IDs and content.
+      placeholder: |
+        1. Create an isolated temporary Agent home...
+        2. Scan...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized error
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed private Agent content, credentials, real paths, journals, and backup archives from this report.
+          required: true
+        - label: This report does not describe possible mutation of protected data; I will use a private security advisory if it does.
+          required: true

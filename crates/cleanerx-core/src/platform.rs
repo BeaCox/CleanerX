@@ -40,6 +40,41 @@ pub fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), Clea
     Ok(())
 }
 
+/// Atomically moves a fully written sibling file into a destination that must not exist.
+///
+/// On success the destination has been created and the source no longer exists. On failure the
+/// destination was not created. Callers that require a durable multi-file transaction must record
+/// the successful commit before calling [`sync_committed_file`], so a later flush failure can roll
+/// the destination back.
+pub(crate) fn atomic_commit_new_file(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), CleanerError> {
+    validate_new_file_paths(source, destination)?;
+    sync_file(source)?;
+    commit_new_file(source, destination).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            CleanerError::Blocked(format!(
+                "restore target already exists: {}",
+                destination.display()
+            ))
+        } else {
+            error.into()
+        }
+    })
+}
+
+/// Flushes a newly committed file and its containing directory where the platform supports it.
+pub(crate) fn sync_committed_file(path: &Path) -> Result<(), CleanerError> {
+    sync_file(path)?;
+    sync_parent(path)
+}
+
+/// Flushes the directory containing a path after a rollback removal.
+pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), CleanerError> {
+    sync_parent(path)
+}
+
 #[cfg(windows)]
 fn sync_file(path: &Path) -> Result<(), CleanerError> {
     // FlushFileBuffers requires a handle with write access on Windows.
@@ -77,6 +112,34 @@ fn validate_atomic_paths(source: &Path, destination: &Path) -> Result<(), Cleane
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+fn validate_new_file_paths(source: &Path, destination: &Path) -> Result<(), CleanerError> {
+    if !source.is_absolute() || !destination.is_absolute() {
+        return Err(CleanerError::UnsafePath(
+            "restore commit paths must be absolute".into(),
+        ));
+    }
+    let source_parent = source
+        .parent()
+        .ok_or_else(|| CleanerError::UnsafePath(source.display().to_string()))?;
+    let destination_parent = destination
+        .parent()
+        .ok_or_else(|| CleanerError::UnsafePath(destination.display().to_string()))?;
+    if source_parent.canonicalize()? != destination_parent.canonicalize()? {
+        return Err(CleanerError::UnsafePath(
+            "restore commit requires sibling paths".into(),
+        ));
+    }
+    validate_plain_file(source)?;
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(CleanerError::Blocked(format!(
+            "restore target already exists: {}",
+            destination.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn validate_plain_file(path: &Path) -> Result<(), CleanerError> {
@@ -140,6 +203,82 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), CleanerError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn commit_new_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers for the duration of the call.
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn commit_new_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the duration of the call.
+    if unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn commit_new_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the duration of the call.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn commit_new_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::hard_link(source, destination)?;
+    fs::remove_file(source)
+}
+
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<(), CleanerError> {
     let parent = path
@@ -183,6 +322,38 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("committed value"), b"new");
         assert!(!source.exists());
+    }
+
+    #[test]
+    fn atomically_commits_a_new_file_without_overwrite() {
+        let directory = tempfile::tempdir().expect("atomic fixture");
+        let destination = directory.path().join("restored.jsonl");
+        let source = directory.path().join("restored.jsonl.partial");
+        fs::write(&source, b"restored").expect("staged value");
+
+        atomic_commit_new_file(&source, &destination).expect("new-file commit");
+        sync_committed_file(&destination).expect("durable commit");
+
+        assert_eq!(
+            fs::read(&destination).expect("committed value"),
+            b"restored"
+        );
+        assert!(!source.exists());
+
+        let second_source = directory.path().join("second.partial");
+        fs::write(&second_source, b"replacement").expect("second staged value");
+        assert!(matches!(
+            atomic_commit_new_file(&second_source, &destination),
+            Err(CleanerError::Blocked(_))
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("preserved value"),
+            b"restored"
+        );
+        assert_eq!(
+            fs::read(second_source).expect("uncommitted value"),
+            b"replacement"
+        );
     }
 
     #[test]

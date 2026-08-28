@@ -1,0 +1,44 @@
+name: Read-only improvement
+description: Propose bounded inventory, presentation, documentation, or accessibility work.
+title: "enhancement: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for bounded non-mutation work. New cleanup categories, mutation routes, dynamic plugins, background monitoring, and general shell/filesystem access require an explicit product and safety decision and are not first-contribution tasks.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Read-only inventory
+        - Search, filtering, or hierarchy
+        - Accessibility or keyboard behavior
+        - Localization
+        - Documentation
+        - Tests or fixtures without new mutation behavior
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user-visible problem without including private Agent data.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Bounded proposal
+      description: Explain the desired behavior and why it stays outside mutation and protected-data boundaries.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope confirmation
+      options:
+        - label: This proposal does not add or widen a cleanup path, mutation route, background task, telemetry, or unrestricted webview API.
+          required: true
+        - label: I removed private Agent content, credentials, real paths, journals, and backup archives.
+          required: true

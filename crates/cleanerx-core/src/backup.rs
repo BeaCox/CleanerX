@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
@@ -11,8 +11,12 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    AgentKind, BackupEntry, BackupManifest, BackupRecord, CleanerError, CleanupPlan,
-    atomic_replace_file, safety::is_redirecting_path,
+    AgentKind, BackupEntry, BackupManifest, BackupRecord, CleanerError, CleanupPlan, FileIdentity,
+    PathPolicy, atomic_replace_file,
+    platform::{atomic_commit_new_file, sync_committed_file, sync_parent_directory},
+    safe_remove,
+    safety::is_redirecting_path,
+    validate_new_file_destination,
 };
 
 const KEYCHAIN_SERVICE: &str = "com.cleanerx.CleanerX";
@@ -37,6 +41,30 @@ pub struct BackupStore {
     base_dir: PathBuf,
     retention_days: u32,
     identity_override: Option<String>,
+}
+
+#[derive(Debug)]
+struct RestoreTarget {
+    root: PathBuf,
+    staged: PathBuf,
+    destination: PathBuf,
+    sha256: String,
+    size_bytes: u64,
+    partial: Option<(PathBuf, FileIdentity)>,
+    committed_identity: Option<FileIdentity>,
+}
+
+#[derive(Debug)]
+struct CreatedRestoreDirectory {
+    root: PathBuf,
+    path: PathBuf,
+    identity: FileIdentity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreEvent {
+    BeforeCommit(usize),
+    AfterCommit(usize),
 }
 
 impl BackupStore {
@@ -171,6 +199,19 @@ impl BackupStore {
         expected_agent: AgentKind,
         roots: &BTreeMap<String, PathBuf>,
     ) -> Result<BackupManifest, CleanerError> {
+        self.restore_with_hook(backup_id, expected_agent, roots, |_| Ok(()))
+    }
+
+    fn restore_with_hook<F>(
+        &self,
+        backup_id: Uuid,
+        expected_agent: AgentKind,
+        roots: &BTreeMap<String, PathBuf>,
+        mut hook: F,
+    ) -> Result<BackupManifest, CleanerError>
+    where
+        F: FnMut(RestoreEvent) -> Result<(), CleanerError>,
+    {
         let record = self
             .load_catalog()?
             .records
@@ -189,14 +230,16 @@ impl BackupStore {
             .map_err(|error| CleanerError::Backup(error.to_string()))?;
         let decoder = zstd::Decoder::new(reader)?;
         let mut archive = tar::Archive::new(decoder);
-        let staging = self
-            .base_dir
-            .join("restore-staging")
-            .join(Uuid::new_v4().to_string());
-        fs::create_dir_all(&staging)?;
-        restrict_directory(&staging)?;
+        let staging_parent = self.base_dir.join("restore-staging");
+        fs::create_dir_all(&staging_parent)?;
+        restrict_directory(&staging_parent)?;
+        let staging = tempfile::Builder::new()
+            .prefix("restore-")
+            .tempdir_in(&staging_parent)?;
+        restrict_directory(staging.path())?;
 
         let mut manifest: Option<BackupManifest> = None;
+        let mut extracted_payloads = HashSet::<PathBuf>::new();
         for entry in archive.entries()? {
             let mut entry = entry?;
             let entry_type = entry.header().entry_type();
@@ -208,6 +251,11 @@ impl BackupStore {
             let path = entry.path()?.into_owned();
             validate_relative_path(&path)?;
             if path == Path::new("manifest.json") {
+                if manifest.is_some() {
+                    return Err(CleanerError::Backup(
+                        "backup contains multiple manifests".into(),
+                    ));
+                }
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes)?;
                 manifest = Some(serde_json::from_slice(&bytes)?);
@@ -216,11 +264,26 @@ impl BackupStore {
             let payload_path = path
                 .strip_prefix("payload")
                 .map_err(|_| CleanerError::Backup("unexpected archive path".into()))?;
-            let target = staging.join(payload_path);
+            validate_relative_path(payload_path)?;
+            if payload_path.components().count() < 2
+                || !extracted_payloads.insert(payload_path.to_path_buf())
+            {
+                return Err(CleanerError::Backup(format!(
+                    "invalid or duplicate backup payload: {}",
+                    payload_path.display()
+                )));
+            }
+            let target = staging.path().join(payload_path);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            entry.unpack(&target)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            restrict_file(&target)?;
+            io::copy(&mut entry, &mut output)?;
+            output.sync_all()?;
         }
 
         let manifest = manifest.ok_or_else(|| CleanerError::Backup("missing manifest".into()))?;
@@ -235,47 +298,121 @@ impl BackupStore {
             ));
         }
 
+        let mut expected_payloads = HashSet::<PathBuf>::new();
+        let mut destinations = HashSet::<PathBuf>::new();
+        let mut targets = Vec::<RestoreTarget>::with_capacity(manifest.entries.len());
         for expected in &manifest.entries {
+            validate_root_label(&expected.root)?;
             let root = roots.get(&expected.root).ok_or_else(|| {
                 CleanerError::Backup(format!("missing restore root: {}", expected.root))
             })?;
             let relative = portable_to_path(&expected.relative_path)?;
-            let staged = staging.join(&expected.root).join(&relative);
-            if !staged.is_file() || hash_file(&staged)? != expected.sha256 {
+            let payload_path = PathBuf::from(&expected.root).join(&relative);
+            if !expected_payloads.insert(payload_path.clone()) {
+                return Err(CleanerError::Backup(format!(
+                    "duplicate manifest destination: {}/{}",
+                    expected.root, expected.relative_path
+                )));
+            }
+            let staged = staging.path().join(&payload_path);
+            let staged_metadata = fs::symlink_metadata(&staged)?;
+            if !staged_metadata.is_file()
+                || is_redirecting_path(&staged)?
+                || staged_metadata.len() != expected.size_bytes
+                || hash_file(&staged)? != expected.sha256
+            {
                 return Err(CleanerError::Backup(format!(
                     "checksum mismatch for {}",
                     expected.relative_path
                 )));
             }
-            let destination = root.join(&relative);
-            if destination.exists() {
-                return Err(CleanerError::Blocked(format!(
-                    "restore target already exists: {}",
+            let destination = validate_new_file_destination(root, &root.join(&relative))?;
+            if !destinations.insert(destination.clone()) {
+                return Err(CleanerError::Backup(format!(
+                    "multiple manifest entries resolve to {}",
                     destination.display()
                 )));
             }
+            targets.push(RestoreTarget {
+                root: root.canonicalize()?,
+                staged,
+                destination,
+                sha256: expected.sha256.clone(),
+                size_bytes: expected.size_bytes,
+                partial: None,
+                committed_identity: None,
+            });
+        }
+        if expected_payloads != extracted_payloads {
+            return Err(CleanerError::Backup(
+                "backup payload set does not match the manifest".into(),
+            ));
         }
 
-        for expected in &manifest.entries {
-            let root = roots
-                .get(&expected.root)
-                .expect("restore roots were preflighted");
-            let relative = portable_to_path(&expected.relative_path)?;
-            let staged = staging.join(&expected.root).join(&relative);
-            let destination = root.join(&relative);
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
+        let mut created_directories = Vec::<CreatedRestoreDirectory>::new();
+        let transaction = (|| {
+            for target in &mut targets {
+                prepare_restore_parent(target, &mut created_directories)?;
+                target.partial = Some(stage_sibling_file(target)?);
             }
-            match fs::rename(&staged, &destination) {
-                Ok(()) => {}
-                Err(_) => {
-                    fs::copy(&staged, &destination)?;
-                    fs::remove_file(&staged)?;
+
+            for target in &targets {
+                validate_new_file_destination(&target.root, &target.destination)?;
+            }
+
+            for (index, target) in targets.iter_mut().enumerate() {
+                hook(RestoreEvent::BeforeCommit(index))?;
+                let partial = target
+                    .partial
+                    .as_ref()
+                    .expect("restore payloads were staged")
+                    .0
+                    .clone();
+                let staged_identity = target
+                    .partial
+                    .as_ref()
+                    .expect("restore payloads were staged")
+                    .1
+                    .clone();
+                atomic_commit_new_file(&partial, &target.destination)?;
+                target.committed_identity = Some(staged_identity.clone());
+                let committed_identity = FileIdentity::capture(&target.destination)?;
+                if !staged_identity.same_object(&committed_identity) {
+                    return Err(CleanerError::UnsafePath(format!(
+                        "restored file identity changed during commit: {}",
+                        target.destination.display()
+                    )));
+                }
+                target.committed_identity = Some(committed_identity);
+                hook(RestoreEvent::AfterCommit(index))?;
+                sync_committed_file(&target.destination)?;
+            }
+
+            for target in &targets {
+                let metadata = fs::symlink_metadata(&target.destination)?;
+                if !metadata.is_file()
+                    || is_redirecting_path(&target.destination)?
+                    || metadata.len() != target.size_bytes
+                    || hash_file(&target.destination)? != target.sha256
+                {
+                    return Err(CleanerError::Backup(format!(
+                        "restored file verification failed: {}",
+                        target.destination.display()
+                    )));
                 }
             }
+            Ok(())
+        })();
+
+        if let Err(error) = transaction {
+            return match rollback_restore(&mut targets, &mut created_directories) {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(CleanerError::Backup(format!(
+                    "{error}; restore rollback also failed: {rollback}"
+                ))),
+            };
         }
 
-        let _ = fs::remove_dir_all(&staging);
         Ok(manifest)
     }
 
@@ -354,6 +491,166 @@ impl BackupStore {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+fn prepare_restore_parent(
+    target: &RestoreTarget,
+    created: &mut Vec<CreatedRestoreDirectory>,
+) -> Result<(), CleanerError> {
+    validate_new_file_destination(&target.root, &target.destination)?;
+    let parent = target
+        .destination
+        .parent()
+        .ok_or_else(|| CleanerError::UnsafePath(target.destination.display().to_string()))?;
+    let relative_parent = parent
+        .strip_prefix(&target.root)
+        .map_err(|_| CleanerError::UnsafePath(parent.display().to_string()))?;
+    let mut current = target.root.clone();
+    for component in relative_parent.components() {
+        let Component::Normal(part) = component else {
+            return Err(CleanerError::UnsafePath(parent.display().to_string()));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)?;
+                let identity = match FileIdentity::capture(&current) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        let _ = fs::remove_dir(&current);
+                        return Err(error);
+                    }
+                };
+                created.push(CreatedRestoreDirectory {
+                    root: target.root.clone(),
+                    path: current.clone(),
+                    identity,
+                });
+                restrict_directory(&current)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        validate_new_file_destination(&target.root, &target.destination)?;
+    }
+    Ok(())
+}
+
+fn stage_sibling_file(target: &RestoreTarget) -> Result<(PathBuf, FileIdentity), CleanerError> {
+    let parent = target
+        .destination
+        .parent()
+        .ok_or_else(|| CleanerError::UnsafePath(target.destination.display().to_string()))?;
+    let partial = parent.join(format!(".cleanerx-restore-{}.partial", Uuid::new_v4()));
+    validate_new_file_destination(&target.root, &partial)?;
+
+    let result = (|| {
+        let mut input = File::open(&target.staged)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
+        restrict_file(&partial)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()?;
+        drop(output);
+
+        let metadata = fs::symlink_metadata(&partial)?;
+        if !metadata.is_file()
+            || is_redirecting_path(&partial)?
+            || metadata.len() != target.size_bytes
+            || hash_file(&partial)? != target.sha256
+        {
+            return Err(CleanerError::Backup(format!(
+                "staged restore verification failed: {}",
+                target.destination.display()
+            )));
+        }
+        FileIdentity::capture(&partial)
+    })();
+
+    match result {
+        Ok(identity) => Ok((partial, identity)),
+        Err(error) => {
+            let _ = remove_plain_file_if_present(&partial);
+            Err(error)
+        }
+    }
+}
+
+fn rollback_restore(
+    targets: &mut [RestoreTarget],
+    created_directories: &mut [CreatedRestoreDirectory],
+) -> Result<(), CleanerError> {
+    let mut failures = Vec::<String>::new();
+
+    for target in targets.iter_mut().rev() {
+        let Some(identity) = target.committed_identity.take() else {
+            continue;
+        };
+        let policy = PathPolicy::new(vec![target.root.clone()], vec![]);
+        match safe_remove(&target.destination, &policy, Some(&identity))
+            .and_then(|_| sync_parent_directory(&target.destination))
+        {
+            Ok(()) => {}
+            Err(error) => failures.push(format!("{}: {error}", target.destination.display())),
+        }
+    }
+
+    for target in targets.iter_mut().rev() {
+        let Some((partial, identity)) = target.partial.take() else {
+            continue;
+        };
+        match fs::symlink_metadata(&partial) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("{}: {error}", partial.display())),
+            Ok(_) => {
+                let policy = PathPolicy::new(vec![target.root.clone()], vec![]);
+                match safe_remove(&partial, &policy, Some(&identity))
+                    .and_then(|_| sync_parent_directory(&partial))
+                {
+                    Ok(()) => {}
+                    Err(error) => failures.push(format!("{}: {error}", partial.display())),
+                }
+            }
+        }
+    }
+
+    for directory in created_directories.iter_mut().rev() {
+        let policy = PathPolicy::new(vec![directory.root.clone()], vec![]);
+        match policy.validate_existing(&directory.path).and_then(|path| {
+            let current = FileIdentity::capture(&path)?;
+            if !directory.identity.same_object(&current) {
+                return Err(CleanerError::UnsafePath(format!(
+                    "restore directory changed before rollback: {}",
+                    path.display()
+                )));
+            }
+            fs::remove_dir(&path)?;
+            sync_parent_directory(&path)
+        }) {
+            Ok(()) => {}
+            Err(error) => failures.push(format!("{}: {error}", directory.path.display())),
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CleanerError::Backup(failures.join("; ")))
+    }
+}
+
+fn remove_plain_file_if_present(path: &Path) -> Result<(), CleanerError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(metadata) if metadata.is_file() && !is_redirecting_path(path)? => {
+            fs::remove_file(path)?;
+            Ok(())
+        }
+        Ok(_) => Err(CleanerError::UnsafePath(path.display().to_string())),
     }
 }
 
@@ -695,6 +992,189 @@ mod tests {
         store.purge(manifest.id).expect("purge");
         assert!(!archive_path.exists());
         assert!(store.list().expect("list after purge").is_empty());
+    }
+
+    #[test]
+    fn restore_rolls_back_every_commit_boundary() {
+        let events = [
+            RestoreEvent::BeforeCommit(0),
+            RestoreEvent::AfterCommit(0),
+            RestoreEvent::BeforeCommit(1),
+            RestoreEvent::AfterCommit(1),
+        ];
+
+        for injected in events {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let source_tree = tempfile::tempdir().expect("source tree");
+            let protected_source = source_tree.path().join("source.rs");
+            fs::write(&protected_source, b"fn protected() {}").expect("protected source");
+            let sessions = workspace.path().join("sessions/nested");
+            fs::create_dir_all(&sessions).expect("session directory");
+            let first = sessions.join("first.jsonl");
+            let second = sessions.join("second.jsonl");
+            fs::write(&first, b"first private transcript").expect("first transcript");
+            fs::write(&second, b"second private transcript").expect("second transcript");
+
+            let backup_dir = tempfile::tempdir().expect("backups");
+            let identity = age::x25519::Identity::generate();
+            let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+                .expect("store");
+            let plan = CleanupPlan {
+                id: Uuid::new_v4(),
+                snapshot_id: Uuid::new_v4(),
+                created_at: Utc::now(),
+                selected_item_ids: vec!["session:first".into(), "session:second".into()],
+                expanded_session_ids: vec!["first".into(), "second".into()],
+                operations: Vec::<PlannedOperation>::new(),
+                estimated_bytes: 48,
+                estimated_backup_bytes: 48,
+                blockers: vec![],
+            };
+            let manifest = store
+                .create_backup(
+                    &plan,
+                    AgentKind::Codex,
+                    Some("test".into()),
+                    &[BackupSource {
+                        root_label: "codex_home".into(),
+                        root_path: workspace.path().to_path_buf(),
+                        path: sessions.clone(),
+                    }],
+                )
+                .expect("backup");
+            fs::remove_dir_all(workspace.path().join("sessions")).expect("remove originals");
+            let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
+
+            let result = store.restore_with_hook(manifest.id, AgentKind::Codex, &roots, |event| {
+                if event == injected {
+                    Err(CleanerError::Backup(format!(
+                        "injected restore fault at {event:?}"
+                    )))
+                } else {
+                    Ok(())
+                }
+            });
+
+            assert!(matches!(result, Err(CleanerError::Backup(_))));
+            assert!(
+                !workspace.path().join("sessions").exists(),
+                "destination tree changed after {injected:?}"
+            );
+            assert_eq!(
+                fs::read(&protected_source).expect("protected source bytes"),
+                b"fn protected() {}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_preflight_never_overwrites_an_existing_destination() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let first = workspace.path().join("sessions/first.jsonl");
+        let second = workspace.path().join("sessions/second.jsonl");
+        fs::create_dir_all(first.parent().expect("parent")).expect("session directory");
+        fs::write(&first, b"first backup bytes").expect("first transcript");
+        fs::write(&second, b"second backup bytes").expect("second transcript");
+        let identity = age::x25519::Identity::generate();
+        let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+            .expect("store");
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["session:test".into()],
+            expanded_session_ids: vec!["test".into()],
+            operations: Vec::<PlannedOperation>::new(),
+            estimated_bytes: 36,
+            estimated_backup_bytes: 36,
+            blockers: vec![],
+        };
+        let manifest = store
+            .create_backup(
+                &plan,
+                AgentKind::Codex,
+                Some("test".into()),
+                &[BackupSource {
+                    root_label: "codex_home".into(),
+                    root_path: workspace.path().to_path_buf(),
+                    path: workspace.path().join("sessions"),
+                }],
+            )
+            .expect("backup");
+        fs::remove_file(&first).expect("remove first");
+        fs::write(&second, b"new writer bytes").expect("replace second");
+        let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
+
+        assert!(matches!(
+            store.restore(manifest.id, AgentKind::Codex, &roots),
+            Err(CleanerError::Blocked(_))
+        ));
+        assert!(!first.exists());
+        assert_eq!(fs::read(second).expect("writer bytes"), b"new writer bytes");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn restore_rejects_a_redirecting_destination_parent() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let session = workspace.path().join("sessions/thread.jsonl");
+        fs::create_dir_all(session.parent().expect("parent")).expect("session directory");
+        fs::write(&session, b"private transcript").expect("transcript");
+        let identity = age::x25519::Identity::generate();
+        let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+            .expect("store");
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["session:test".into()],
+            expanded_session_ids: vec!["test".into()],
+            operations: Vec::<PlannedOperation>::new(),
+            estimated_bytes: 18,
+            estimated_backup_bytes: 18,
+            blockers: vec![],
+        };
+        let manifest = store
+            .create_backup(
+                &plan,
+                AgentKind::Codex,
+                Some("test".into()),
+                &[BackupSource {
+                    root_label: "codex_home".into(),
+                    root_path: workspace.path().to_path_buf(),
+                    path: session.clone(),
+                }],
+            )
+            .expect("backup");
+        fs::remove_file(&session).expect("remove original");
+        fs::remove_dir(workspace.path().join("sessions")).expect("remove session directory");
+        let redirect = workspace.path().join("sessions");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &redirect).expect("symlink");
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&redirect)
+                .arg(outside.path())
+                .output()
+                .expect("create junction");
+            assert!(
+                output.status.success(),
+                "mklink failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
+
+        assert!(matches!(
+            store.restore(manifest.id, AgentKind::Codex, &roots),
+            Err(CleanerError::UnsafePath(_))
+        ));
+        assert!(!outside.path().join("thread.jsonl").exists());
     }
 
     #[cfg(any(unix, windows))]
