@@ -19,6 +19,7 @@ use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
     CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
     ItemThumbnail, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
+    configure_background_command,
 };
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -109,7 +110,9 @@ impl AgentAdapter for CodexAdapter {
         let home = self.resolve_home(custom_home)?;
         let binary = find_codex_binary();
         let version = if let Some(binary) = &binary {
-            Command::new(binary)
+            let mut command = Command::new(binary);
+            configure_background_command(command.as_std_mut());
+            command
                 .arg("--version")
                 .output()
                 .await
@@ -1183,6 +1186,7 @@ impl AppServerClient {
         socket: Option<&Path>,
     ) -> Result<Self, CleanerError> {
         let mut command = Command::new(binary);
+        configure_background_command(command.as_std_mut());
         command.arg("app-server");
         if let Some(socket) = socket {
             command.arg("proxy").arg("--sock").arg(socket);
@@ -1439,11 +1443,12 @@ fn parse_server_thread(
                 })
                 .or_else(|| stored.and_then(|metadata| metadata.first_user_message.as_deref())),
         ),
-        cwd: thread
-            .get("cwd")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        cwd: display_path(
+            thread
+                .get("cwd")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ),
         path: thread
             .get("path")
             .and_then(Value::as_str)
@@ -1626,6 +1631,7 @@ fn scan_sessions_from_state_db(
         let thread_name: Option<String> = row.get(6)?;
         let title: Option<String> = row.get(7)?;
         let first_user_message: Option<String> = row.get(8)?;
+        let cwd: String = row.get(5)?;
         Ok(SessionRecord {
             name: display_title(
                 thread_name.as_deref(),
@@ -1638,7 +1644,7 @@ fn scan_sessions_from_state_db(
             created_at: DateTime::from_timestamp(row.get(2)?, 0),
             updated_at: DateTime::from_timestamp(row.get(3)?, 0),
             source: row.get(4)?,
-            cwd: row.get(5)?,
+            cwd: display_path(&cwd),
             archived: row.get::<_, i64>(9)? != 0,
             pinned: false,
             status: "notLoaded".into(),
@@ -2084,7 +2090,8 @@ fn read_database_projects(home: &Path) -> Result<HashMap<String, String>, Cleane
     )?;
     Ok(statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            let root: String = row.get(0)?;
+            Ok((display_path(&root), row.get::<_, String>(1)?))
         })?
         .collect::<Result<_, _>>()?)
 }
@@ -2428,14 +2435,24 @@ fn project_root(cwd: &str, database_projects: &HashMap<String, String>) -> Optio
         .max_by_key(|(_, depth)| *depth)
         .map(|(root, _)| root.clone())
     {
-        return Some(root);
+        return Some(display_path(&root));
     }
     for ancestor in normalized.ancestors() {
         if ancestor.join(".git").exists() {
-            return Some(ancestor.to_string_lossy().into_owned());
+            return Some(display_path(&ancestor.to_string_lossy()));
         }
     }
     None
+}
+
+fn display_path(path: &str) -> String {
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{path}")
+    } else if let Some(path) = path.strip_prefix(r"\\?\") {
+        path.to_owned()
+    } else {
+        path.to_owned()
+    }
 }
 
 fn project_id_for_root(root: &str) -> String {
@@ -2646,6 +2663,34 @@ mod tests {
         .expect("session");
 
         assert_eq!(session.name, "Stored name");
+    }
+
+    #[test]
+    fn windows_extended_paths_are_normalized_for_display() {
+        assert_eq!(
+            display_path(r"\\?\D:\personal\CleanerX"),
+            r"D:\personal\CleanerX"
+        );
+        assert_eq!(
+            display_path(r"\\?\UNC\server\share\CleanerX"),
+            r"\\server\share\CleanerX"
+        );
+        assert_eq!(display_path(r"C:\CleanerX"), r"C:\CleanerX");
+        assert_eq!(display_path("/tmp/CleanerX"), "/tmp/CleanerX");
+
+        let thread = json!({
+            "id": "thread-windows",
+            "cwd": r"\\?\D:\personal\CleanerX"
+        });
+        let session = parse_server_thread(
+            &thread,
+            false,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("Windows session");
+        assert_eq!(session.cwd, r"D:\personal\CleanerX");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
     CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
     ItemThumbnail, MemoryCapabilities, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
+    configure_background_command,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Deserialize;
@@ -123,6 +124,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let binary = find_opencode_binary();
         let version = if let Some(binary) = &binary {
             let mut command = Command::new(binary);
+            configure_background_command(command.as_std_mut());
             command.arg("--version").kill_on_drop(true);
             timeout(StdDuration::from_secs(10), command.output())
                 .await
@@ -1452,6 +1454,7 @@ async fn rollback_imports(
 
 fn supported_command(binary: &str, database: &Path) -> Command {
     let mut command = Command::new(binary);
+    configure_background_command(command.as_std_mut());
     command
         .arg("--pure")
         .env("OPENCODE_DB", database)

@@ -13,6 +13,7 @@ use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
     CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
     ItemThumbnail, MemoryCapabilities, ProjectGroup, RiskLevel, SessionRecord, StorageCategory,
+    configure_background_command,
 };
 use serde_json::Value;
 use sysinfo::System;
@@ -72,7 +73,9 @@ impl AgentAdapter for PiAdapter {
         let home = self.resolve_home(custom_home)?;
         let binary = find_pi_binary();
         let version = if let Some(binary) = &binary {
-            Command::new(binary)
+            let mut command = Command::new(binary);
+            configure_background_command(command.as_std_mut());
+            command
                 .arg("--version")
                 .output()
                 .await

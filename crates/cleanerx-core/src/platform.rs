@@ -2,8 +2,30 @@ use std::fs;
 #[cfg(not(windows))]
 use std::fs::File;
 use std::path::Path;
+use std::process::Command;
 
 use crate::CleanerError;
+
+/// Configures a child process that is driven entirely through pipes by the desktop app.
+///
+/// Windows GUI applications otherwise create a visible console for CLI launchers such as
+/// `codex.cmd` and `claude.exe`. The flag changes only window creation; stdio and exit status keep
+/// their normal `Command` semantics.
+pub fn configure_background_command(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        command.creation_flags(background_command_creation_flags());
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+#[cfg(windows)]
+const fn background_command_creation_flags() -> u32 {
+    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+}
 
 /// Durably commits a fully written sibling file over `destination`.
 ///
@@ -137,6 +159,17 @@ fn sync_parent(_path: &Path) -> Result<(), CleanerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_commands_use_the_platform_window_policy() {
+        #[cfg(windows)]
+        assert_eq!(
+            background_command_creation_flags(),
+            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+        );
+        let mut command = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+        configure_background_command(&mut command);
+    }
 
     #[test]
     fn atomically_replaces_an_existing_file() {

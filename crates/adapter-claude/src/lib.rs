@@ -1,6 +1,6 @@
 //! Claude Code storage discovery and bounded, local-only content access.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead as _, Read};
@@ -13,7 +13,7 @@ use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
     CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
     ItemThumbnail, MemoryCapabilities, MemoryScope, ProjectGroup, RiskLevel, SessionRecord,
-    StorageCategory,
+    StorageCategory, configure_background_command,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -73,7 +73,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let home = self.resolve_home(custom_home)?;
         let binary = find_claude_binary();
         let version = if let Some(binary) = &binary {
-            Command::new(binary)
+            let mut command = Command::new(binary);
+            configure_background_command(command.as_std_mut());
+            command
                 .arg("--version")
                 .output()
                 .await
@@ -83,7 +85,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         } else {
             None
         };
-        let running = claude_is_running(&home);
+        let running = claude_is_running();
         let mut warnings = Vec::new();
         if !home.exists() {
             warnings.push(format!(
@@ -128,7 +130,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let installation = self.detect(custom_home).await?;
         let home = PathBuf::from(&installation.home);
         let mut warnings = installation.warnings.clone();
-        let active_ids = active_session_ids(&home, &mut warnings);
         let mut sessions = Vec::new();
         let mut items = Vec::new();
         let mut session_buckets = HashMap::new();
@@ -136,7 +137,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
         scan_project_sessions(
             &home,
             installation.running,
-            &active_ids,
             &mut sessions,
             &mut items,
             &mut session_buckets,
@@ -272,7 +272,6 @@ struct TranscriptMetadata {
 fn scan_project_sessions(
     home: &Path,
     running: bool,
-    active_ids: &HashSet<String>,
     sessions: &mut Vec<SessionRecord>,
     items: &mut Vec<CleanupItem>,
     session_buckets: &mut HashMap<String, PathBuf>,
@@ -329,7 +328,6 @@ fn scan_project_sessions(
                 .iter()
                 .filter_map(|path| cleanerx_core::safety::allocated_size(Path::new(path)).ok())
                 .sum();
-            let active = active_ids.contains(session_id);
             let blocked_reason = running
                 .then(|| {
                     "Claude Code is running; quit it before deleting local session data".into()
@@ -347,7 +345,9 @@ fn scan_project_sessions(
                 source: metadata.source.clone(),
                 archived: false,
                 pinned: false,
-                status: if active { "active" } else { "notLoaded" }.into(),
+                // Claude does not publish a supported per-session writer mapping. A recognized
+                // live process blocks every mutable item, so reflect that conservative scope.
+                status: if running { "loaded" } else { "notLoaded" }.into(),
                 created_at: metadata.created_at,
                 updated_at: metadata.updated_at.or_else(|| modified_at(&transcript)),
                 size_bytes,
@@ -677,33 +677,6 @@ fn scan_protected(
         });
     }
     Ok(())
-}
-
-fn active_session_ids(home: &Path, warnings: &mut Vec<String>) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    let root = home.join("sessions");
-    let Ok(entries) = fs::read_dir(root) else {
-        return ids;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() {
-            warnings.push(format!(
-                "Ignored linked Claude running-session marker: {}",
-                path.display()
-            ));
-            continue;
-        }
-        if let Some(id) = path.file_stem().and_then(|value| value.to_str())
-            && Uuid::parse_str(id).is_ok()
-        {
-            ids.insert(id.to_owned());
-        }
-    }
-    ids
 }
 
 fn associated_session_paths(home: &Path, bucket: &Path, session_id: &str) -> Vec<PathBuf> {
@@ -1096,13 +1069,7 @@ fn claude_binary_candidates(
     candidates
 }
 
-fn claude_is_running(home: &Path) -> bool {
-    if fs::read_dir(home.join("sessions"))
-        .ok()
-        .is_some_and(|mut entries| entries.next().is_some())
-    {
-        return true;
-    }
+fn claude_is_running() -> bool {
     let system = System::new_all();
     system.processes().values().any(|process| {
         is_claude_process_shape(
@@ -1251,8 +1218,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn marks_every_mutable_item_blocked_while_a_writer_marker_exists() {
+    #[test]
+    fn stale_session_markers_do_not_block_cleanup_without_a_writer() {
         let fixture = tempfile::tempdir().expect("Claude fixture");
         let bucket = fixture.path().join("projects/project");
         fs::create_dir_all(&bucket).expect("bucket");
@@ -1267,18 +1234,57 @@ mod tests {
         )
         .expect("marker");
 
-        let snapshot = ClaudeCodeAdapter::new()
-            .scan(fixture.path().to_str())
-            .await
-            .expect("scan active fixture");
-        assert!(snapshot.installation.running);
+        let mut sessions = Vec::new();
+        let mut items = Vec::new();
+        let mut buckets = HashMap::new();
+        let mut warnings = Vec::new();
+        scan_project_sessions(
+            fixture.path(),
+            false,
+            &mut sessions,
+            &mut items,
+            &mut buckets,
+            &mut warnings,
+        )
+        .expect("scan stale marker fixture");
+
         assert!(
-            snapshot
-                .items
+            items
+                .iter()
+                .filter(|item| !item.protected)
+                .all(|item| item.blocked_reason.is_none())
+        );
+        assert_eq!(sessions[0].status, "notLoaded");
+    }
+
+    #[test]
+    fn recognized_writer_blocks_session_cleanup() {
+        let fixture = tempfile::tempdir().expect("Claude fixture");
+        let bucket = fixture.path().join("projects/project");
+        fs::create_dir_all(&bucket).expect("bucket");
+        write_transcript(&bucket.join(format!("{SESSION_ID}.jsonl")), fixture.path());
+
+        let mut sessions = Vec::new();
+        let mut items = Vec::new();
+        let mut buckets = HashMap::new();
+        let mut warnings = Vec::new();
+        scan_project_sessions(
+            fixture.path(),
+            true,
+            &mut sessions,
+            &mut items,
+            &mut buckets,
+            &mut warnings,
+        )
+        .expect("scan live writer fixture");
+
+        assert!(
+            items
                 .iter()
                 .filter(|item| !item.protected)
                 .all(|item| item.blocked_reason.is_some())
         );
+        assert_eq!(sessions[0].status, "loaded");
     }
 
     #[cfg(unix)]

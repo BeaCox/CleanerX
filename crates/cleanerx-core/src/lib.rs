@@ -9,7 +9,7 @@ pub mod safety;
 pub use backup::{BackupSource, BackupStore};
 pub use model::*;
 pub use planner::create_cleanup_plan;
-pub use platform::atomic_replace_file;
+pub use platform::{atomic_replace_file, configure_background_command};
 pub use safety::{
     FileIdentity, PathPolicy, metadata_revision, safe_remove, validate_existing_beneath,
 };
