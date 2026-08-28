@@ -1106,10 +1106,13 @@ async fn inspect_recovery_operation(
     {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            summary.reason = Some(format!(
-                "{} could not be rescanned: {error}",
-                journal.agent.display_name()
-            ));
+            summary.reason = combine_recovery_reason(
+                journal.message.as_deref(),
+                Some(format!(
+                    "{} could not be rescanned: {error}",
+                    journal.agent.display_name()
+                )),
+            );
             return summary;
         }
     };
@@ -1148,7 +1151,22 @@ async fn inspect_recovery_operation(
                 .into(),
         );
     }
+    summary.reason = combine_recovery_reason(journal.message.as_deref(), summary.reason);
     summary
+}
+
+fn combine_recovery_reason(
+    journal_message: Option<&str>,
+    current_reason: Option<String>,
+) -> Option<String> {
+    match (
+        journal_message.filter(|message| !message.trim().is_empty()),
+        current_reason,
+    ) {
+        (Some(message), Some(reason)) if message != reason => Some(format!("{message}; {reason}")),
+        (Some(message), _) => Some(message.to_owned()),
+        (None, reason) => reason,
+    }
 }
 
 fn effective_recovery_backup(journal: &OperationJournal, backups: &[BackupRecord]) -> Option<Uuid> {
@@ -1889,10 +1907,11 @@ mod tests {
     use super::{
         RecoveryObservation, SessionFilter, SessionPageRequest, allowed_roots,
         capture_mutation_identities, clean_logs, cleanup_session_artifacts,
-        combine_recovery_observations, effective_recovery_backup, inventory_report, load_settings,
-        observe_mutation, pending_recovery_for_agent, protected_paths, record_failed_operation,
-        recovery_restore_is_visible, remove_operation_paths, session_page,
-        validate_opencode_session_revisions, validate_settings, validate_source_revision,
+        combine_recovery_observations, combine_recovery_reason, effective_recovery_backup,
+        inventory_report, load_settings, observe_mutation, pending_recovery_for_agent,
+        protected_paths, record_failed_operation, recovery_restore_is_visible,
+        remove_operation_paths, session_page, validate_opencode_session_revisions,
+        validate_settings, validate_source_revision,
     };
     use chrono::Utc;
     use cleanerx_core::{
@@ -2081,6 +2100,25 @@ mod tests {
                 .message
                 .as_deref()
                 .is_some_and(|message| message.contains("injected deletion failure"))
+        );
+    }
+
+    #[test]
+    fn recovery_reason_keeps_the_original_failure_and_current_blocker() {
+        assert_eq!(
+            combine_recovery_reason(
+                Some("OpenCode storage changed after the scan"),
+                Some("Quit OpenCode before restoring the committed backup".into()),
+            )
+            .as_deref(),
+            Some(
+                "OpenCode storage changed after the scan; Quit OpenCode before restoring the committed backup"
+            )
+        );
+        assert_eq!(
+            combine_recovery_reason(Some("OpenCode storage changed after the scan"), None)
+                .as_deref(),
+            Some("OpenCode storage changed after the scan")
         );
     }
 

@@ -767,6 +767,7 @@ describe("CleanerX GUI", () => {
 
       expect(await screen.findByRole("dialog", { name: "Incomplete operation requires recovery" })).toBeVisible();
       expect(screen.getByText("a0dd8117-fb63-4bc4-8bd7-d76eb93797f7")).toBeVisible();
+      expect(screen.getByText("No independently verified backup is available")).toBeVisible();
       expect(list).toHaveBeenCalledTimes(2);
     } finally {
       list.mockRestore();

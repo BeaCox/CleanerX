@@ -1523,12 +1523,13 @@ fn session_exists(connection: &Connection, session_id: &str) -> Result<bool, Cle
 
 fn database_revision_paths(database: &Path) -> Vec<PathBuf> {
     let mut paths = vec![database.to_path_buf()];
-    for suffix in ["-wal", "-shm"] {
-        let path = PathBuf::from(format!("{}{}", database.to_string_lossy(), suffix));
-        if path.exists() {
-            paths.push(path);
-        }
+    let wal = PathBuf::from(format!("{}-wal", database.to_string_lossy()));
+    if wal.exists() {
+        paths.push(wal);
     }
+    // SQLite readers update the shared-memory file while acquiring WAL read locks.
+    // It contains no durable session data, so including it would let a read-only
+    // inventory invalidate its own pre-mutation revision.
     paths
 }
 
@@ -2197,6 +2198,32 @@ mod tests {
 
     const ROOT_ID: &str = "ses_root111111111111111111111";
     const CHILD_ID: &str = "ses_child2222222222222222222";
+
+    #[test]
+    fn database_revision_ignores_sqlite_reader_lock_state() {
+        let fixture = tempfile::tempdir().expect("OpenCode revision fixture");
+        let database = fixture.path().join("opencode.db");
+        let wal = PathBuf::from(format!("{}-wal", database.to_string_lossy()));
+        let shared_memory = PathBuf::from(format!("{}-shm", database.to_string_lossy()));
+        fs::write(&database, b"database state").expect("database fixture");
+        fs::write(&wal, b"wal state a").expect("WAL fixture");
+        fs::write(&shared_memory, b"reader locks a").expect("shared-memory fixture");
+
+        let revision_paths = database_revision_paths(&database);
+        assert_eq!(revision_paths, vec![database.clone(), wal.clone()]);
+        let initial = cleanerx_core::metadata_revision(&revision_paths).expect("initial revision");
+
+        fs::write(&shared_memory, b"reader locks changed")
+            .expect("change shared-memory lock state");
+        let after_reader = cleanerx_core::metadata_revision(&database_revision_paths(&database))
+            .expect("revision after reader activity");
+        assert_eq!(after_reader, initial);
+
+        fs::write(&wal, b"durable wal state changed").expect("change WAL state");
+        let after_writer = cleanerx_core::metadata_revision(&database_revision_paths(&database))
+            .expect("revision after writer activity");
+        assert_ne!(after_writer, initial);
+    }
 
     #[test]
     fn binary_candidates_cover_linux_desktop_install_locations() {
