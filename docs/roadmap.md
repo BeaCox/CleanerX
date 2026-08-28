@@ -21,11 +21,12 @@ CleanerX currently has:
 - pi agent-directory and binary/writer detection, metadata-only JSONL session inventory with fork lineage, writer blocking, guarded session-file deletion through the documented removal route, model-catalog cache cleanup, and protected configuration/extension storage;
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
-- macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
+- macOS Apple Silicon and Intel `.app`/DMG builds;
 - unsigned x86_64 Linux `.deb` and AppImage builds on Ubuntu 22.04, with a native Xvfb launch smoke test and an isolated Secret Service backup/restore round trip;
 - unsigned x86_64 Windows MSI and NSIS builds, with a native launch smoke test and an isolated Credential Manager backup/restore round trip;
 - Windows application-data and package-manager launcher discovery, stdio-only Codex control transport, writer-process recognition, write-through atomic replacement, volume/file identity checks, owner validation, and junction/reparse-point rejection;
-- cross-platform Rust checks for all four adapters and frontend tests in CI.
+- reusable product CI with the complete Linux quality gate, cross-platform Rust tests, and native Linux/Windows launch smoke tests;
+- one SemVer tag workflow that reruns product CI, validates synchronized versions and `main` ancestry, builds every supported platform, and publishes a GitHub Release with explicitly unsigned assets, build metadata, committed lockfiles, and SHA-256 checksums.
 
 This is an engineering MVP, not yet a promise that every Codex storage revision or crash boundary has production-grade coverage.
 
@@ -94,14 +95,12 @@ Priority: required before promoting a public mutation-capable binary. Source cod
 - Restored file hashes match the backup manifest and Codex can rediscover restored sessions.
 - Unknown Codex capabilities, schemas, and active writers produce a specific read-only/blocking reason in the GUI.
 
-## M2 — macOS release readiness
+## M2 — Cross-platform release readiness
 
-Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0`. The release states and mandatory disclosures are defined in the [open-source release policy](open-source-release-plan.md).
+Priority: repeatable unsigned artifacts and a bounded cross-platform path from alpha to `v0.1.0`. The release states and mandatory disclosures are defined in the [open-source release policy](open-source-release-plan.md).
 
 ### Alpha artifacts
 
-- Extend the tag workflow to create a GitHub Release with Apple Silicon and Intel `.app` and DMG artifacts from the same tag.
-- Name every artifact explicitly as unsigned and publish SHA-256 checksums, the source commit, toolchain and runner versions, lockfiles, build timestamp, retained logs, and investigation metadata.
 - Add Tauri smoke tests for launch, scan, read-only degradation, detail loading, review dialog, backup listing, and settings persistence on macOS 13+.
 - Launch each architecture artifact on a clean supported environment and run an isolated mutation/backup/restore cycle with disposable Agent data.
 - Confirm bundles contain no development URLs, private source-map paths, local preferences, test data, journals, or backup identities.
@@ -129,7 +128,7 @@ Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0
 ### Exit criteria
 
 - A clean checkout can run `make setup`, `make check`, and build the native artifact for its architecture.
-- Tagged CI publishes both architecture artifacts and checksums.
+- Tagged CI publishes every supported platform/architecture artifact and its checksums.
 - Packaged apps pass native launch, core read-only scan, and disposable mutation/restore smoke tests.
 - Beta evidence comes from installations beyond the maintainer, and no unresolved defect can mutate protected data or leave an unexplained unrecoverable operation.
 - Release notes link the exact compatibility matrix, known limitations, security policy, and source commit.
@@ -140,7 +139,7 @@ Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0
 
 Linux provides XDG/home data resolution, process probing, common desktop-launch executable locations, Unix ownership and same-device mount-boundary checks, Secret Service-backed `.cxb` encryption, `.deb`/AppImage packages, and a native Xvfb smoke test.
 
-Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat` package-manager discovery, native writer recognition, direct Codex stdio App Server transport, current-token default-owner and same-volume/file-index validation, junction/reparse-point rejection, write-through atomic replacement, Credential Manager-backed `.cxb` encryption, MSI/NSIS packages, and a native launch smoke test. The platform-independent path/process tests run on every host; Windows CI additionally creates a real junction, exercises the credential backend, builds the Tauri application, and launches it before Windows mutation support is considered healthy.
+Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat` package-manager discovery, native writer recognition, direct Codex stdio App Server transport, current-token default-owner and same-volume/file-index validation, junction/reparse-point rejection, write-through atomic replacement, Credential Manager-backed `.cxb` encryption, MSI/NSIS packages, and a native launch smoke test. The platform-independent path/process tests run on every host; Windows CI additionally exercises native path semantics, builds the Tauri application, and launches it as an ongoing product regression check.
 
 ### Exit criteria
 

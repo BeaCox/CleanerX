@@ -1,0 +1,306 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require a SemVer tag from main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must be a SemVer tag such as v1.2.3 or v1.2.3-beta.1." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release tag must point to a commit contained in main." >&2
+            exit 1
+          fi
+      - name: Require synchronized application versions
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --no-deps > "$RUNNER_TEMP/cargo-metadata.json"
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const expected = process.env.RELEASE_TAG.slice(1);
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const tauriConfig = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+          const cargoMetadata = JSON.parse(
+            fs.readFileSync(`${process.env.RUNNER_TEMP}/cargo-metadata.json`, "utf8"),
+          );
+          const versions = new Map([
+            ["package.json", packageJson.version],
+            ["src-tauri/tauri.conf.json", tauriConfig.version],
+            ...cargoMetadata.packages.map((pkg) => [`Cargo package ${pkg.name}`, pkg.version]),
+          ]);
+          const mismatches = [...versions].filter(([, version]) => version !== expected);
+          if (mismatches.length > 0) {
+            console.error(`Release tag ${process.env.RELEASE_TAG} does not match every version surface:`);
+            for (const [source, version] of mismatches) {
+              console.error(`- ${source}: ${version}`);
+            }
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${expected}\n`);
+          NODE
+
+  ci:
+    name: Product CI
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [validate, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+            platform: macos
+            arch: arm64
+            target: aarch64-apple-darwin
+          - name: macOS x86_64
+            os: macos-15-large
+            platform: macos
+            arch: x86_64
+            target: x86_64-apple-darwin
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            platform: linux
+            arch: x86_64
+            target: ""
+          - name: Windows x86_64
+            os: windows-2025
+            platform: windows
+            arch: x86_64
+            target: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Linux bundle dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            xvfb
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.3.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target == ''
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.target != ''
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build macOS bundles
+        if: matrix.platform == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: make bundles TARGET=${{ matrix.target }}
+      - name: Build Linux bundles
+        if: matrix.platform == 'linux'
+        run: make linux
+      - name: Smoke-test Linux application
+        if: matrix.platform == 'linux'
+        run: make smoke-linux
+      - name: Inspect Linux bundles
+        if: matrix.platform == 'linux'
+        run: |
+          dpkg-deb --info target/release/bundle/deb/*.deb
+          file target/release/bundle/appimage/*.AppImage
+      - name: Build Windows bundles
+        if: matrix.platform == 'windows'
+        run: pnpm build:windows
+      - name: Smoke-test Windows application
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./scripts/smoke-windows.ps1 -Profile release
+      - name: Inspect Windows bundles
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem target/release/bundle/msi/*.msi | Format-List Name, Length
+          Get-ChildItem target/release/bundle/nsis/*-setup.exe | Format-List Name, Length
+      - name: Stage macOS release assets
+        if: matrix.platform == 'macos'
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          shopt -s nullglob
+          app_paths=(target/"$RELEASE_TARGET"/release/bundle/macos/*.app)
+          dmg_paths=(target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg)
+          if [[ ${#app_paths[@]} -ne 1 || ${#dmg_paths[@]} -ne 1 ]]; then
+            echo "Expected exactly one macOS app and one DMG." >&2
+            exit 1
+          fi
+          ditto -c -k --keepParent "${app_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.zip"
+          cp "${dmg_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.dmg"
+      - name: Stage Linux release assets
+        if: matrix.platform == 'linux'
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          shopt -s nullglob
+          deb_paths=(target/release/bundle/deb/*.deb)
+          appimage_paths=(target/release/bundle/appimage/*.AppImage)
+          if [[ ${#deb_paths[@]} -ne 1 || ${#appimage_paths[@]} -ne 1 ]]; then
+            echo "Expected exactly one deb and one AppImage." >&2
+            exit 1
+          fi
+          cp "${deb_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.deb"
+          cp "${appimage_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.AppImage"
+      - name: Stage Windows release assets
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          $msi = @(Get-ChildItem target/release/bundle/msi/*.msi)
+          $nsis = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe)
+          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
+            throw "Expected exactly one MSI and one NSIS installer."
+          }
+          Copy-Item $msi[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned.msi"
+          Copy-Item $nsis[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned_setup.exe"
+      - name: Record build metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "tag=$GITHUB_REF_NAME"
+            echo "version=$RELEASE_VERSION"
+            echo "commit=$GITHUB_SHA"
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "platform=$RELEASE_PLATFORM"
+            echo "architecture=$RELEASE_ARCH"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "runner_image=${ImageOS:-unknown}"
+            echo "runner_image_version=${ImageVersion:-unknown}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "node=$(node --version)"
+            echo "pnpm=$(pnpm --version)"
+          } > "release-assets/CleanerX_${RELEASE_VERSION}_${RELEASE_PLATFORM}_${RELEASE_ARCH}_build-metadata.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Add source lockfiles, release metadata, and checksums
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tar -czf "release-assets/CleanerX_${RELEASE_VERSION}_source-lockfiles.tar.gz" \
+            Cargo.lock pnpm-lock.yaml
+          {
+            echo "tag=$GITHUB_REF_NAME"
+            echo "version=$RELEASE_VERSION"
+            echo "commit=$GITHUB_SHA"
+            echo "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "source=https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA"
+            echo "workflow=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "release-assets/CleanerX_${RELEASE_VERSION}_release-metadata.txt"
+          checksum_file="CleanerX_${RELEASE_VERSION}_SHA256SUMS.txt"
+          rm -f "release-assets/$checksum_file"
+          (cd release-assets && sha256sum * > "$checksum_file")
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_WARNING: |
+            > [!WARNING]
+            > These CleanerX builds are unsigned and not notarized. Verify the published SHA-256 checksums before use; checksums confirm file integrity but do not establish publisher identity. CleanerX permanently deletes private local Agent data when cleanup runs without a backup, so review every cleanup plan and the documented compatibility limits first.
+        run: |
+          set -euo pipefail
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --title "CleanerX $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "$RELEASE_WARNING" \
+            "${release_flags[@]}"

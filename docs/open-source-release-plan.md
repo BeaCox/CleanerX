@@ -2,7 +2,7 @@
 
 Status: active policy document
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-28
 
 This document defines the release states and gates for publishing CleanerX as an open-source project. It contains no implementation backlog. Every unfinished release, packaging, pilot, and maintenance task is tracked only in the [development roadmap](roadmap.md).
 
@@ -27,9 +27,9 @@ Advancing the source repository does not automatically advance the downloadable 
 | State | Distribution | Mutation status | Purpose |
 | --- | --- | --- | --- |
 | Source preview | Public default branch, no promoted binary | Experimental; build from source at the user's own risk | Make the design and implementation reviewable and begin accepting engineering feedback. |
-| Alpha | Tagged, unsigned macOS artifacts | Enabled only after the mutation-safety gate passes | Validate packaging, compatibility, and real installations with a small group. |
-| Beta | Tagged, unsigned macOS artifacts | Enabled with documented compatibility and recovery limits | Collect broader compatibility evidence and close release-blocking defects. |
-| `v0.1.0` | Repeatable unsigned macOS release | Supported within the published compatibility matrix | Establish the first maintained public release. |
+| Alpha | Tagged, unsigned macOS, Linux, and Windows artifacts | Enabled only after the mutation-safety gate passes | Validate packaging, compatibility, and real installations with a small group. |
+| Beta | Tagged, unsigned macOS, Linux, and Windows artifacts | Enabled with documented compatibility and recovery limits | Collect broader compatibility evidence and close release-blocking defects. |
+| `v0.1.0` | Repeatable unsigned cross-platform release | Supported within the published compatibility matrix | Establish the first maintained public release. |
 
 A future signed or notarized release may replace unsigned artifacts without changing the safety gates. Signing remains optional until a suitable release identity is available.
 
@@ -61,7 +61,7 @@ If this gate is incomplete, CleanerX may remain a source preview but must not pr
 Every unsigned artifact name, release page, and installation section must state that:
 
 - the application is unsigned and not notarized;
-- macOS cannot verify the publisher identity;
+- macOS cannot verify the publisher identity, and Windows SmartScreen may warn about the unknown publisher;
 - a checksum verifies that a download matches the published asset but does not substitute for signing;
 - the supported opening path is Finder **Open** or approval in **System Settings → Privacy & Security**;
 - users must not be told to disable Gatekeeper globally or run broad quarantine-removal commands; and
@@ -86,4 +86,4 @@ Maintenance releases must preserve the fixed cleanup boundaries. A patch release
 
 ## Release evidence
 
-Each tag has a separate checklist recording version synchronization, private-data scanning, dependency/license review, `make check`, safety and fault-injection results, native smoke tests, artifact/checksum verification, compatibility limits, unsigned-build disclosure, and release-note review. The checklist records evidence for that tag; it does not become another backlog.
+Each tag has a separate checklist recording version synchronization, private-data scanning, dependency/license review, `make check`, safety and fault-injection results, native smoke tests, artifact/checksum verification, compatibility limits, unsigned-build disclosure, and release-note review. Tag automation reruns product CI, rejects unsynchronized versions and tags outside `main`, and publishes platform-specific build metadata, committed lockfiles, and SHA-256 checksums with the release. The checklist records the remaining human evidence for that tag; it does not become another backlog.

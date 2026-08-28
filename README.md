@@ -45,7 +45,7 @@ For the complete threat model and vulnerability-reporting process, see [SECURITY
 
 ## Project status
 
-CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Regular CI compiles and smoke-tests debug Linux and Windows desktop applications; installable packages are built by dedicated manual or `v*` tag workflows, plus Windows pull requests that change packaging configuration. Further adapter and release hardening remain planned work.
+CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Product CI runs the complete quality gate on Linux, exercises the Rust workspace on all three operating systems, and smoke-tests the Linux and Windows desktop applications. A valid `v*` release tag reruns that CI and publishes every supported platform from the exact tagged commit in one GitHub Release. Further adapter and release hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
@@ -102,7 +102,7 @@ To build the Linux packages on an x86_64 Linux host:
 make linux
 ```
 
-The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. Normal pushes and pull requests do not build release-mode packages: they compile a debug Linux application and launch it under Xvfb. Run the **Linux unsigned bundles** workflow manually, or push a `v*` tag, to build, smoke-test, inspect, and upload both packages as the short-lived `CleanerX-linux-x86_64-unsigned` workflow artifact. This workflow does not create a GitHub Release.
+The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. Normal pushes and pull requests compile a debug Linux application and launch it under Xvfb without spending CI time on release-mode packaging. A release tag builds, smoke-tests, inspects, and publishes both packages in the cross-platform GitHub Release.
 
 To build the Windows installers on an x86_64 Windows host from a Developer PowerShell:
 
@@ -111,7 +111,18 @@ make windows
 make smoke-windows
 ```
 
-The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pull requests compile and launch a debug Windows application and exercise a Credential Manager-backed backup/restore round trip. Run the **Windows unsigned bundles** workflow manually, push a `v*` tag, or change its packaging configuration in a pull request to build and upload the short-lived `CleanerX-windows-x86_64-unsigned` workflow artifact. The installers are intentionally unsigned and the workflow does not create a GitHub Release.
+The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pushes and pull requests test the Rust workspace and compile and launch a debug Windows application without building installers. A release tag builds, smoke-tests, inspects, and publishes both installers in the cross-platform GitHub Release.
+
+### Releases
+
+Release automation accepts SemVer tags such as `v0.1.0` or `v0.1.0-beta.1`. The tag must point to a commit contained in `main`, and its version must match `package.json`, the Tauri configuration, and every Cargo workspace package. Push the reviewed tag to start the release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow reruns product CI, builds all four platform/architecture variants, records toolchain and runner metadata, publishes the committed lockfiles, and creates SHA-256 checksums before creating the GitHub Release. Prerelease SemVer tags are automatically marked as prereleases. Release assets remain explicitly named as unsigned.
 
 Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Windows SmartScreen may likewise warn about the unsigned installer. Do not bypass either platform's protection for a binary from an untrusted source.
 
