@@ -56,6 +56,8 @@ import type {
   InventorySnapshot,
   ItemContentDetail,
   ProjectGroup,
+  RecoveryInventory,
+  RecoveryOperation,
   SelectionCandidate,
   SessionFilter,
   SessionPage,
@@ -125,11 +127,13 @@ export default function App() {
   const [selectedSizes, setSelectedSizes] = useState<Map<string, number>>(new Map());
   const [plan, setPlan] = useState<CleanupPlan>();
   const [createBackup, setCreateBackup] = useState(false);
-  const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | "purge" | null>("scan");
+  const [busy, setBusy] = useState<"scan" | "plan" | "execute" | "restore" | "purge" | "recovery" | null>("scan");
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [detailItemId, setDetailItemId] = useState<string>();
   const [backupToPurge, setBackupToPurge] = useState<BackupRecord>();
+  const [recoveryInventory, setRecoveryInventory] = useState<RecoveryInventory>();
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
   const loaded = useRef(false);
   const tabsRef = useRef<HTMLElement>(null);
   const [tabScroll, setTabScroll] = useState({ max: 0, value: 0, thumbWidth: 32 });
@@ -151,8 +155,8 @@ export default function App() {
   useEffect(() => {
     if (loaded.current) return;
     loaded.current = true;
-    void Promise.all([api.getSettings(), api.listBackups(), api.detectAgents()])
-      .then(([nextSettings, nextBackups, detected]) => {
+    void Promise.all([api.getSettings(), api.listBackups(), api.detectAgents(), api.listRecoveryOperations()])
+      .then(([nextSettings, nextBackups, detected, recovery]) => {
         const requestedAvailable = detected.some((installation) => installation.kind === nextSettings.activeAgent && installation.state === "installed");
         const initialAgent = requestedAvailable
           ? nextSettings.activeAgent
@@ -163,6 +167,8 @@ export default function App() {
         setInstallations(detected);
         setActiveAgent(initialAgent);
         setBackups(nextBackups);
+        setRecoveryInventory(recovery);
+        setRecoveryDismissed(false);
         void scan(initialAgent);
       })
       .catch((reason) => setError(messageOf(reason)))
@@ -313,6 +319,13 @@ export default function App() {
       setBackups(await api.listBackups());
     } catch (reason) {
       setError(messageOf(reason));
+      try {
+        const recovery = await api.listRecoveryOperations();
+        setRecoveryInventory(recovery);
+        setRecoveryDismissed(false);
+      } catch (recoveryReason) {
+        setError(`${messageOf(reason)}; ${messageOf(recoveryReason)}`);
+      }
     } finally {
       setBusy(null);
     }
@@ -341,6 +354,37 @@ export default function App() {
       setBackups(await api.listBackups());
       setBackupToPurge(undefined);
       setNotice(t("backupDeleted"));
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleRecovery = async (
+    operation: RecoveryOperation,
+    action: "reconcile" | "restore" | "terminate",
+  ) => {
+    setBusy("recovery");
+    setError(undefined);
+    try {
+      if (action === "reconcile") {
+        await api.reconcileRecoveryOperation(operation.operationId);
+      } else if (action === "restore") {
+        await api.restoreRecoveryOperation(operation.operationId);
+      } else {
+        await api.terminateRecoveryOperation(operation.operationId);
+      }
+      const [nextRecovery, nextBackups, nextSnapshot] = await Promise.all([
+        api.listRecoveryOperations(),
+        api.listBackups(),
+        api.scanStorage(activeAgent),
+      ]);
+      setRecoveryInventory(nextRecovery);
+      setRecoveryDismissed(false);
+      setBackups(nextBackups);
+      setSnapshot(nextSnapshot);
+      setNotice(t(action === "restore" ? "recoveryRestored" : action === "terminate" ? "recoveryTerminated" : "recoveryVerified"));
     } catch (reason) {
       setError(messageOf(reason));
     } finally {
@@ -541,6 +585,18 @@ export default function App() {
       )}
       {detailItem && snapshot && <ItemDetailDialog item={detailItem} snapshot={snapshot} selected={selected.has(detailItem.id)} toggle={() => toggleItem(detailItem)} close={() => setDetailItemId(undefined)} />}
       {backupToPurge && <PurgeBackupDialog backup={backupToPurge} close={() => setBackupToPurge(undefined)} purge={() => void purge()} purging={busy === "purge"} />}
+      {recoveryInventory && !recoveryDismissed && (recoveryInventory.operations.length > 0 || recoveryInventory.warnings.length > 0) && (
+        <RecoveryDialog
+          inventory={recoveryInventory}
+          busy={busy === "recovery"}
+          act={(operation, action) => void handleRecovery(operation, action)}
+          dismiss={() => setRecoveryDismissed(true)}
+          retry={() => void api.listRecoveryOperations().then((recovery) => {
+            setRecoveryInventory(recovery);
+            setRecoveryDismissed(false);
+          }).catch((reason) => setError(messageOf(reason)))}
+        />
+      )}
       {notice && <div className="toast"><Check size={16} />{notice}</div>}
     </div>
   );
@@ -1237,7 +1293,7 @@ function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, ex
   const canBackup = plan.estimatedBackupBytes > 0;
   const backupRequiresExit = canBackup && snapshot.installation.kind === "openCode" && snapshot.installation.running;
   const displayedBackupBytes = createBackup ? plan.estimatedBackupBytes : 0;
-  const withoutBackup = canBackup && !createBackup;
+  const withoutBackup = !createBackup;
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !executing) close(); }}><section className="review-dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
     <button className="icon-button modal-close" onClick={close} disabled={executing}><X size={18} /></button>
     <h2 id="review-title">{t("reviewTitle")}</h2>
@@ -1245,8 +1301,49 @@ function ReviewDialog({ plan, snapshot, createBackup, setCreateBackup, close, ex
     <div className="impact-list">{selected.slice(0, 6).map((item) => <div key={item.id}><span style={{ color: categoryColors[item.category] }}>{categoryIcon(item.category)}</span><div><strong>{item.title}</strong><span>{t(categoryTranslation[item.category])}</span></div><strong>{formatBytes(item.sizeBytes)}</strong></div>)}</div>
     {plan.blockers.length > 0 && <div className="blocker-box"><CircleAlert size={18} /><div><strong>{t("blockers")}</strong>{plan.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}</div></div>}
     {canBackup && <label className="backup-option"><input type="checkbox" checked={createBackup} disabled={executing || backupRequiresExit} onChange={(event) => setCreateBackup(event.target.checked)} /><span className="custom-check"><Check size={13} /></span><strong>{t("createBackupOption")}</strong></label>}
-    {withoutBackup && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t(backupRequiresExit ? "opencodeBackupRequiresExit" : "noBackupWarning")}</span></div>}
+    {withoutBackup && <div className="no-backup-warning"><CircleAlert size={16} /><span>{t(backupRequiresExit ? "opencodeBackupRequiresExit" : canBackup ? "noBackupWarning" : "backupUnavailableWarning")}</span></div>}
     <div className="modal-actions"><button className="secondary-button" onClick={close} disabled={executing}>{t("cancel")}</button><button className="primary-button danger-primary" onClick={execute} disabled={plan.blockers.length > 0 || executing}>{executing && <LoaderCircle size={16} className="spinning" />}{executing ? t("executing") : createBackup && canBackup ? t("backupAndExecute") : t("executeWithoutBackup")}</button></div>
+  </section></div>;
+}
+
+function RecoveryDialog({ inventory, busy, act, dismiss, retry }: {
+  inventory: RecoveryInventory;
+  busy: boolean;
+  act: (operation: RecoveryOperation, action: "reconcile" | "restore" | "terminate") => void;
+  dismiss: () => void;
+  retry: () => void;
+}) {
+  const { t } = useTranslation();
+  const operation = inventory.operations[0];
+  if (!operation) {
+    return <div className="modal-backdrop"><section className="review-dialog recovery-dialog" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+      <div className="destructive-dialog-mark"><CircleAlert size={20} /></div>
+      <h2 id="recovery-title">{t("recoveryBlockedTitle")}</h2>
+      <p className="recovery-lead">{t("recoveryUnknownJournal")}</p>
+      <div className="recovery-warning-list">{inventory.warnings.map((warning) => <code key={warning}>{warning}</code>)}</div>
+      <div className="modal-actions"><button className="secondary-button" disabled={busy} onClick={dismiss}>{t("continueBrowsingRecovery")}</button><button className="primary-button" disabled={busy} onClick={retry}>{t("retryRecoveryScan")}</button></div>
+    </section></div>;
+  }
+  return <div className="modal-backdrop"><section className="review-dialog recovery-dialog" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
+    <div className="recovery-heading-mark"><RotateCcw size={20} /></div>
+    <h2 id="recovery-title">{t("recoveryTitle")}</h2>
+    <p className="recovery-lead">{t("recoveryLead", { agent: agentName(operation.agent) })}</p>
+    <div className="recovery-operation-id"><span>{t("operation")}</span><code>{operation.operationId}</code></div>
+    <div className="review-metrics recovery-metrics">
+      <div><span>{t("journalState")}</span><strong>{operation.journalStatus}</strong></div>
+      <div><span>{t("recordedProgress")}</span><strong>{operation.completedMutations}/{operation.totalMutations}</strong></div>
+      <div><span>{t("observedProgress")}</span><strong>{operation.observedAppliedMutations}/{operation.totalMutations}</strong></div>
+      <div><span>{t("rescanResult")}</span><strong>{t(`recoveryObservation.${operation.observation}`)}</strong></div>
+    </div>
+    {operation.reason && <div className="blocker-box"><CircleAlert size={17} /><div><strong>{t("recoveryAttention")}</strong><span>{operation.reason}</span></div></div>}
+    {inventory.warnings.length > 0 && <div className="recovery-warning-list">{inventory.warnings.map((warning) => <code key={warning}>{warning}</code>)}</div>}
+    <p className="recovery-termination-note">{t("recoveryTerminationNote")}</p>
+    <div className="modal-actions recovery-actions">
+      <button className="secondary-button" disabled={busy} onClick={dismiss}>{t("continueBrowsingRecovery")}</button>
+      <button className="secondary-button" disabled={busy || !operation.canTerminate} onClick={() => act(operation, "terminate")}>{t("terminateRecovery")}</button>
+      {operation.backupId && <button className="secondary-button" disabled={busy || !operation.canRestore} onClick={() => act(operation, "restore")}><RotateCcw size={14} />{t("restoreCommittedBackup")}</button>}
+      <button className="primary-button" disabled={busy || !operation.canTerminate} onClick={() => act(operation, "reconcile")}>{busy && <LoaderCircle size={14} className="spinning" />}{t(operation.canFinalize ? "acceptVerifiedResult" : "verifyRecoveryAgain")}</button>
+    </div>
   </section></div>;
 }
 

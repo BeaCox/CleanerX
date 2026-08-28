@@ -54,43 +54,43 @@ Priority: required before making the repository public as a source preview. It d
 - License, security reporting, contribution rules, architecture boundaries, and product limitations are visible from the repository root or documentation index.
 - No downloadable application is described as supported or trusted merely because the source repository is public.
 
-## M1 — Codex safety hardening
+## M1 — Mutation safety and crash recovery
 
 Priority: required before promoting a public mutation-capable binary. Source code may be published earlier under the source-preview conditions in the [open-source release plan](open-source-release-plan.md).
 
-### Storage compatibility
+**Status: implemented for the mutation routes listed in the [compatibility matrix](compatibility.md).**
 
-- Build versioned temporary `CODEX_HOME` fixtures for normal and compressed rollouts, archives, descendants, pinned sessions, attachments, generated images, logs, caches, and temporary files.
-- Add recognized-schema fixtures for state and log databases, including WAL, corrupt databases, missing columns, and future/unknown schemas.
-- Maintain a compatibility table for tested Codex CLI/Desktop versions and record capability-based degradation independently of version strings.
-- Ensure filesystem-only fallback reports provenance and remains read-only for sessions.
+M1 is a bounded capability gate, not an Agent-wide allowlist or a promise to cover every historical Agent version. A route is enabled only when the current adapter recognizes its storage or control surface and the shared transaction boundary can account for it. Unsupported routes remain visibly read-only without disabling independently available routes.
 
-### Transaction recovery
+### Cross-adapter transaction recovery
 
-- Reopen every selected encrypted backup from disk before mutation, decrypt it, validate the manifest identity and format, verify every archived hash, and durably flush the archive and containing directory where supported.
-- Prevent `.cxb.partial` files, incomplete verification, catalog failures, or orphan archives from being treated as committed backups.
-- Complete fault injection for the remaining journal transitions: before and after archive creation, archive verification, catalog commit, each cleanup mutation route, and rescan verification. Restore already covers both sides of every destination commit and rollback.
-- Add startup recovery UI that can continue verification, restore a committed backup, or safely terminate an incomplete operation.
-- Retain enough immutable plan/progress data to explain which mutations completed after a later failure.
-- Never infer completion from journal state alone; rescan and verify the affected inventory.
-- Add concurrent-writer and file-identity-change fixtures for each direct file category.
+- Journal format v2 retains the immutable cleanup plan, selected Agent and snapshot ID, expanded scope, item categories, backup commit phases, and per-operation progress. Every pre/post mutation and verification transition is atomically persisted.
+- Selected backups are durably committed, reopened, decrypted, and hash-verified before mutation. Partial archives, incomplete verification, and catalog failures are not accepted as restorable backups.
+- Startup inventories all recognized v2 journals before allowing another cleanup for the same Agent. The dismissible recovery dialog rescans the owning Agent and can accept a verified result, restore a catalog-bound backup, or safely close the recovery workflow without retrying an Agent mutation. Strictly recognized pre-v2 status-only journals are removed as obsolete metadata.
+- Backup creation and restore commit boundaries have deterministic fault injection. Direct-file routes revalidate source revisions and file identities, while official-API routes recheck runtime capability and writer state before execution.
+- Protected fixtures and source/project trees remain outside mutation policies and are asserted byte-identical in the shared and adapter tests.
 
-### Mutation routes
+### Qualified mutation scope
 
-- Validate session deletion against active, archived, pinned, loaded, parent, child, and subagent combinations using an isolated live App Server test environment.
-- Probe `thread/delete` independently from `thread/list` and `memory/reset` without deleting a real session.
-- Complete the memory-reset flow: require Codex exit, optionally create a consistent memory/database backup, call `memory/reset`, rescan, and expose capability-specific errors without disabling session cleanup.
-- Finish versioned memory fixtures for recognized and unknown schemas, concurrent writers, reset failures, journal boundaries, rescan, and restore. Codex remains inspect/reset-only unless an official entry-level mutation API appears.
-- Implement and validate log maintenance only for recognized schemas using transactions, WAL checkpointing, and compaction. Unknown schemas stay report-only.
-- Remove attachments/generated content only after the owning session mutation succeeds, then verify references and residual files by rescan.
+| Adapter | M1-qualified routes | Important limit |
+| --- | --- | --- |
+| Codex | App Server session deletion, independently probed global memory reset, recognized-schema log retention, cache/temporary cleanup, post-session media cleanup | Codex exposes no supported session or memory import route, so these deletions remain enabled but are explicitly irreversible and are not presented as restorable backups. |
+| Claude Code | Session files, selected project auto-memory, recognized history/cache/temporary paths | Any recognized Claude writer blocks mutation; source and project directories never become cleanup roots. |
+| OpenCode | Offline official CLI deletion, verified idle loopback Server deletion, export/import session backup, offline log/cache cleanup | Unknown/changed SQLite state and unverified or busy writers fail closed. |
+| pi | Documented session-file deletion and `models-store.json` cleanup | Any recognized pi writer blocks mutation; fork lineage is display-only and never creates a deletion cascade. |
+
+The detailed route, evidence, and backup status is maintained in [compatibility.md](compatibility.md). Codex `thread/delete` and `memory/reset` are probed independently; absence of one does not disable the other. Orphaned Codex media remains inspect-only, and session-owned media is removed only after the owning `thread/delete` succeeds.
 
 ### Exit criteria
 
-- Protected files and source fixtures are byte-identical after every cleanup test.
-- All destructive fault-injection cases end in an explainable journal state; backup-enabled paths are recoverable.
+- An interrupted operation cannot be mistaken for success or bypassed by starting another cleanup for the same Agent.
+- Every recognized recovery begins with an Agent rescan; journal progress alone never proves the mutation result.
 - A selected backup is independently verified before deletion begins, and restore either completes fully or returns the destination tree to its pre-restore state.
-- Restored file hashes match the backup manifest and Codex can rediscover restored sessions.
-- Unknown Codex capabilities, schemas, and active writers produce a specific read-only/blocking reason in the GUI.
+- Recovery restoration is marked complete only after the selected adapter rediscovers every planned restored item.
+- Unknown committed journals block mutation while leaving browsing available; unknown capabilities, schemas, transports, redirects, changed identities, and active writers fail closed for the affected route.
+- `make check` passes with journal, backup/restore, adapter mutation, protected-data, i18n, and startup-recovery coverage.
+
+Broader version-by-version fixtures, native disposable mutation cycles, and pilot evidence remain part of M2 release readiness. They extend the compatibility matrix without reopening the shared M1 transaction design.
 
 ## M2 — Cross-platform release readiness
 

@@ -1,12 +1,17 @@
 //! Shared domain, safety, and backup primitives for CleanerX.
 
 pub mod backup;
+pub mod journal;
 pub mod model;
 pub mod planner;
 pub mod platform;
 pub mod safety;
 
-pub use backup::{BackupSource, BackupStore};
+pub use backup::{BackupEvent, BackupSource, BackupStore};
+pub use journal::{
+    JOURNAL_FORMAT_VERSION, JournalBackupStatus, JournalInventory, JournalMutation,
+    JournalMutationStatus, JournalStore, OperationJournal,
+};
 pub use model::*;
 pub use planner::create_cleanup_plan;
 pub use platform::{atomic_replace_file, configure_background_command};

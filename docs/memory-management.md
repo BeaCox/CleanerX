@@ -98,7 +98,7 @@ An inventory entry also needs a stable adapter-owned ID, scope, optional project
 
 - The Memory page renders only capabilities the detected adapter actually supports.
 - Content is loaded only after an explicit detail action and cleared when the detail view closes. Inventory scanning retains metadata, not memory bodies.
-- Codex shows a global memory object with inspect/reset behavior. It must explain that reliable per-project deletion is unavailable after consolidation.
+- Codex shows a global memory object with inspect/reset behavior when the runtime probe recognizes `memory/reset`. It must explain that reliable per-project deletion and supported import/restore are unavailable after consolidation.
 - Claude Code currently shows one cleanup item per project memory directory with bounded Markdown details. Project reset affects the complete index/topic-file set. CleanerX does not currently expose individual topic editing and must describe it as not yet supported rather than prohibited.
 - OpenCode and Pi show no native memory editor until a recognized native or extension-specific capability exists.
 - Memory use/generation toggles are settings, not cleanup selections. They must never be silently changed as a side effect of deletion.
@@ -110,7 +110,7 @@ All memory mutations follow the repository safety invariants:
 
 1. Resolve the item from the current snapshot beneath an Agent-specific memory root; reject user-supplied paths, symlinks, traversal, ownership anomalies, and changed file identities.
 2. Require the Agent and other detected writers to exit. CleanerX never force-quits them.
-3. If the user selects backup, create and verify an atomically committed encrypted backup before mutation. Without a backup, state clearly in the review that the change is irreversible.
+3. Offer backup only when the selected adapter has a supported restore route. If the user selects it, create and verify an atomically committed encrypted backup before mutation. Otherwise state clearly in the review that the change is irreversible. Codex global reset currently has no supported import route, so CleanerX does not present its copied files as a restorable backup.
 4. Revalidate the source revision immediately before mutation. A stale editor must fail rather than overwrite newer Agent output.
 5. For file-backed memory, write to a sibling temporary file, fsync, validate Markdown/frontmatter, and atomically rename. A multi-file index/topic change is journaled and all-or-nothing.
 6. Rescan after mutation and verify the expected entry/hash state. Unknown schemas or capabilities degrade to read-only.

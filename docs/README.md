@@ -1,6 +1,7 @@
 # CleanerX documentation
 
 - [Development roadmap](roadmap.md): the single source of truth for all unfinished work, milestones, priorities, and exit criteria.
+- [Mutation compatibility matrix](compatibility.md): enabled mutation routes, runtime gates, backup/restore support, and current test evidence for each adapter.
 - [Open-source release policy](open-source-release-plan.md): source publication states, mutation-safety gates, unsigned-artifact disclosure, and maintenance policy; it does not carry a separate backlog.
 - [Storage and transaction model](storage-model.md): discovery, data categories, cleanup transactions, and restore rules.
 - [Agent session hierarchy](agent-session-hierarchy.md): the cross-Agent project/session tree model and supporting evidence.
