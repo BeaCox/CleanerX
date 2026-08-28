@@ -45,7 +45,7 @@ For the complete threat model and vulnerability-reporting process, see [SECURITY
 
 ## Project status
 
-CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Regular CI compiles and smoke-tests debug Linux and Windows desktop applications; installable packages are built only by the dedicated manual or `v*` tag workflows. Further adapter and release hardening remain planned work.
+CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Regular CI compiles and smoke-tests debug Linux and Windows desktop applications; installable packages are built by dedicated manual or `v*` tag workflows, plus Windows pull requests that change packaging configuration. Further adapter and release hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
@@ -111,7 +111,7 @@ make windows
 make smoke-windows
 ```
 
-The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pushes and pull requests compile and launch a debug Windows application and exercise a Credential Manager-backed backup/restore round trip. Run the **Windows unsigned bundles** workflow manually, or push a `v*` tag, to build and upload the short-lived `CleanerX-windows-x86_64-unsigned` workflow artifact. The installers are intentionally unsigned and the workflow does not create a GitHub Release.
+The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pull requests compile and launch a debug Windows application and exercise a Credential Manager-backed backup/restore round trip. Run the **Windows unsigned bundles** workflow manually, push a `v*` tag, or change its packaging configuration in a pull request to build and upload the short-lived `CleanerX-windows-x86_64-unsigned` workflow artifact. The installers are intentionally unsigned and the workflow does not create a GitHub Release.
 
 Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Windows SmartScreen may likewise warn about the unsigned installer. Do not bypass either platform's protection for a binary from an untrusted source.
 

@@ -417,7 +417,7 @@ fn validate_windows_owner(path: &Path) -> Result<(), CleanerError> {
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -456,7 +456,7 @@ fn validate_windows_owner(path: &Path) -> Result<(), CleanerError> {
             let mut required = 0_u32;
             // SAFETY: a zero-length probe with a null output buffer is the documented size query.
             let queried = unsafe {
-                GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required)
+                GetTokenInformation(token, TokenOwner, std::ptr::null_mut(), 0, &mut required)
             };
             // SAFETY: GetLastError reads thread-local error state immediately after the API call.
             if queried != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
@@ -468,7 +468,7 @@ fn validate_windows_owner(path: &Path) -> Result<(), CleanerError> {
             if unsafe {
                 GetTokenInformation(
                     token,
-                    TokenUser,
+                    TokenOwner,
                     buffer.as_mut_ptr().cast(),
                     required,
                     &mut required,
@@ -477,10 +477,10 @@ fn validate_windows_owner(path: &Path) -> Result<(), CleanerError> {
             {
                 return Err(std::io::Error::last_os_error().into());
             }
-            // SAFETY: GetTokenInformation initialized the aligned buffer as TOKEN_USER.
-            let token_user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+            // SAFETY: GetTokenInformation initialized the aligned buffer as TOKEN_OWNER.
+            let token_owner = unsafe { &*buffer.as_ptr().cast::<TOKEN_OWNER>() };
             // SAFETY: both SIDs are owned by live buffers until this comparison returns.
-            Ok(unsafe { EqualSid(owner, token_user.User.Sid) } != 0)
+            Ok(unsafe { EqualSid(owner, token_owner.Owner) } != 0)
         })();
 
         // SAFETY: `token` is a live handle returned by OpenProcessToken.

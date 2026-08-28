@@ -2237,7 +2237,11 @@ mod tests {
         assert!(candidates.contains(&roaming.join("npm/opencode.cmd")));
         assert!(candidates.contains(&local.join("pnpm/opencode.bat")));
 
-        let home_fixture = Path::new("/windows/Users/CleanerX");
+        let home_fixture = if cfg!(windows) {
+            Path::new(r"C:\Users\CleanerX")
+        } else {
+            Path::new("/windows/Users/CleanerX")
+        };
         assert_eq!(
             platform_data_home(None, Some(home_fixture)),
             Some(home_fixture.join(".local/share/opencode")),
