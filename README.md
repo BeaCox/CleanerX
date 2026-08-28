@@ -195,6 +195,7 @@ Start with the [documentation index](docs/README.md). The main references are:
 - [Development roadmap](docs/roadmap.md)
 - [Open-source release policy](docs/open-source-release-plan.md)
 - [Application update strategy](docs/update-strategy.md)
+- [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)
 
 ## Contributing and support

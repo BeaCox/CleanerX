@@ -1,7 +1,7 @@
 {
   "name": "cleanerx",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "author": "BeaCox",
   "type": "module",
   "scripts": {

@@ -106,9 +106,8 @@ Priority: repeatable unsigned artifacts and a bounded cross-platform path from a
 - Launch each architecture artifact on a clean supported environment and run an isolated mutation/backup/restore cycle with disposable Agent data.
 - Confirm bundles contain no development URLs, private source-map paths, local preferences, test data, journals, or backup identities.
 - Verify accessibility: keyboard-only navigation, focus order, contrast, system Chinese/English switching, dark mode, and reduced motion.
-- Create a repeatable per-tag release checklist covering version synchronization, secret/private-data scanning, dependency and license review, `make check`, safety fixtures, native smoke tests, artifact/checksum verification, compatibility limits, unsigned-build disclosure, and final release-note review.
 - Document reproducible local commands for both architectures and the supported Finder/System Settings opening path. Never instruct users to disable Gatekeeper globally or run broad quarantine-removal commands.
-- Keep automatic updating out of the alpha; installation and release notes must explain that checksum verification does not establish publisher identity.
+- Verify the manual signed updater on every supported updater package after draft artifacts exist: no startup/background request, invalid signatures fail closed, stable feeds exclude prereleases, and installation still requires two explicit user actions.
 
 ### Bounded pilot and beta
 

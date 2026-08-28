@@ -197,8 +197,8 @@ mod tests {
 
     #[test]
     fn local_status_does_not_claim_that_a_network_check_ran() {
-        let status = status_for("0.1.0".into(), AppUpdateSupport::Available, None);
-        assert_eq!(status.current_version, "0.1.0");
+        let status = status_for("0.1.0-alpha.1".into(), AppUpdateSupport::Available, None);
+        assert_eq!(status.current_version, "0.1.0-alpha.1");
         assert_eq!(status.support, AppUpdateSupport::Available);
         assert!(status.update.is_none());
     }

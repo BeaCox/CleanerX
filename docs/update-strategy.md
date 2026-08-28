@@ -42,6 +42,6 @@ The fixed stable endpoint intentionally excludes GitHub prereleases. A future be
 
 ## Release construction
 
-Normal developer bundle commands remain unsigned and do not require the updater private key. Tagged releases add `src-tauri/tauri.updater.conf.json`, set `TAURI_SIGNING_PRIVATE_KEY` from GitHub Actions secrets, and ask Tauri to create update artifacts and `.sig` files. The publish job gathers every architecture, runs `scripts/generate-update-manifest.mjs`, and fails closed on a missing/empty signature before publishing `latest.json` and checksums.
+Normal developer bundle commands remain unsigned and do not require the updater private key. Tagged releases add `src-tauri/tauri.updater.conf.json`, set `TAURI_SIGNING_PRIVATE_KEY` from GitHub Actions secrets, and ask Tauri to create update artifacts and `.sig` files. The release-draft job gathers every architecture, runs `scripts/generate-update-manifest.mjs`, and fails closed on a missing/empty signature before staging `latest.json` and checksums in a draft GitHub Release. A maintainer verifies the complete draft before publishing it.
 
 Tauri's signature establishes continuity with the public key embedded in an installed CleanerX build. It does not establish operating-system publisher identity. Artifact names and release warnings therefore continue to say that current binaries are unsigned and not notarized.
