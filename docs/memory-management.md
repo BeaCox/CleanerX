@@ -1,13 +1,15 @@
 # Agent memory capability and safety model
 
-Status: shared capability model and project-level Claude Code cleanup implemented. Claude Code entry editing is not yet implemented; all unfinished work is tracked only in the [development roadmap](roadmap.md). Researched and updated 2026-08-27.
+Status: shared capability model and project-level Claude Code cleanup implemented. Claude Code entry editing is not yet implemented; all unfinished work is tracked only in the [development roadmap](roadmap.md).
+
+Last reviewed: 2026-08-28
 
 ## Terminology
 
 CleanerX must keep three kinds of persistent context separate:
 
 1. **Automatic memory** is Agent-generated recall carried between sessions. This is the only category that belongs on the Memory page.
-2. **Persistent instructions** are user- or team-authored rules such as `AGENTS.md`, `CLAUDE.md`, OpenCode rules, and Pi context files. They remain protected configuration and are never changed by memory cleanup.
+2. **Persistent instructions** are user- or team-authored rules such as `AGENTS.md`, `CLAUDE.md`, OpenCode rules, and pi context files. They remain protected configuration and are never changed by memory cleanup.
 3. **Session history** is the transcript and its descendants. It remains on the Sessions page even when an Agent later derives memory from it.
 
 Deleting a session does not imply that already consolidated memory is forgotten. Project cleanup also never selects global memory automatically.
@@ -19,9 +21,9 @@ Deleting a session does not imply that already consolidated memory is forgotten.
 | Codex | Yes | Local Codex Home, primarily `memories/`; consolidated state is global to the local host | `/memories` controls use/generation per chat. The documented App Server has no entry-level memory CRUD API. The locally observed Codex 0.145.0 schema exposes capability-probed `memory/reset` and chat memory-mode control, but no list/get/update/delete methods. | Scan metadata, load bounded details on demand, and offer global reset only when the runtime reports the capability. Do not edit generated files or private SQLite. |
 | Claude Code | Yes | `~/.claude/projects/<project>/memory/`, one repository-scoped directory shared by its worktrees; `MEMORY.md` indexes topic Markdown files | Official documentation says auto-memory Markdown files may be edited or deleted at any time and `/memory` opens them. | Scan bounded metadata/content and delete a selected project's complete auto-memory directory through the verified file transaction. Entry editing is not yet supported by CleanerX. Treat `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/` as protected instructions, not memory. |
 | OpenCode | No native automatic-memory surface documented | Official persistence is instruction files such as project/global `AGENTS.md`; sessions are separate | The open native auto-memory proposal explicitly describes cross-session learning as absent today. | Do not present rules as memory or add a reset/editor. Detect a future native capability before enabling one. |
-| Pi | No native automatic-memory surface documented | Official persistent context is `AGENTS.md`/`CLAUDE.md`, system-prompt files, sessions, and extension-owned data | Extensions can implement arbitrary storage and UI, so there is no single core memory schema to manage safely. | Keep core instruction files protected. Support memory only through a future adapter for a specific, recognized extension and schema. |
+| pi | No native automatic-memory surface documented | Official persistent context is `AGENTS.md`/`CLAUDE.md`, system-prompt files, sessions, and extension-owned data | Extensions can implement arbitrary storage and UI, so there is no single core memory schema to manage safely. | Keep core instruction files protected. Support memory only through a future adapter for a specific, recognized extension and schema. |
 
-The OpenCode and Pi “no native automatic memory” entries are inferences from their current official feature documentation, reinforced for OpenCode by its open native-memory proposal. Both adapters have now been implemented against that finding: neither exposes a memory cleanup item, and the inference must be rechecked if a future release documents a native memory surface or a specific, recognized memory extension.
+The OpenCode and pi “no native automatic memory” entries are inferences from their current official feature documentation, reinforced for OpenCode by its open native-memory proposal. Both adapters have now been implemented against that finding: neither exposes a memory cleanup item, and the inference must be rechecked if a future release documents a native memory surface or a specific, recognized memory extension.
 
 ## Evidence and compatibility notes
 
@@ -62,11 +64,11 @@ Sources:
 - [OpenCode rules](https://opencode.ai/docs/rules/)
 - [OpenCode native auto-memory proposal](https://github.com/anomalyco/opencode/issues/20322)
 
-### Pi
+### pi
 
-Pi documents context files, system-prompt files, sessions, compaction, and an extension mechanism. Since an extension can define arbitrary memory storage, ownership and mutation semantics cannot be inferred from the Pi home directory alone.
+pi documents context files, system-prompt files, sessions, compaction, and an extension mechanism. Since an extension can define arbitrary memory storage, ownership and mutation semantics cannot be inferred from the pi home directory alone.
 
-Source: [Pi coding-agent README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)
+Source: [pi coding-agent README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)
 
 ## Core capability model
 
@@ -100,7 +102,7 @@ An inventory entry also needs a stable adapter-owned ID, scope, optional project
 - Content is loaded only after an explicit detail action and cleared when the detail view closes. Inventory scanning retains metadata, not memory bodies.
 - Codex shows a global memory object with inspect/reset behavior when the runtime probe recognizes `memory/reset`. It must explain that reliable per-project deletion and supported import/restore are unavailable after consolidation.
 - Claude Code currently shows one cleanup item per project memory directory with bounded Markdown details. Project reset affects the complete index/topic-file set. CleanerX does not currently expose individual topic editing and must describe it as not yet supported rather than prohibited.
-- OpenCode and Pi show no native memory editor until a recognized native or extension-specific capability exists.
+- OpenCode and pi show no native memory editor until a recognized native or extension-specific capability exists.
 - Memory use/generation toggles are settings, not cleanup selections. They must never be silently changed as a side effect of deletion.
 - Instructions remain in a separate protected category and do not appear as editable memory even when an Agent's own UI calls them “memory files.”
 

@@ -1,5 +1,9 @@
 # Development roadmap
 
+Status: active roadmap
+
+Last updated: 2026-08-28
+
 This is the repository's single source of truth for unfinished work. Design, security, storage, and release documents describe current behavior and binding constraints; they link here instead of maintaining separate phase or task lists.
 
 Work is ordered by data-safety risk. A later milestone may be explored early, but it must not delay an unresolved safety requirement in an earlier milestone. The [open-source release policy](open-source-release-plan.md) separates public source availability from mutation-capable binary releases. The repository may be published as a source preview before M1 is complete, but any promoted binary with cleanup mutations enabled must pass the M1 safety gate. Signing and notarization are explicitly optional and do not replace that gate.
@@ -14,7 +18,7 @@ CleanerX currently has:
 - a presentation-only “No project” session root plus updated-time filtering for recent sessions;
 - a full-width desktop layout with centered navigation, overview storage charts, bounded media thumbnails, and an explicitly confirmed permanent-backup-delete flow;
 - persisted Chinese/English and system-aware light/dark appearance preferences with immediate preview;
-- branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCOx copyright metadata;
+- branded cross-platform application icons, a custom macOS DMG layout, and a native macOS About panel with version and BeaCox copyright metadata;
 - Codex App Server capability probing, control-socket timeout handling, and stdio fallback;
 - Claude Code Home/binary/writer detection, metadata-only session inventory, project auto-memory inventory, guarded local-data cleanup, and Agent-bound backup/restore;
 - OpenCode XDG data/cache and binary/writer detection, recognized-SQLite metadata inventory, official CLI session deletion, export/import backup and restore, and protected legacy/source-managed storage;
@@ -146,9 +150,9 @@ Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat`
 
 ## M4 — Additional Agent adapters
 
-Priority order: Claude Code, OpenCode, then Pi, subject to documented interface stability.
+Priority order: Claude Code, OpenCode, then pi, subject to documented interface stability.
 
-Claude Code, OpenCode, and Pi are implemented additional adapters. Claude Code includes installation detection, read-only inventory, protected-path specification, project memory deletion capability, encrypted backup/restore, writer blocking, guarded cleanup, and post-operation rescan. OpenCode includes recognized-SQLite read-only inventory, offline official CLI deletion, verified loopback Server API deletion for inactive sessions, official export/import recovery, writer blocking, descendant expansion, and protected data/cache roots; it intentionally exposes no memory item because no supported automatic-memory capability was found. pi includes installation and writer detection, metadata-only session inventory from the documented JSONL layout with fork lineage display, writer blocking, guarded deletion of session files through the documented file-removal route, `models-store.json` cache cleanup, and protected configuration, trust, rules, skills, extension, and package storage; it exposes no memory item because no supported automatic-memory capability was found. Claude Code's documented auto-memory Markdown is user-editable; CleanerX currently reports entry editing as **not yet supported**, not prohibited. Instructions and rules remain protected. See the [Agent memory capability and safety model](memory-management.md).
+Claude Code, OpenCode, and pi are implemented additional adapters. Claude Code includes installation detection, read-only inventory, protected-path specification, project memory deletion capability, encrypted backup/restore, writer blocking, guarded cleanup, and post-operation rescan. OpenCode includes recognized-SQLite read-only inventory, offline official CLI deletion, verified loopback Server API deletion for inactive sessions, official export/import recovery, writer blocking, descendant expansion, and protected data/cache roots; it intentionally exposes no memory item because no supported automatic-memory capability was found. pi includes installation and writer detection, metadata-only session inventory from the documented JSONL layout with fork lineage display, writer blocking, guarded deletion of session files through the documented file-removal route, `models-store.json` cache cleanup, and protected configuration, trust, rules, skills, extension, and package storage; it exposes no memory item because no supported automatic-memory capability was found. Claude Code's documented auto-memory Markdown is user-editable; CleanerX currently reports entry editing as **not yet supported**, not prohibited. Instructions and rules remain protected. See the [Agent memory capability and safety model](memory-management.md).
 
 Each adapter progresses through the same gates:
 
@@ -174,8 +178,8 @@ Adapters remain compile-time implementations of `AgentAdapter`. Reverse-engineer
 
 ### Later adapter memory decisions
 
-- Recheck OpenCode and Pi official releases for a native memory API or recognized schema before implementing either adapter's memory surface. OpenCode session support must not be treated as evidence of a memory capability.
-- If Pi memory depends on an extension, identify the extension and exact version at compile time; leave unknown extension data untouched.
+- Recheck OpenCode and pi official releases for a native memory API or recognized schema before implementing either adapter's memory surface. OpenCode session support must not be treated as evidence of a memory capability.
+- If pi memory depends on an extension, identify the extension and exact version at compile time; leave unknown extension data untouched.
 - Never reinterpret rules, prompts, system files, or arbitrary `MEMORY.md` files as automatic memory to populate the UI.
 
 ### Exit criteria

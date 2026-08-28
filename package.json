@@ -2,7 +2,7 @@
   "name": "cleanerx",
   "private": true,
   "version": "0.1.0",
-  "author": "BeaCOx",
+  "author": "BeaCox",
   "type": "module",
   "scripts": {
     "dev": "vite",

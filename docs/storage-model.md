@@ -1,5 +1,9 @@
 # Storage and transaction model
 
+Status: current implementation model
+
+Last reviewed: 2026-08-28
+
 ## Discovery
 
 CleanerX persists one active target Agent and exposes the selector in the left side of the bottom status deck. Switching targets atomically saves the preference, clears the old selection/detail state, and creates a fresh Agent-specific snapshot. A cleanup plan is bound to that snapshot, and execution dispatches from the snapshot's `AgentKind`; paths and backups from different Agents cannot be mixed.
@@ -44,7 +48,7 @@ Protected OpenCode data includes authentication, configuration, plugins, skills,
 
 pi agent-directory resolution uses the user override, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`. The executable is resolved from `PATH` and the same bounded set of common user package-manager locations used by the other CLI adapters; it is used only for version reporting because pi's documented deletion route is file-based. Project-local `.pi/` directories are never visited; a session `cwd` is grouping metadata only.
 
-CleanerX recognizes the documented session layout: one JSONL file per session beneath `sessions/--<working-directory>--/<timestamp>_<uuid>.jsonl`. Inventory reads a bounded 2 MiB prefix of each file and retains only the session header (UUID ID, absolute `cwd`, creation timestamp, optional `parentSession` reference), the latest `session_info` display name, and—only when no explicit name remains—a normalized first-user-message title limited to 96 Unicode characters. This matches Pi's own session selector without retaining the rest of the transcript. Other message, tool, and compaction bodies are parsed transiently and never enter the snapshot. Files with an unrecognized first line, duplicate session IDs, symbolic links, and unknown entries are skipped or warned about without blocking the rest of the inventory. Sessions forked through `/fork` or `/clone` reference their parent file via `parentSession`; CleanerX shows that lineage in the tree but never treats a fork as a deletion descendant, because removing one pi session file never removes another.
+CleanerX recognizes the documented session layout: one JSONL file per session beneath `sessions/--<working-directory>--/<timestamp>_<uuid>.jsonl`. Inventory reads a bounded 2 MiB prefix of each file and retains only the session header (UUID ID, absolute `cwd`, creation timestamp, optional `parentSession` reference), the latest `session_info` display name, and—only when no explicit name remains—a normalized first-user-message title limited to 96 Unicode characters. This matches pi's own session selector without retaining the rest of the transcript. Other message, tool, and compaction bodies are parsed transiently and never enter the snapshot. Files with an unrecognized first line, duplicate session IDs, symbolic links, and unknown entries are skipped or warned about without blocking the rest of the inventory. Sessions forked through `/fork` or `/clone` reference their parent file via `parentSession`; CleanerX shows that lineage in the tree but never treats a fork as a deletion descendant, because removing one pi session file never removes another.
 
 pi's official documentation states that sessions are removed by deleting their `.jsonl` files. CleanerX therefore performs session deletion through its fixed-root preflighted path transaction: capture a metadata-only source revision, block every mutable pi item while a pi process is running, optionally commit and verify an encrypted backup, revalidate the revision and filesystem identity, remove only the snapshot-owned session file, then rescan. The regenerable `models-store.json` provider-catalog cache is the only non-session writable item; it is removed through the same transaction while pi is not running.
 
@@ -106,7 +110,7 @@ Official Claude Code references: [application data and project purge](https://co
 
 Official OpenCode references: [storage locations](https://opencode.ai/docs/troubleshooting/), [CLI session/delete/export/import commands](https://opencode.ai/docs/cli/), [server session APIs](https://opencode.ai/docs/server/), and the [official session schema](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/sql.ts).
 
-Official pi references: [session storage and deletion](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/sessions.md), the [session file format](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/session-format.md), [agent directory override via `PI_CODING_AGENT_DIR`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/environment-variables.md), and the [models-store catalog cache](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/providers.md).
+Official pi references: [session storage and deletion](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sessions.md), the [session file format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md), [agent directory override via `PI_CODING_AGENT_DIR`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md), and the [models-store catalog cache](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md).
 
 ## Permanent backup deletion
 

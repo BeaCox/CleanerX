@@ -1,13 +1,36 @@
 # CleanerX documentation
 
-- [Development roadmap](roadmap.md): the single source of truth for all unfinished work, milestones, priorities, and exit criteria.
-- [Mutation compatibility matrix](compatibility.md): enabled mutation routes, runtime gates, backup/restore support, and current test evidence for each adapter.
-- [Open-source release policy](open-source-release-plan.md): source publication states, mutation-safety gates, unsigned-artifact disclosure, and maintenance policy; it does not carry a separate backlog.
-- [Storage and transaction model](storage-model.md): discovery, data categories, cleanup transactions, and restore rules.
-- [Agent session hierarchy](agent-session-hierarchy.md): the cross-Agent project/session tree model and supporting evidence.
-- [Agent memory capability and safety model](memory-management.md): native memory capabilities, editing permissions, safety boundaries, and acceptance criteria.
-- [Security policy](../SECURITY.md): product safety invariants and vulnerability reporting.
-- [Contributor guide](../CONTRIBUTING.md): contribution and validation requirements.
-- [Agent instructions](../AGENTS.md): repository-wide constraints for coding agents.
+This directory contains the detailed product, compatibility, architecture, and release documents that would make the root README too difficult to scan. CleanerX deletes private local data, so documentation distinguishes current verified behavior from planned work and never treats discovery alone as permission to mutate.
 
-Keep implementation-specific decisions close to the owning document, but put every unfinished task only in `roadmap.md`. Other documents describe current behavior, decisions, policies, and acceptance criteria and link to the roadmap instead of maintaining parallel phase lists. Avoid duplicating safety requirements with different wording; `SECURITY.md` and `AGENTS.md` are normative for product and development behavior respectively.
+## Choose a document
+
+| If you want to understand… | Read |
+| --- | --- |
+| what CleanerX can currently delete, how, and with what recovery support | [Mutation compatibility matrix](compatibility.md) |
+| how data is discovered, classified, planned, backed up, deleted, restored, and recovered | [Storage and transaction model](storage-model.md) |
+| how projects, root sessions, descendants, forks, and unlinked sessions map across Agents | [Agent session hierarchy](agent-session-hierarchy.md) |
+| what “memory” means for each Agent and which content remains protected | [Agent memory capability and safety model](memory-management.md) |
+| what remains unfinished and what blocks a supported release | [Development roadmap](roadmap.md) |
+| how source preview, alpha, beta, unsigned artifacts, and `v0.1.0` are gated | [Open-source release policy](open-source-release-plan.md) |
+| the security boundary or how to report a vulnerability | [Security policy](../SECURITY.md) |
+| how to prepare and verify a contribution | [Contributor guide](../CONTRIBUTING.md) |
+| repository-wide constraints for coding agents | [Agent instructions](../AGENTS.md) |
+
+## Document authority
+
+- [SECURITY.md](../SECURITY.md) is normative for the product threat model and protected-data boundary.
+- [AGENTS.md](../AGENTS.md) is normative for development, architecture, UI, testing, and definition-of-done constraints.
+- [compatibility.md](compatibility.md) records mutation routes that are implemented and qualified by current automated evidence. It is not a promise that every Agent version works.
+- [roadmap.md](roadmap.md) is the only source of unfinished tasks, priorities, milestones, and exit criteria.
+- Other documents describe current behavior and decisions. They link to the roadmap instead of carrying parallel implementation plans.
+
+When documents appear to conflict, use the stricter safety boundary and correct the inconsistency in the same change.
+
+## Maintenance rules
+
+- Link compatibility decisions to an official Agent interface whenever one is available.
+- Clearly label reverse-engineered schemas or behavior as read-only.
+- Describe capability downgrade and user-visible blockers alongside the happy path.
+- Keep examples synthetic; never include real transcripts, memories, logs, credentials, journals, backups, state databases, IDs, or local machine paths.
+- Update the owning document in the same pull request as a behavior change.
+- Update the `Last reviewed` date only when the document's claims were actually checked, not for unrelated formatting edits.

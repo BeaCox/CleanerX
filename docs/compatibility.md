@@ -1,6 +1,12 @@
 # Mutation compatibility matrix
 
+Status: current qualified implementation routes
+
+Last reviewed: 2026-08-28
+
 This table records the mutation routes CleanerX currently enables and the evidence used to qualify them. Runtime capability and storage recognition are authoritative; an Agent version string is informational and never enables a write route by itself.
+
+“Enabled” means the route passed the repository's automated safety gate and still satisfies its runtime checks. It does not mean that every Agent version or native environment has completed pilot qualification. Native disposable-data exercises and broader version observations remain release-readiness evidence in [M2](roadmap.md#m2--cross-platform-release-readiness).
 
 All enabled routes share operation journal format v2, pre-mutation capability/writer checks, immutable cleanup plans, post-operation Agent rescans, and startup recovery. A selected backup is offered only when CleanerX has a supported restore route for every item in the expanded plan and the adapter can rediscover all of them afterward. Mixed restorable/irreversible selections must be cleaned separately to use backup.
 
@@ -39,4 +45,4 @@ Primary interface references:
 - [Codex App Server](https://learn.chatgpt.com/docs/app-server)
 - [Claude Code application data](https://code.claude.com/docs/en/claude-directory)
 - [OpenCode CLI](https://opencode.ai/docs/cli/) and [Server API](https://opencode.ai/docs/server/)
-- [pi session storage](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/sessions.md)
+- [pi session storage](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sessions.md)
