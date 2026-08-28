@@ -17,7 +17,7 @@ Signing and notarization are not release prerequisites. Source publication, muta
 - Checksums and build metadata provide artifact-integrity evidence, but they do not replace publisher identity or notarization.
 - Unsupported Agent capabilities, schemas, and platforms degrade to explicit read-only behavior.
 - Release documentation describes observed behavior and tested compatibility; it never presents roadmap work as implemented.
-- CleanerX remains local-only. A release does not add telemetry, an updater, a background daemon, or cloud services without an explicit product decision.
+- CleanerX remains local-first. It has no telemetry, data upload, background daemon, or cloud synchronization. The explicitly approved updater contacts only the fixed GitHub Releases endpoint after a user action and sends no Agent data.
 - Source trees, credentials, configuration, rules, skills, plugins, browser accounts, and cookies remain outside the cleanup boundary.
 
 ## Release states
@@ -67,7 +67,15 @@ Every unsigned artifact name, release page, and installation section must state 
 - users must not be told to disable Gatekeeper globally or run broad quarantine-removal commands; and
 - building from source remains available for users who do not accept an unsigned binary.
 
-An artifact is released from its exact tested tag. An earlier build is never promoted by renaming it, and the application does not silently update itself.
+An artifact is released from its exact tested tag. An earlier build is never promoted by renaming it, and the application does not silently update itself. Update checks are manual, present the target version before installation, and require a second explicit install action.
+
+## Updater-signing policy
+
+- Tauri updater signing is required for every in-app update artifact and is separate from optional Apple/Microsoft operating-system signing.
+- The public key is pinned in `src-tauri/tauri.conf.json`. Release automation reads the private key only from the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret, while the maintainer keeps a recovery copy in the native credential store. It must never be committed, logged, or copied into a release artifact.
+- Losing or rotating the private key without a signed transition strands installed builds on their pinned key. Key rotation therefore requires a release signed by the old key that embeds the new trust path before subsequent releases use the new key.
+- The release job fails if any platform artifact or `.sig` file is absent. It creates `latest.json` only after all architecture-specific artifacts have been collected, and checksums include the manifest, signatures, and updater payloads.
+- macOS arm64/x86_64, Windows x86_64 NSIS, and Linux x86_64 AppImage are the in-app update targets. MSI, `.deb`, DMG, and application ZIP artifacts remain manual distribution formats.
 
 ## Pilot and defect policy
 

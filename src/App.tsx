@@ -47,6 +47,8 @@ import { cachePreferences } from "./preferenceStore";
 import cleanerXLogo from "../src-tauri/icons/64x64.png";
 import type {
   AppSettings,
+  AppUpdateEvent,
+  AppUpdateStatus,
   AgentInstallation,
   AgentKind,
   BackupRecord,
@@ -523,7 +525,7 @@ export default function App() {
         {error && <div className="alert alert-error" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(undefined)}><X size={16} /></button></div>}
         {storageView && snapshot?.installation.capabilities.reportOnly && <div className="alert alert-warning capability-alert"><CircleAlert size={18} /><div><strong>{t("reportOnlyNotice", { agent: agentName(activeAgent) })}</strong><span>{t("reportOnlyHelp", { agent: agentName(activeAgent) })}</span>{snapshot.installation.warnings[0] && <code>{snapshot.installation.warnings[0]}</code>}</div><button className="secondary-button" onClick={() => void scan()} disabled={busy !== null}>{t("retryConnection")}</button></div>}
         {view === "settings" ? (
-          settings ? <SettingsView value={settings} installations={installations} detecting={detectingAgents} onDetect={refreshAgentInstallations} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
+          settings ? <SettingsView value={settings} installations={installations} detecting={detectingAgents} updatesDisabled={busy !== null} onDetect={refreshAgentInstallations} onSave={saveSettings} /> : <LoadingState label={t("loadingSettings")} icon={Settings} />
         ) : view === "backups" ? (
           <BackupsView backups={backups} restore={restore} requestPurge={setBackupToPurge} busy={busy !== null} />
         ) : !snapshot ? (
@@ -1101,7 +1103,7 @@ function BackupsView({ backups, restore, requestPurge, busy }: { backups: Backup
   return <div className="page-stack">{!backups.length ? <EmptyState icon={Archive} label={t("noBackups")} /> : <div className="backup-list">{backups.map((backup) => <article className="backup-card" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{agentName(backup.agent)} · {backup.itemCount} {t("items")} · {formatBytes(backup.originalBytes)} · {t("archiveSize")} {formatBytes(backup.archiveBytes)}</span><code>{backup.id}</code></div><div className="backup-expiry"><span>{t("expires")}</span><strong>{new Date(backup.expiresAt).toLocaleDateString()}</strong></div><button className="secondary-button" disabled={busy} onClick={() => restore(backup.id)}><RotateCcw size={15} />{t("restore")}</button><button className="secondary-button danger" disabled={busy} onClick={() => requestPurge(backup)}><Trash2 size={15} />{t("deleteForever")}</button></article>)}</div>}</div>;
 }
 
-function SettingsView({ value, installations, detecting, onDetect, onSave }: { value: AppSettings; installations: AgentInstallation[]; detecting: boolean; onDetect: () => Promise<void>; onSave: (settings: AppSettings) => Promise<void> }) {
+function SettingsView({ value, installations, detecting, updatesDisabled, onDetect, onSave }: { value: AppSettings; installations: AgentInstallation[]; detecting: boolean; updatesDisabled: boolean; onDetect: () => Promise<void>; onSave: (settings: AppSettings) => Promise<void> }) {
   const { t } = useTranslation();
   const [form, setForm] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -1127,6 +1129,7 @@ function SettingsView({ value, installations, detecting, onDetect, onSave }: { v
       <h3 className="settings-group-label">{t("settingsRetention")}</h3>
       <div className="retention-grid"><Setting label={t("backupRetention")}><input aria-label={t("backupRetention")} type="number" min="1" max="3650" value={form.backupRetentionDays} onChange={(event) => setForm({ ...form, backupRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("logRetention")}><input aria-label={t("logRetention")} type="number" min="1" max="365" value={form.logRetentionDays} onChange={(event) => setForm({ ...form, logRetentionDays: Number(event.target.value) })} /></Setting><Setting label={t("tempRetention")}><input aria-label={t("tempRetention")} type="number" min="1" max="8760" value={form.tempRetentionHours} onChange={(event) => setForm({ ...form, tempRetentionHours: Number(event.target.value) })} /></Setting></div>
     </section>
+    <AppUpdateSetting disabled={updatesDisabled || saving} />
     <section className="settings-group settings-agent-group">
       <div className="settings-group-heading">
         <h3 className="settings-group-label">{t("settingsAgents")}</h3>
@@ -1153,6 +1156,90 @@ function SettingsView({ value, installations, detecting, onDetect, onSave }: { v
     </section>
     <div className="settings-footer"><button className="primary-button" type="submit" disabled={detecting || saving}>{saving && <LoaderCircle size={14} className="spinning" />}{saving ? t("savingSettings") : t("save")}</button></div>
   </form>;
+}
+
+function AppUpdateSetting({ disabled }: { disabled: boolean }) {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState<AppUpdateStatus>();
+  const [phase, setPhase] = useState<"loading" | "idle" | "checking" | "installing">("loading");
+  const [checked, setChecked] = useState(false);
+  const [updateError, setUpdateError] = useState<string>();
+  const [downloaded, setDownloaded] = useState(0);
+  const [downloadTotal, setDownloadTotal] = useState<number>();
+
+  useEffect(() => {
+    let active = true;
+    void api.getAppUpdateStatus()
+      .then((next) => { if (active) setStatus(next); })
+      .catch((reason) => { if (active) setUpdateError(messageOf(reason)); })
+      .finally(() => { if (active) setPhase("idle"); });
+    return () => { active = false; };
+  }, []);
+
+  const checkForUpdate = async () => {
+    setPhase("checking");
+    setChecked(false);
+    setUpdateError(undefined);
+    try {
+      setStatus(await api.checkForAppUpdate());
+      setChecked(true);
+    } catch (reason) {
+      setUpdateError(messageOf(reason));
+    } finally {
+      setPhase("idle");
+    }
+  };
+
+  const installUpdate = async () => {
+    setPhase("installing");
+    setUpdateError(undefined);
+    setDownloaded(0);
+    setDownloadTotal(undefined);
+    try {
+      await api.installAppUpdate((event: AppUpdateEvent) => {
+        if (event.event === "Started") {
+          setDownloadTotal(event.data.contentLength);
+        } else if (event.event === "Progress") {
+          setDownloaded((current) => current + event.data.chunkLength);
+        }
+      });
+    } catch (reason) {
+      setUpdateError(messageOf(reason));
+      setPhase("idle");
+    }
+  };
+
+  const progress = downloadTotal ? Math.min(100, Math.round(downloaded / downloadTotal * 100)) : undefined;
+  const available = status?.update;
+  const support = status?.support;
+  const busy = phase !== "idle";
+
+  return <section className="settings-group settings-update-group">
+    <h3 className="settings-group-label">{t("settingsUpdates")}</h3>
+    <div className="app-update-row">
+      <div className="app-update-version">
+        <strong>CleanerX</strong>
+        <span>{t("currentVersion", { version: status?.currentVersion ?? "—" })}</span>
+      </div>
+      {support === "available" && <button type="button" className={available ? "primary-button" : "secondary-button"} disabled={disabled || busy} onClick={() => void (available ? installUpdate() : checkForUpdate())}>
+        {(phase === "checking" || phase === "installing") && <LoaderCircle size={14} className="spinning" />}
+        {phase === "checking" ? t("checkingForUpdates") : phase === "installing" ? t("installingUpdate") : available ? t("installUpdate", { version: available.version }) : t("checkForUpdates")}
+      </button>}
+    </div>
+    <p className="app-update-network-note">{t("updateNetworkNote")}</p>
+    {support === "linuxPackage" && <div className="app-update-notice"><CircleAlert size={15} /><span>{t("linuxPackageUpdate")}</span></div>}
+    {support === "unsupportedPlatform" && <div className="app-update-notice"><CircleAlert size={15} /><span>{t("unsupportedPlatformUpdate")}</span></div>}
+    {checked && !available && support === "available" && <div className="app-update-result"><Check size={15} /><span>{t("latestVersionInstalled")}</span></div>}
+    {available && <div className="app-update-available">
+      <div><strong>{t("updateAvailable", { version: available.version })}</strong>{available.date && <span>{new Date(available.date).toLocaleDateString()}</span>}</div>
+      {available.notes && <p>{available.notes}</p>}
+    </div>}
+    {phase === "installing" && <div className="app-update-progress">
+      <div><span>{t("downloadingUpdate")}</span><strong>{progress === undefined ? "—" : `${progress}%`}</strong></div>
+      <progress max="100" value={progress} aria-label={t("downloadingUpdate")} />
+    </div>}
+    {updateError && <div className="app-update-error" role="alert"><CircleAlert size={15} /><span>{updateError}</span></div>}
+  </section>;
 }
 
 function Setting({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {

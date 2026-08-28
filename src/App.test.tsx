@@ -154,6 +154,50 @@ describe("CleanerX GUI", () => {
     }
   });
 
+  it("checks for signed application updates only after explicit user action", async () => {
+    const status = vi.spyOn(api, "getAppUpdateStatus").mockResolvedValue({
+      currentVersion: "0.1.0",
+      support: "available",
+    });
+    const checkUpdate = vi.spyOn(api, "checkForAppUpdate").mockResolvedValue({
+      currentVersion: "0.1.0",
+      support: "available",
+      update: {
+        currentVersion: "0.1.0",
+        version: "0.2.0",
+        notes: "Signed release notes",
+      },
+    });
+    const install = vi.spyOn(api, "installAppUpdate").mockImplementation(async (onEvent) => {
+      onEvent({ event: "Started", data: { contentLength: 100 } });
+      onEvent({ event: "Progress", data: { chunkLength: 100 } });
+      onEvent({ event: "Finished" });
+    });
+
+    const view = render(<App />);
+    try {
+      await screen.findByText("Managed data");
+      expect(checkUpdate).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(await screen.findByText("Current version 0.1.0")).toBeVisible();
+      expect(status).toHaveBeenCalledTimes(1);
+      expect(checkUpdate).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+      expect(await screen.findByText("CleanerX 0.2.0 is available")).toBeVisible();
+      expect(screen.getByText("Signed release notes")).toBeVisible();
+
+      fireEvent.click(screen.getByRole("button", { name: "Install 0.2.0" }));
+      await waitFor(() => expect(install).toHaveBeenCalledTimes(1));
+    } finally {
+      view.unmount();
+      status.mockRestore();
+      checkUpdate.mockRestore();
+      install.mockRestore();
+    }
+  });
+
   it("shows a draggable scrollbar only when the top view tabs overflow", () => {
     const view = render(<App />);
     const shell = view.container.querySelector<HTMLElement>(".view-tabs-shell")!;

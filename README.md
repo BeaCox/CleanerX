@@ -15,7 +15,7 @@
 
 CleanerX is a local-only desktop application for inspecting and cleaning storage created by Codex, Claude Code, OpenCode, and pi. It presents a metadata-first inventory, expands the exact cleanup scope for review, and fails closed when an Agent capability, storage schema, path, or writer state cannot be verified.
 
-CleanerX does not connect to cloud services, upload data, collect telemetry, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory.
+CleanerX does not upload data, collect telemetry, synchronize with cloud services, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory. The only built-in network action is an explicit application-update check against CleanerX's GitHub Releases feed.
 
 > [!CAUTION]
 > CleanerX permanently deletes private local data. The repository is an engineering preview and does not yet provide a promoted binary release; current builds are unsigned. Nothing is selected automatically. Review every cleanup plan; if backup is unavailable or left off, deletion is irreversible.
@@ -57,6 +57,14 @@ The detailed routes, gates, limitations, and automated evidence live in the [mut
 
 There is no promoted binary release yet. The release workflow can produce explicitly unsigned artifacts from a reviewed `v*` tag; see the [release policy](docs/open-source-release-plan.md) for the gates that separate source availability from supported cleanup builds.
 
+## Application updates
+
+CleanerX uses Tauri's official updater with a static `latest.json` feed on GitHub Releases. It never checks in the background: open **Settings → Application updates** and choose **Check for updates**. A discovered update is shown with its version and release notes, and installation starts only after a second explicit click.
+
+Updater artifacts are signed separately from operating-system code signing. CleanerX embeds the updater public key and refuses an artifact whose signature does not match; release automation reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret. This verifies continuity with the installed CleanerX build, but it does not make the still-unsigned application Apple-notarized or establish a Microsoft publisher identity.
+
+In-app installation supports macOS bundles, Windows NSIS installations, and Linux AppImage. Linux `.deb` installations must continue through their original distribution channel or a manual GitHub Release download because Tauri's static feed has only one entry per OS/architecture and cannot safely select between `.deb` and AppImage. See the [update strategy](docs/update-strategy.md) for the researched alternatives and release design.
+
 ## Safety model
 
 CleanerX treats deletion as a security boundary:
@@ -71,7 +79,7 @@ CleanerX treats deletion as a security boundary:
 | Backup | Backup is optional and off by default. When selected, the encrypted archive is atomically committed, reopened, and hash-verified before mutation begins. |
 | Restore | Every destination and manifest hash is preflighted before the first move. Restore never overwrites an existing ID or path and is all-or-nothing. |
 | Recovery | A journal records mutation boundaries, but startup recovery always rescans the owning Agent before deciding whether an operation completed. |
-| Privacy | No telemetry, crash upload, cloud sync, updater, background daemon, or unrestricted shell/filesystem API is included. |
+| Privacy | No telemetry, crash upload, cloud sync, background daemon, or unrestricted shell/filesystem API is included. Update checks run only when the user clicks **Check for updates** and send no private Agent data. |
 
 Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity stays in macOS Keychain, Linux Secret Service, or Windows Credential Manager. If the native credential store is unavailable, backup creation fails before cleanup begins.
 
@@ -186,6 +194,7 @@ Start with the [documentation index](docs/README.md). The main references are:
 - [Agent memory model](docs/memory-management.md)
 - [Development roadmap](docs/roadmap.md)
 - [Open-source release policy](docs/open-source-release-plan.md)
+- [Application update strategy](docs/update-strategy.md)
 - [Security policy](SECURITY.md)
 
 ## Contributing and support

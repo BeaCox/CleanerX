@@ -50,5 +50,16 @@
         "applicationFolderPosition": { "x": 530, "y": 220 }
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/BeaCox/CleanerX/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFNzk4RUI5Q0ZCQzQyRTAKUldUZ1FyelB1WTU1TGc4eGVIOWVFQm1USllmeDhKZGpHdUtoTmpnMSsrZlZJbnVqZ0hJakFIN0gK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

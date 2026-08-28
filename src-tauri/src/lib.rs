@@ -23,6 +23,8 @@ use tauri::menu::Menu;
 use tauri::{Manager, State};
 use uuid::Uuid;
 
+mod app_updates;
+
 struct AppState {
     codex_adapter: CodexAdapter,
     claude_adapter: ClaudeCodeAdapter,
@@ -1835,6 +1837,7 @@ fn error_message(error: CleanerError) -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_menu(Menu::default(app.handle())?)?;
@@ -1852,6 +1855,7 @@ pub fn run() {
                 snapshot: Mutex::new(None),
                 plans: Mutex::new(HashMap::new()),
             });
+            app.manage(app_updates::PendingAppUpdate::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1871,7 +1875,10 @@ pub fn run() {
             restore_backup,
             purge_backup,
             get_settings,
-            update_settings
+            update_settings,
+            app_updates::get_app_update_status,
+            app_updates::check_for_app_update,
+            app_updates::install_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running CleanerX");

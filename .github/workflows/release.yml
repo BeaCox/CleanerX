@@ -141,14 +141,28 @@ jobs:
         with:
           shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
       - run: pnpm install --frozen-lockfile
+      - name: Require updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is required for tagged releases." >&2
+            exit 1
+          fi
       - name: Build macOS bundles
         if: matrix.platform == 'macos'
         env:
           APPLE_SIGNING_IDENTITY: "-"
-        run: make bundles TARGET=${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: make bundles TARGET=${{ matrix.target }} CONFIG=src-tauri/tauri.updater.conf.json
       - name: Build Linux bundles
         if: matrix.platform == 'linux'
-        run: make linux
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: make linux CONFIG=src-tauri/tauri.updater.conf.json
       - name: Smoke-test Linux application
         if: matrix.platform == 'linux'
         run: make smoke-linux
@@ -159,7 +173,10 @@ jobs:
           file target/release/bundle/appimage/*.AppImage
       - name: Build Windows bundles
         if: matrix.platform == 'windows'
-        run: pnpm build:windows
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: make windows CONFIG=src-tauri/tauri.updater.conf.json
       - name: Smoke-test Windows application
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -182,14 +199,20 @@ jobs:
           shopt -s nullglob
           app_paths=(target/"$RELEASE_TARGET"/release/bundle/macos/*.app)
           dmg_paths=(target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg)
-          if [[ ${#app_paths[@]} -ne 1 || ${#dmg_paths[@]} -ne 1 ]]; then
-            echo "Expected exactly one macOS app and one DMG." >&2
+          updater_paths=(target/"$RELEASE_TARGET"/release/bundle/macos/*.app.tar.gz)
+          updater_signature_paths=(target/"$RELEASE_TARGET"/release/bundle/macos/*.app.tar.gz.sig)
+          if [[ ${#app_paths[@]} -ne 1 || ${#dmg_paths[@]} -ne 1 || ${#updater_paths[@]} -ne 1 || ${#updater_signature_paths[@]} -ne 1 ]]; then
+            echo "Expected exactly one macOS app, DMG, updater archive, and updater signature." >&2
             exit 1
           fi
           ditto -c -k --keepParent "${app_paths[0]}" \
             "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.zip"
           cp "${dmg_paths[0]}" \
             "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.dmg"
+          cp "${updater_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.tar.gz"
+          cp "${updater_signature_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.tar.gz.sig"
       - name: Stage Linux release assets
         if: matrix.platform == 'linux'
         env:
@@ -200,14 +223,17 @@ jobs:
           shopt -s nullglob
           deb_paths=(target/release/bundle/deb/*.deb)
           appimage_paths=(target/release/bundle/appimage/*.AppImage)
-          if [[ ${#deb_paths[@]} -ne 1 || ${#appimage_paths[@]} -ne 1 ]]; then
-            echo "Expected exactly one deb and one AppImage." >&2
+          appimage_signature_paths=(target/release/bundle/appimage/*.AppImage.sig)
+          if [[ ${#deb_paths[@]} -ne 1 || ${#appimage_paths[@]} -ne 1 || ${#appimage_signature_paths[@]} -ne 1 ]]; then
+            echo "Expected exactly one deb, AppImage, and AppImage updater signature." >&2
             exit 1
           fi
           cp "${deb_paths[0]}" \
             "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.deb"
           cp "${appimage_paths[0]}" \
             "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.AppImage"
+          cp "${appimage_signature_paths[0]}" \
+            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.AppImage.sig"
       - name: Stage Windows release assets
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -217,11 +243,13 @@ jobs:
           New-Item -ItemType Directory -Path release-assets | Out-Null
           $msi = @(Get-ChildItem target/release/bundle/msi/*.msi)
           $nsis = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe)
-          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
-            throw "Expected exactly one MSI and one NSIS installer."
+          $nsisSignature = @(Get-ChildItem target/release/bundle/nsis/*-setup.exe.sig)
+          if ($msi.Count -ne 1 -or $nsis.Count -ne 1 -or $nsisSignature.Count -ne 1) {
+            throw "Expected exactly one MSI, NSIS installer, and NSIS updater signature."
           }
           Copy-Item $msi[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned.msi"
           Copy-Item $nsis[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned_setup.exe"
+          Copy-Item $nsisSignature[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned_setup.exe.sig"
       - name: Record build metadata
         shell: bash
         env:
@@ -268,6 +296,10 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+      - name: Generate signed update manifest
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: node scripts/generate-update-manifest.mjs release-assets "$RELEASE_VERSION" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
       - name: Add source lockfiles, release metadata, and checksums
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -291,7 +323,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_WARNING: |
             > [!WARNING]
-            > These CleanerX builds are unsigned and not notarized. Verify the published SHA-256 checksums before use; checksums confirm file integrity but do not establish publisher identity. CleanerX permanently deletes private local Agent data when cleanup runs without a backup, so review every cleanup plan and the documented compatibility limits first.
+            > These CleanerX builds remain unsigned at the operating-system level and are not notarized. In-app updater packages carry a separate Tauri signature that an installed CleanerX build verifies before replacement; this does not establish an Apple or Microsoft publisher identity. Verify manually downloaded artifacts with the published SHA-256 checksums. CleanerX permanently deletes private local Agent data when cleanup runs without a backup, so review every cleanup plan and the documented compatibility limits first.
         run: |
           set -euo pipefail
           release_flags=()

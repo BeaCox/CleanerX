@@ -1,6 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  AppUpdateEvent,
+  AppUpdateStatus,
   AgentInstallation,
   AgentKind,
   BackupRecord,
@@ -295,6 +297,29 @@ export const api = {
     if (inTauri()) return invoke("update_settings", { settings });
     window.localStorage.setItem("cleanerx.mock.settings.v1", JSON.stringify(settings));
     return structuredClone(settings);
+  },
+
+  async getAppUpdateStatus(): Promise<AppUpdateStatus> {
+    if (inTauri()) return invoke("get_app_update_status");
+    return { currentVersion: "0.1.0", support: "available" };
+  },
+
+  async checkForAppUpdate(): Promise<AppUpdateStatus> {
+    if (inTauri()) return invoke("check_for_app_update");
+    await delay(180);
+    return { currentVersion: "0.1.0", support: "available" };
+  },
+
+  async installAppUpdate(onEvent: (event: AppUpdateEvent) => void): Promise<void> {
+    if (inTauri()) {
+      const channel = new Channel<AppUpdateEvent>();
+      channel.onmessage = onEvent;
+      await invoke("install_app_update", { onEvent: channel });
+      return;
+    }
+    onEvent({ event: "Started", data: { contentLength: 100 } });
+    onEvent({ event: "Progress", data: { chunkLength: 100 } });
+    onEvent({ event: "Finished" });
   },
 };
 
