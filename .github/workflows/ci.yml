@@ -83,7 +83,8 @@ jobs:
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "Selected checks: rust=$rust web=$web app=$app"
 
-  portability:
+  core-portability:
+    name: Core portability (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     strategy:
@@ -126,7 +127,8 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
-  linux-app:
+  linux-native:
+    name: Linux native integration
     needs: changes
     if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-22.04
@@ -187,8 +189,10 @@ jobs:
             export XDG_CONFIG_HOME="$1/config"
             export XDG_RUNTIME_DIR="$1/runtime"
             eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            # Keep the same workspace feature graph as the preceding test run so
+            # Cargo can reuse its compiled dependencies.
             CLEANERX_LINUX_SECRET_SERVICE_TEST=1 \
-              cargo test -p cleanerx-core live_linux_secret_service_backup_round_trip -- --ignored
+              cargo test --workspace live_linux_secret_service_backup_round_trip -- --ignored
           ' _ "$RUNNER_TEMP/cleanerx-keyring"
       - name: Build Linux debug application
         run: cargo build -p cleanerx-app
