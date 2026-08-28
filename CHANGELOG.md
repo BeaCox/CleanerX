@@ -33,6 +33,7 @@ Initial engineering-preview release for bounded cross-platform and Agent compati
 - Agent and storage compatibility is capability-gated, not guaranteed for every historical or future Agent version.
 - The stable updater feed excludes GitHub prereleases, so `v0.1.0-alpha.1` is installed manually and is not offered by CleanerX's in-app update check.
 - Linux in-app updates support AppImage only; `.deb` installations update through their original distribution channel or a manual release download.
+- The latest Tauri Linux GTK3 dependency chain includes `glib 0.18.5`, which has the open `RUSTSEC-2024-0429`/`GHSA-wrw7-89jp-8q8g` `VariantStrIter` unsoundness advisory. No affected call site was found in CleanerX or the downloaded dependency sources, and the alert remains open rather than dismissed.
 - Broader native disposable mutation/restore cycles, accessibility acceptance, and external pilot evidence remain prerequisites for `v0.1.0`.
 
 [Unreleased]: https://github.com/BeaCox/CleanerX/compare/v0.1.0-alpha.1...HEAD
