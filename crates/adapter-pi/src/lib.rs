@@ -1073,9 +1073,9 @@ mod tests {
         assert_eq!(snapshot.installation.kind, AgentKind::Pi);
         assert_eq!(snapshot.sessions.len(), 1);
         assert_eq!(snapshot.sessions[0].name, "Named pi session");
-        assert_eq!(snapshot.sessions[0].cwd, "/tmp/project");
+        assert_eq!(snapshot.sessions[0].cwd, fixture_project_cwd());
         assert_eq!(snapshot.projects.len(), 1);
-        assert_eq!(snapshot.projects[0].roots, vec!["/tmp/project"]);
+        assert_eq!(snapshot.projects[0].roots, vec![fixture_project_cwd()]);
         assert!(
             snapshot
                 .items
@@ -1383,8 +1383,9 @@ mod tests {
                 )
             })
             .unwrap_or_default();
+        let cwd = serde_json::to_string(fixture_project_cwd()).expect("cwd json");
         let contents = format!(
-            "{{\"type\":\"session\",\"version\":3,\"id\":\"{SESSION_ID_PLACEHOLDER}\",\"timestamp\":\"2026-08-27T10:00:00.000Z\",\"cwd\":\"/tmp/project\"{parent}}}\n\
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"{SESSION_ID_PLACEHOLDER}\",\"timestamp\":\"2026-08-27T10:00:00.000Z\",\"cwd\":{cwd}{parent}}}\n\
              {{\"type\":\"message\",\"id\":\"a1b2c3d4\",\"parentId\":null,\"timestamp\":\"2026-08-27T10:00:01.000Z\",\"message\":{{\"role\":\"user\",\"content\":\"PRIVATE_TRANSCRIPT_BODY\",\"timestamp\":1787839200000}}}}\n\
              {{\"type\":\"session_info\",\"id\":\"e5f6g7h8\",\"parentId\":\"a1b2c3d4\",\"timestamp\":\"2026-08-27T10:00:02.000Z\",\"name\":\"Named pi session\"}}\n\
              {{\"type\":\"message\",\"id\":\"b2c3d4e5\",\"parentId\":\"e5f6g7h8\",\"timestamp\":\"2026-08-27T10:00:03.000Z\",\"message\":{{\"role\":\"bashExecution\",\"command\":\"ls ~/.pi/agent\",\"output\":\"sessions settings.json\",\"exitCode\":0,\"cancelled\":false,\"truncated\":false,\"timestamp\":1787839203000}}}}\n",
@@ -1395,5 +1396,13 @@ mod tests {
             },
         );
         fs::write(path, contents).expect("session fixture");
+    }
+
+    fn fixture_project_cwd() -> &'static str {
+        if cfg!(windows) {
+            r"C:\tmp\project"
+        } else {
+            "/tmp/project"
+        }
     }
 }
