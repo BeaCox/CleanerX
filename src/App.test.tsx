@@ -156,14 +156,14 @@ describe("CleanerX GUI", () => {
 
   it("checks for signed application updates only after explicit user action", async () => {
     const status = vi.spyOn(api, "getAppUpdateStatus").mockResolvedValue({
-      currentVersion: "0.1.0-alpha.1",
+      currentVersion: "0.1.0",
       support: "available",
     });
     const checkUpdate = vi.spyOn(api, "checkForAppUpdate").mockResolvedValue({
-      currentVersion: "0.1.0-alpha.1",
+      currentVersion: "0.1.0",
       support: "available",
       update: {
-        currentVersion: "0.1.0-alpha.1",
+        currentVersion: "0.1.0",
         version: "0.2.0",
         notes: "Signed release notes",
       },
@@ -180,7 +180,7 @@ describe("CleanerX GUI", () => {
       expect(checkUpdate).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-      expect(await screen.findByText("Current version 0.1.0-alpha.1")).toBeVisible();
+      expect(await screen.findByText("Current version 0.1.0")).toBeVisible();
       expect(status).toHaveBeenCalledTimes(1);
       expect(checkUpdate).not.toHaveBeenCalled();
 
