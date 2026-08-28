@@ -136,11 +136,11 @@ Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0
 
 ## M3 — Windows and Linux foundations
 
-**Status: implementation complete; native Windows acceptance pending.** The Windows code, tests, packaging workflow, and smoke path are in place, but the milestone remains open until the Windows-only checks and installers pass on a native host.
+**Status: implemented.** The Windows-only core and adapter tests, Credential Manager round trip, debug and release launch smoke tests, and unsigned MSI/NSIS packaging all pass on the native Windows CI host. Installation and interactive acceptance on a supported Windows 10/11 desktop remain part of the broader pilot and release gates rather than this foundation milestone.
 
 Linux provides XDG/home data resolution, process probing, common desktop-launch executable locations, Unix ownership and same-device mount-boundary checks, Secret Service-backed `.cxb` encryption, `.deb`/AppImage packages, and a native Xvfb smoke test.
 
-Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat` package-manager discovery, native writer recognition, direct Codex stdio App Server transport, current-user ownership and same-volume/file-index validation, junction/reparse-point rejection, write-through atomic replacement, Credential Manager-backed `.cxb` encryption, MSI/NSIS packages, and a native launch smoke test. The platform-independent path/process tests run on every host; Windows CI additionally creates a real junction, exercises the credential backend, builds the Tauri application, and launches it before Windows mutation support is considered healthy.
+Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat` package-manager discovery, native writer recognition, direct Codex stdio App Server transport, current-token default-owner and same-volume/file-index validation, junction/reparse-point rejection, write-through atomic replacement, Credential Manager-backed `.cxb` encryption, MSI/NSIS packages, and a native launch smoke test. The platform-independent path/process tests run on every host; Windows CI additionally creates a real junction, exercises the credential backend, builds the Tauri application, and launches it before Windows mutation support is considered healthy.
 
 ### Exit criteria
 
