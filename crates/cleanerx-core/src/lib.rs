@@ -3,12 +3,16 @@
 pub mod backup;
 pub mod model;
 pub mod planner;
+pub mod platform;
 pub mod safety;
 
 pub use backup::{BackupSource, BackupStore};
 pub use model::*;
 pub use planner::create_cleanup_plan;
-pub use safety::{FileIdentity, PathPolicy, metadata_revision, safe_remove};
+pub use platform::{atomic_replace_file, configure_background_command};
+pub use safety::{
+    FileIdentity, PathPolicy, metadata_revision, safe_remove, validate_existing_beneath,
+};
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};

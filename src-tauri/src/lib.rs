@@ -11,7 +11,8 @@ use cleanerx_core::{
     AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
     BackupStore, CategorySummary, CleanerError, CleanupItem, CleanupPlan, CleanupResult,
     FileIdentity, InventorySnapshot, ItemContentDetail, ItemThumbnail, OperationKind,
-    OperationStatus, PathPolicy, SessionRecord, StorageCategory, create_cleanup_plan, safe_remove,
+    OperationStatus, PathPolicy, SessionRecord, StorageCategory, atomic_replace_file,
+    create_cleanup_plan, safe_remove,
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -1329,13 +1330,30 @@ fn write_journal(data_dir: &Path, journal: OperationJournal) -> Result<(), Clean
 }
 
 fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), CleanerError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| CleanerError::UnsafePath(path.display().to_string()))?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| CleanerError::UnsafePath(path.display().to_string()))?;
+    let partial = parent.join(format!(
+        ".{}.{}.partial",
+        file_name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)?;
+    if let Err(error) = serde_json::to_writer_pretty(file, value) {
+        let _ = fs::remove_file(&partial);
+        return Err(error.into());
     }
-    let partial = path.with_extension("json.partial");
-    let file = fs::File::create(&partial)?;
-    serde_json::to_writer_pretty(file, value)?;
-    fs::rename(partial, path)?;
+    if let Err(error) = atomic_replace_file(&partial, path) {
+        let _ = fs::remove_file(&partial);
+        return Err(error);
+    }
     Ok(())
 }
 

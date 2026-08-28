@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{AgentKind, BackupEntry, BackupManifest, BackupRecord, CleanerError, CleanupPlan};
+use crate::{
+    AgentKind, BackupEntry, BackupManifest, BackupRecord, CleanerError, CleanupPlan,
+    atomic_replace_file, safety::is_redirecting_path,
+};
 
 const KEYCHAIN_SERVICE: &str = "com.cleanerx.CleanerX";
 const KEYCHAIN_ACCOUNT: &str = "backup-x25519-identity";
@@ -108,7 +111,10 @@ impl BackupStore {
             entries,
         };
 
-        let output = File::create(&partial_path)?;
+        let output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial_path)?;
         restrict_file(&partial_path)?;
         let encryptor =
             age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
@@ -129,7 +135,11 @@ impl BackupStore {
         let zstd_writer = archive.into_inner()?;
         let age_writer = zstd_writer.finish()?;
         age_writer.finish()?;
-        fs::rename(&partial_path, &archive_path)?;
+        atomic_replace_file(&partial_path, &archive_path)?;
+        if let Err(error) = verify_committed_archive(&archive_path, &identity, &manifest) {
+            let _ = fs::remove_file(&archive_path);
+            return Err(error);
+        }
 
         manifest.archive_bytes = fs::metadata(&archive_path)?.len();
         let mut catalog = self.load_catalog()?;
@@ -327,13 +337,111 @@ impl BackupStore {
 
     fn save_catalog(&self, catalog: &BackupCatalog) -> Result<(), CleanerError> {
         let path = self.base_dir.join(CATALOG_FILE);
-        let partial = self.base_dir.join(format!("{CATALOG_FILE}.partial"));
-        let file = File::create(&partial)?;
+        let partial = self
+            .base_dir
+            .join(format!(".{CATALOG_FILE}.{}.partial", Uuid::new_v4()));
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
         restrict_file(&partial)?;
-        serde_json::to_writer_pretty(file, catalog)?;
-        fs::rename(partial, path)?;
+        if let Err(error) = serde_json::to_writer_pretty(file, catalog) {
+            let _ = fs::remove_file(&partial);
+            return Err(error.into());
+        }
+        if let Err(error) = atomic_replace_file(&partial, &path) {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
         Ok(())
     }
+}
+
+fn verify_committed_archive(
+    archive_path: &Path,
+    identity: &age::x25519::Identity,
+    expected_manifest: &BackupManifest,
+) -> Result<(), CleanerError> {
+    let input = BufReader::new(File::open(archive_path)?);
+    let decryptor = age::Decryptor::new_buffered(input)
+        .map_err(|error| CleanerError::Backup(error.to_string()))?;
+    let reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(|error| CleanerError::Backup(error.to_string()))?;
+    let decoder = zstd::Decoder::new(reader)?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut manifest = None;
+    let mut payload = BTreeMap::<(String, String), (String, u64)>::new();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            return Err(CleanerError::Backup(
+                "backup verification found a non-file entry".into(),
+            ));
+        }
+        let path = entry.path()?.into_owned();
+        validate_relative_path(&path)?;
+        if path == Path::new("manifest.json") {
+            if manifest.is_some() {
+                return Err(CleanerError::Backup(
+                    "backup contains duplicate manifests".into(),
+                ));
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            manifest = Some(serde_json::from_slice::<BackupManifest>(&bytes)?);
+            continue;
+        }
+
+        let payload_path = path
+            .strip_prefix("payload")
+            .map_err(|_| CleanerError::Backup("unexpected archive path".into()))?;
+        let mut components = payload_path.components();
+        let root = match components.next() {
+            Some(Component::Normal(root)) => root.to_string_lossy().into_owned(),
+            _ => return Err(CleanerError::Backup("missing payload root".into())),
+        };
+        validate_root_label(&root)?;
+        let relative = components.collect::<PathBuf>();
+        validate_relative_path(&relative)?;
+        if relative.as_os_str().is_empty() {
+            return Err(CleanerError::Backup("missing payload path".into()));
+        }
+        let portable = path_to_portable(&relative)?;
+        let (sha256, size_bytes) = hash_reader(&mut entry)?;
+        if payload
+            .insert((root, portable), (sha256, size_bytes))
+            .is_some()
+        {
+            return Err(CleanerError::Backup(
+                "backup contains duplicate payload entries".into(),
+            ));
+        }
+    }
+
+    let manifest = manifest.ok_or_else(|| CleanerError::Backup("missing manifest".into()))?;
+    if serde_json::to_value(&manifest)? != serde_json::to_value(expected_manifest)? {
+        return Err(CleanerError::Backup(
+            "committed backup manifest did not match the planned archive".into(),
+        ));
+    }
+    let expected_payload = expected_manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                (entry.root.clone(), entry.relative_path.clone()),
+                (entry.sha256.clone(), entry.size_bytes),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if payload != expected_payload {
+        return Err(CleanerError::Backup(
+            "committed backup payload failed hash verification".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -349,6 +457,9 @@ fn collect_sources(sources: &[BackupSource]) -> Result<Vec<CollectedFile>, Clean
     let mut seen = HashSet::new();
     for source in sources {
         validate_root_label(&source.root_label)?;
+        if is_redirecting_path(&source.root_path)? || is_redirecting_path(&source.path)? {
+            return Err(CleanerError::UnsafePath(source.path.display().to_string()));
+        }
         let root = source.root_path.canonicalize()?;
         let source_path = source.path.canonicalize()?;
         if !source_path.starts_with(&root) {
@@ -369,8 +480,8 @@ fn collect_sources(sources: &[BackupSource]) -> Result<Vec<CollectedFile>, Clean
         } else if metadata.is_dir() {
             for entry in walkdir::WalkDir::new(&source_path).follow_links(false) {
                 let entry = entry.map_err(|error| CleanerError::Backup(error.to_string()))?;
-                if entry.file_type().is_symlink() {
-                    continue;
+                if is_redirecting_path(entry.path())? {
+                    return Err(CleanerError::UnsafePath(entry.path().display().to_string()));
                 }
                 if entry.file_type().is_file() {
                     push_collected(
@@ -397,6 +508,9 @@ fn push_collected(
     root: &Path,
     path: &Path,
 ) -> Result<(), CleanerError> {
+    if is_redirecting_path(path)? {
+        return Err(CleanerError::UnsafePath(path.display().to_string()));
+    }
     let canonical = path.canonicalize()?;
     if !seen.insert(canonical.clone()) {
         return Ok(());
@@ -481,16 +595,22 @@ fn append_bytes<W: std::io::Write>(
 
 fn hash_file(path: &Path) -> Result<String, CleanerError> {
     let mut file = File::open(path)?;
+    hash_reader(&mut file).map(|(sha256, _)| sha256)
+}
+
+fn hash_reader(reader: &mut impl Read) -> Result<(String, u64), CleanerError> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut size = 0_u64;
     loop {
-        let count = file.read(&mut buffer)?;
+        let count = reader.read(&mut buffer)?;
         if count == 0 {
             break;
         }
+        size = size.saturating_add(count as u64);
         digest.update(&buffer[..count]);
     }
-    Ok(hex::encode(digest.finalize()))
+    Ok((hex::encode(digest.finalize()), size))
 }
 
 #[cfg(unix)]
@@ -577,6 +697,85 @@ mod tests {
         assert!(store.list().expect("list after purge").is_empty());
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn backup_rejects_redirecting_entries_and_preserves_external_bytes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("private"), b"private").expect("outside bytes");
+        let redirect = workspace.path().join("sessions-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &redirect).expect("symlink");
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&redirect)
+                .arg(outside.path())
+                .output()
+                .expect("create junction");
+            assert!(
+                output.status.success(),
+                "mklink failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let identity = age::x25519::Identity::generate();
+        let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+            .expect("store");
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["session:redirect".into()],
+            expanded_session_ids: vec!["redirect".into()],
+            operations: Vec::<PlannedOperation>::new(),
+            estimated_bytes: 7,
+            estimated_backup_bytes: 7,
+            blockers: vec![],
+        };
+        let result = store.create_backup(
+            &plan,
+            AgentKind::Codex,
+            Some("test".into()),
+            &[BackupSource {
+                root_label: "codex_home".into(),
+                root_path: workspace.path().to_path_buf(),
+                path: workspace.path().to_path_buf(),
+            }],
+        );
+
+        assert!(matches!(result, Err(CleanerError::UnsafePath(_))));
+        assert_eq!(
+            fs::read(outside.path().join("private")).expect("outside bytes"),
+            b"private"
+        );
+        assert!(store.list().expect("empty catalog").is_empty());
+    }
+
+    #[test]
+    fn repeated_catalog_updates_replace_the_previous_file() {
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let identity = age::x25519::Identity::generate();
+        let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+            .expect("store");
+        store
+            .save_catalog(&BackupCatalog::default())
+            .expect("first catalog");
+        store
+            .save_catalog(&BackupCatalog::default())
+            .expect("replacement catalog");
+        assert!(backup_dir.path().join(CATALOG_FILE).is_file());
+        assert!(
+            fs::read_dir(backup_dir.path())
+                .expect("catalog directory")
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".partial"))
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires an isolated Linux Secret Service session"]
@@ -628,6 +827,63 @@ mod tests {
         assert_eq!(
             fs::read(source).expect("restored bytes"),
             b"private Linux transcript"
+        );
+        credential
+            .delete_credential()
+            .expect("remove isolated CI credential");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an isolated Windows Credential Manager account"]
+    fn live_windows_credential_manager_backup_round_trip() {
+        assert_eq!(
+            std::env::var("CLEANERX_WINDOWS_CREDENTIAL_MANAGER_TEST").as_deref(),
+            Ok("1"),
+            "run only inside the isolated Windows CI account"
+        );
+        let credential = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+            .expect("Windows Credential Manager backend");
+        let _ = credential.delete_credential();
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let source = workspace.path().join("sessions/thread.jsonl");
+        fs::create_dir_all(source.parent().expect("parent")).expect("mkdir");
+        fs::write(&source, b"private Windows transcript").expect("write");
+        let store = BackupStore::new(backup_dir.path().to_path_buf(), 30).expect("store");
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["session:windows-test".into()],
+            expanded_session_ids: vec!["windows-test".into()],
+            operations: Vec::<PlannedOperation>::new(),
+            estimated_bytes: 26,
+            estimated_backup_bytes: 26,
+            blockers: vec![],
+        };
+        let manifest = store
+            .create_backup(
+                &plan,
+                AgentKind::Codex,
+                Some("windows-test".into()),
+                &[BackupSource {
+                    root_label: "codex_home".into(),
+                    root_path: workspace.path().to_path_buf(),
+                    path: source.clone(),
+                }],
+            )
+            .expect("Credential Manager-backed backup");
+        fs::remove_file(&source).expect("remove original");
+        let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
+        store
+            .restore(manifest.id, AgentKind::Codex, &roots)
+            .expect("Credential Manager-backed restore");
+
+        assert_eq!(
+            fs::read(source).expect("restored bytes"),
+            b"private Windows transcript"
         );
         credential
             .delete_credential()

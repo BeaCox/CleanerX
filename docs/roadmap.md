@@ -23,6 +23,8 @@ CleanerX currently has:
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon `.app` and unsigned DMG builds, plus CI definitions for Apple Silicon and Intel artifacts;
 - unsigned x86_64 Linux `.deb` and AppImage builds on Ubuntu 22.04, with a native Xvfb launch smoke test and an isolated Secret Service backup/restore round trip;
+- unsigned x86_64 Windows MSI and NSIS builds, with a native launch smoke test and an isolated Credential Manager backup/restore round trip;
+- Windows application-data and package-manager launcher discovery, stdio-only Codex control transport, writer-process recognition, write-through atomic replacement, volume/file identity checks, owner validation, and junction/reparse-point rejection;
 - cross-platform Rust checks for all four adapters and frontend tests in CI.
 
 This is an engineering MVP, not yet a promise that every Codex storage revision or crash boundary has production-grade coverage.
@@ -134,16 +136,11 @@ Priority: repeatable unsigned artifacts and a bounded path from alpha to `v0.1.0
 
 ## M3 — Windows and Linux foundations
 
-Priority: portability before additional Agent adapters.
+**Status: implemented.** The Windows-only core and adapter tests, Credential Manager round trip, debug and release launch smoke tests, and unsigned MSI/NSIS packaging all pass on the native Windows CI host. Installation and interactive acceptance on a supported Windows 10/11 desktop remain part of the broader pilot and release gates rather than this foundation milestone.
 
-The Linux foundation is implemented: XDG/home data resolution, process probing, common desktop-launch executable locations, Unix ownership and same-device mount-boundary checks, Linux Secret Service-backed `.cxb` encryption, `.deb`/AppImage packages, and a native CI smoke test. Linux uses the same fail-closed mutation routes and protected-path invariants as macOS.
+Linux provides XDG/home data resolution, process probing, common desktop-launch executable locations, Unix ownership and same-device mount-boundary checks, Secret Service-backed `.cxb` encryption, `.deb`/AppImage packages, and a native Xvfb smoke test.
 
-Remaining work in this combined milestone is Windows-specific:
-
-- extract and validate Windows application-data, process, control-transport, atomic-replacement, and secure-key-storage behavior;
-- use Windows Credential Manager without weakening `.cxb` encryption;
-- add Windows junction and reparse-point safety fixtures; and
-- create and smoke-test Windows installers before enabling mutation categories there.
+Windows provides roaming/local application-data resolution, `.exe`/`.cmd`/`.bat` package-manager discovery, native writer recognition, direct Codex stdio App Server transport, current-token default-owner and same-volume/file-index validation, junction/reparse-point rejection, write-through atomic replacement, Credential Manager-backed `.cxb` encryption, MSI/NSIS packages, and a native launch smoke test. The platform-independent path/process tests run on every host; Windows CI additionally creates a real junction, exercises the credential backend, builds the Tauri application, and launches it before Windows mutation support is considered healthy.
 
 ### Exit criteria
 

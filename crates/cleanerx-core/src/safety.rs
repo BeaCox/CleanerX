@@ -12,6 +12,10 @@ pub struct FileIdentity {
     pub device: u64,
     #[cfg(unix)]
     pub inode: u64,
+    #[cfg(windows)]
+    pub volume_serial: u32,
+    #[cfg(windows)]
+    pub file_index: u64,
     pub metadata_revision: String,
 }
 
@@ -20,6 +24,8 @@ impl FileIdentity {
         let metadata = fs::symlink_metadata(path)?;
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
+        #[cfg(windows)]
+        let windows_identity = windows_file_information(path)?;
 
         Ok(Self {
             len: metadata.len(),
@@ -32,6 +38,11 @@ impl FileIdentity {
             device: metadata.dev(),
             #[cfg(unix)]
             inode: metadata.ino(),
+            #[cfg(windows)]
+            volume_serial: windows_identity.dwVolumeSerialNumber,
+            #[cfg(windows)]
+            file_index: u64::from(windows_identity.nFileIndexHigh) << 32
+                | u64::from(windows_identity.nFileIndexLow),
             metadata_revision: metadata_revision(&[path.to_path_buf()])?,
         })
     }
@@ -52,25 +63,7 @@ impl PathPolicy {
     }
 
     pub fn validate_existing(&self, path: &Path) -> Result<PathBuf, CleanerError> {
-        reject_lexical_escape(path)?;
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(CleanerError::UnsafePath(format!(
-                "symbolic links are never mutation targets: {}",
-                path.display()
-            )));
-        }
-
-        let canonical = path.canonicalize()?;
-        let allowed_root = self
-            .allowed_roots
-            .iter()
-            .filter_map(|root| root.canonicalize().ok())
-            .filter(|allowed| canonical.starts_with(allowed))
-            .max_by_key(|allowed| allowed.components().count())
-            .ok_or_else(|| {
-                CleanerError::UnsafePath(format!("outside allowed roots: {}", path.display()))
-            })?;
+        let (canonical, allowed_root) = resolve_existing_beneath(path, &self.allowed_roots)?;
 
         for protected in &self.protected {
             let protected = protected
@@ -109,6 +102,92 @@ impl PathPolicy {
     }
 }
 
+/// Resolves one existing path beneath a fixed root without following a symbolic link or Windows
+/// reparse point at any component below that root. This is the read-only counterpart to the full
+/// mutation policy; it intentionally does not recurse into a directory or validate ownership.
+pub fn validate_existing_beneath(
+    path: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<PathBuf, CleanerError> {
+    resolve_existing_beneath(path, allowed_roots).map(|(canonical, _)| canonical)
+}
+
+fn resolve_existing_beneath(
+    path: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<(PathBuf, PathBuf), CleanerError> {
+    reject_lexical_escape(path)?;
+    let mut selected_root = None::<PathBuf>;
+    for root in allowed_roots {
+        let raw_match = path.starts_with(root);
+        let canonical_root = root.canonicalize().ok();
+        let canonical_match = canonical_root
+            .as_ref()
+            .is_some_and(|canonical| path.starts_with(canonical));
+        if !raw_match && !canonical_match {
+            continue;
+        }
+        if is_redirecting_path(root)? {
+            return Err(CleanerError::UnsafePath(format!(
+                "allowlisted root is a symbolic link or reparse point: {}",
+                root.display()
+            )));
+        }
+        let anchor = if raw_match {
+            root.clone()
+        } else {
+            canonical_root.expect("a canonical match requires a canonical root")
+        };
+        if selected_root
+            .as_ref()
+            .is_none_or(|selected| anchor.components().count() > selected.components().count())
+        {
+            selected_root = Some(anchor);
+        }
+    }
+    let lexical_root = selected_root.ok_or_else(|| {
+        CleanerError::UnsafePath(format!("outside allowed roots: {}", path.display()))
+    })?;
+    validate_path_chain(&lexical_root, path)?;
+    let canonical = path.canonicalize()?;
+    let allowed_root = lexical_root.canonicalize()?;
+    if !canonical.starts_with(&allowed_root) {
+        return Err(CleanerError::UnsafePath(format!(
+            "outside allowed roots after path resolution: {}",
+            path.display()
+        )));
+    }
+    Ok((canonical, allowed_root))
+}
+
+fn validate_path_chain(root: &Path, path: &Path) -> Result<(), CleanerError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| CleanerError::UnsafePath(path.display().to_string()))?;
+    let mut current = root.to_path_buf();
+    let root_metadata = fs::symlink_metadata(&current)?;
+    if is_redirecting_file(&current, &root_metadata)? {
+        return Err(CleanerError::UnsafePath(format!(
+            "allowlisted root is a symbolic link or reparse point: {}",
+            current.display()
+        )));
+    }
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(CleanerError::UnsafePath(path.display().to_string()));
+        };
+        current.push(part);
+        let metadata = fs::symlink_metadata(&current)?;
+        if is_redirecting_file(&current, &metadata)? {
+            return Err(CleanerError::UnsafePath(format!(
+                "symbolic link or reparse point in mutation path: {}",
+                current.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Produces a stable revision from path names and filesystem identity metadata without reading
 /// file contents. It is suitable for detecting normal writer activity while keeping transcript
 /// and memory bodies out of inventory snapshots.
@@ -129,9 +208,9 @@ pub fn metadata_revision(paths: &[PathBuf]) -> Result<String, CleanerError> {
 
 fn hash_metadata_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<(), CleanerError> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
+    if is_redirecting_file(path, &metadata)? {
         return Err(CleanerError::UnsafePath(format!(
-            "symbolic link inside mutation target: {}",
+            "symbolic link or reparse point inside mutation target: {}",
             path.display()
         )));
     }
@@ -154,6 +233,14 @@ fn hash_metadata_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<(
         hasher.update(metadata.ino().to_le_bytes());
         hasher.update(metadata.uid().to_le_bytes());
         hasher.update(metadata.mode().to_le_bytes());
+    }
+    #[cfg(windows)]
+    {
+        let information = windows_file_information(path)?;
+        hasher.update(information.dwVolumeSerialNumber.to_le_bytes());
+        hasher.update(information.nFileIndexHigh.to_le_bytes());
+        hasher.update(information.nFileIndexLow.to_le_bytes());
+        hasher.update(information.dwFileAttributes.to_le_bytes());
     }
     hasher.update(if metadata.is_dir() {
         b"dir".as_slice()
@@ -178,7 +265,12 @@ fn validate_tree(path: &Path, _allowed_root: &Path) -> Result<(), CleanerError> 
         let root_metadata = fs::symlink_metadata(_allowed_root)?;
         validate_tree_on_device(path, root_metadata.dev())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let root_information = windows_file_information(_allowed_root)?;
+        validate_tree_on_device(path, u64::from(root_information.dwVolumeSerialNumber))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         validate_tree_on_device(path, 0)
     }
@@ -186,9 +278,9 @@ fn validate_tree(path: &Path, _allowed_root: &Path) -> Result<(), CleanerError> 
 
 fn validate_tree_on_device(path: &Path, expected_device: u64) -> Result<(), CleanerError> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
+    if is_redirecting_file(path, &metadata)? {
         return Err(CleanerError::UnsafePath(format!(
-            "symbolic links are never mutation targets: {}",
+            "symbolic links and reparse points are never mutation targets: {}",
             path.display()
         )));
     }
@@ -198,7 +290,13 @@ fn validate_tree_on_device(path: &Path, expected_device: u64) -> Result<(), Clea
         use std::os::unix::fs::MetadataExt;
         validate_device_boundary(path, expected_device, metadata.dev())?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    validate_device_boundary(
+        path,
+        expected_device,
+        u64::from(windows_file_information(path)?.dwVolumeSerialNumber),
+    )?;
+    #[cfg(not(any(unix, windows)))]
     validate_device_boundary(path, expected_device, expected_device)?;
     if metadata.is_dir() {
         for entry in fs::read_dir(path)? {
@@ -237,8 +335,167 @@ fn validate_owner(path: &Path, metadata: &fs::Metadata) -> Result<(), CleanerErr
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn validate_owner(path: &Path, _metadata: &fs::Metadata) -> Result<(), CleanerError> {
+    validate_windows_owner(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn validate_owner(_path: &Path, _metadata: &fs::Metadata) -> Result<(), CleanerError> {
+    Ok(())
+}
+
+fn is_redirecting_file(_path: &Path, metadata: &fs::Metadata) -> Result<bool, CleanerError> {
+    if metadata.file_type().is_symlink() {
+        return Ok(true);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        Ok(windows_file_information(_path)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    }
+    #[cfg(not(windows))]
+    Ok(false)
+}
+
+pub(crate) fn is_redirecting_path(path: &Path) -> Result<bool, CleanerError> {
+    let metadata = fs::symlink_metadata(path)?;
+    is_redirecting_file(path, &metadata)
+}
+
+#[cfg(windows)]
+fn windows_file_information(
+    path: &Path,
+) -> Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION, CleanerError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: `path` is a live NUL-terminated UTF-16 buffer and all other arguments are values or
+    // null pointers accepted by CreateFileW.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `handle` is valid and `information` points to writable storage of the required type.
+    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    // SAFETY: `handle` was returned by CreateFileW and has not been closed yet.
+    unsafe { CloseHandle(handle) };
+    if succeeded == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(information)
+}
+
+#[cfg(windows)]
+fn validate_windows_owner(path: &Path) -> Result<(), CleanerError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GetLastError, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `path_wide` is NUL-terminated; requested output pointers are valid for the call.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status as i32).into());
+    }
+
+    let owner_matches = (|| -> Result<bool, CleanerError> {
+        let mut token = std::ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns the current pseudo-handle and `token` is writable.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        let result = (|| -> Result<bool, CleanerError> {
+            let mut required = 0_u32;
+            // SAFETY: a zero-length probe with a null output buffer is the documented size query.
+            let queried = unsafe {
+                GetTokenInformation(token, TokenOwner, std::ptr::null_mut(), 0, &mut required)
+            };
+            // SAFETY: GetLastError reads thread-local error state immediately after the API call.
+            if queried != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let word_size = std::mem::size_of::<usize>();
+            let mut buffer = vec![0_usize; (required as usize).div_ceil(word_size)];
+            // SAFETY: `buffer` is aligned and has at least `required` writable bytes.
+            if unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenOwner,
+                    buffer.as_mut_ptr().cast(),
+                    required,
+                    &mut required,
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // SAFETY: GetTokenInformation initialized the aligned buffer as TOKEN_OWNER.
+            let token_owner = unsafe { &*buffer.as_ptr().cast::<TOKEN_OWNER>() };
+            // SAFETY: both SIDs are owned by live buffers until this comparison returns.
+            Ok(unsafe { EqualSid(owner, token_owner.Owner) } != 0)
+        })();
+
+        // SAFETY: `token` is a live handle returned by OpenProcessToken.
+        unsafe { CloseHandle(token) };
+        result
+    })();
+
+    // SAFETY: the security descriptor was allocated by GetNamedSecurityInfoW.
+    unsafe { LocalFree(descriptor.cast()) };
+    if !owner_matches? {
+        return Err(CleanerError::UnsafePath(format!(
+            "filesystem ownership mismatch: {}",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -279,7 +536,13 @@ pub fn safe_remove(
 
 fn remove_no_follow(path: &Path) -> Result<(), CleanerError> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || metadata.is_file() {
+    if is_redirecting_file(path, &metadata)? {
+        return Err(CleanerError::UnsafePath(format!(
+            "symbolic link or reparse point appeared during deletion: {}",
+            path.display()
+        )));
+    }
+    if metadata.is_file() {
         fs::remove_file(path)?;
         return Ok(());
     }
@@ -294,7 +557,7 @@ fn remove_no_follow(path: &Path) -> Result<(), CleanerError> {
 
 pub fn allocated_size(path: &Path) -> Result<u64, CleanerError> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
+    if is_redirecting_file(path, &metadata)? {
         return Ok(0);
     }
     if metadata.is_file() {
@@ -328,6 +591,91 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
         let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
         assert!(policy.validate_existing(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_path_through_an_internal_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        let target = root.path().join("target");
+        fs::create_dir(&target).expect("target");
+        fs::write(target.join("private"), b"private").expect("target bytes");
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
+
+        assert!(policy.validate_existing(&link.join("private")).is_err());
+        assert_eq!(
+            fs::read(target.join("private")).expect("target bytes"),
+            b"private"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_a_windows_junction_anywhere_inside_a_directory_target() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("private"), b"private").expect("outside bytes");
+        let junction = root.path().join("nested-junction");
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .output()
+            .expect("create junction");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
+
+        assert!(policy.validate_existing(root.path()).is_err());
+        assert_eq!(
+            fs::read(outside.path().join("private")).expect("outside bytes"),
+            b"private"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_a_file_path_reached_through_an_internal_junction() {
+        let root = tempfile::tempdir().expect("root");
+        let target = root.path().join("target");
+        fs::create_dir(&target).expect("target");
+        fs::write(target.join("private"), b"private").expect("target bytes");
+        let junction = root.path().join("nested-junction");
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("create junction");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let policy = PathPolicy::new(vec![root.path().to_path_buf()], vec![]);
+
+        assert!(policy.validate_existing(&junction.join("private")).is_err());
+        assert_eq!(
+            fs::read(target.join("private")).expect("target bytes"),
+            b"private"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn captures_native_windows_volume_and_file_identity() {
+        let root = tempfile::tempdir().expect("identity root");
+        let file = root.path().join("session.jsonl");
+        fs::write(&file, b"private").expect("fixture");
+
+        let identity = FileIdentity::capture(&file).expect("identity");
+        assert_ne!(identity.volume_serial, 0);
+        assert_ne!(identity.file_index, 0);
     }
 
     #[test]

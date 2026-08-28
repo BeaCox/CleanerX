@@ -1,6 +1,6 @@
 //! Claude Code storage discovery and bounded, local-only content access.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io::{BufRead as _, Read};
@@ -13,7 +13,7 @@ use cleanerx_core::{
     AgentAdapter, AgentCapabilities, AgentDetectionState, AgentInstallation, AgentKind,
     CategorySummary, CleanerError, CleanupItem, ContentBlock, InventorySnapshot, ItemContentDetail,
     ItemThumbnail, MemoryCapabilities, MemoryScope, ProjectGroup, RiskLevel, SessionRecord,
-    StorageCategory,
+    StorageCategory, configure_background_command,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -73,7 +73,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let home = self.resolve_home(custom_home)?;
         let binary = find_claude_binary();
         let version = if let Some(binary) = &binary {
-            Command::new(binary)
+            let mut command = Command::new(binary);
+            configure_background_command(command.as_std_mut());
+            command
                 .arg("--version")
                 .output()
                 .await
@@ -83,7 +85,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         } else {
             None
         };
-        let running = claude_is_running(&home);
+        let running = claude_is_running();
         let mut warnings = Vec::new();
         if !home.exists() {
             warnings.push(format!(
@@ -128,7 +130,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let installation = self.detect(custom_home).await?;
         let home = PathBuf::from(&installation.home);
         let mut warnings = installation.warnings.clone();
-        let active_ids = active_session_ids(&home, &mut warnings);
         let mut sessions = Vec::new();
         let mut items = Vec::new();
         let mut session_buckets = HashMap::new();
@@ -136,7 +137,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
         scan_project_sessions(
             &home,
             installation.running,
-            &active_ids,
             &mut sessions,
             &mut items,
             &mut session_buckets,
@@ -272,7 +272,6 @@ struct TranscriptMetadata {
 fn scan_project_sessions(
     home: &Path,
     running: bool,
-    active_ids: &HashSet<String>,
     sessions: &mut Vec<SessionRecord>,
     items: &mut Vec<CleanupItem>,
     session_buckets: &mut HashMap<String, PathBuf>,
@@ -329,7 +328,6 @@ fn scan_project_sessions(
                 .iter()
                 .filter_map(|path| cleanerx_core::safety::allocated_size(Path::new(path)).ok())
                 .sum();
-            let active = active_ids.contains(session_id);
             let blocked_reason = running
                 .then(|| {
                     "Claude Code is running; quit it before deleting local session data".into()
@@ -347,7 +345,9 @@ fn scan_project_sessions(
                 source: metadata.source.clone(),
                 archived: false,
                 pinned: false,
-                status: if active { "active" } else { "notLoaded" }.into(),
+                // Claude does not publish a supported per-session writer mapping. A recognized
+                // live process blocks every mutable item, so reflect that conservative scope.
+                status: if running { "loaded" } else { "notLoaded" }.into(),
                 created_at: metadata.created_at,
                 updated_at: metadata.updated_at.or_else(|| modified_at(&transcript)),
                 size_bytes,
@@ -679,33 +679,6 @@ fn scan_protected(
     Ok(())
 }
 
-fn active_session_ids(home: &Path, warnings: &mut Vec<String>) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    let root = home.join("sessions");
-    let Ok(entries) = fs::read_dir(root) else {
-        return ids;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() {
-            warnings.push(format!(
-                "Ignored linked Claude running-session marker: {}",
-                path.display()
-            ));
-            continue;
-        }
-        if let Some(id) = path.file_stem().and_then(|value| value.to_str())
-            && Uuid::parse_str(id).is_ok()
-        {
-            ids.insert(id.to_owned());
-        }
-    }
-    ids
-}
-
 fn associated_session_paths(home: &Path, bucket: &Path, session_id: &str) -> Vec<PathBuf> {
     [
         bucket.join(session_id),
@@ -751,19 +724,13 @@ fn validate_content_paths(
             "Claude content request used a different Agent installation".into(),
         ));
     }
-    let root = PathBuf::from(&installation.home).canonicalize()?;
+    let roots = vec![PathBuf::from(&installation.home)];
     for raw_path in &item.paths {
         let path = Path::new(raw_path);
         if !path.exists() {
             continue;
         }
-        if fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
-        let canonical = path.canonicalize()?;
-        if !canonical.starts_with(&root) {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
+        cleanerx_core::validate_existing_beneath(path, &roots)?;
     }
     Ok(())
 }
@@ -992,59 +959,89 @@ fn newest_modified_markdown(root: &Path) -> Option<DateTime<Utc>> {
 }
 
 fn find_claude_binary() -> Option<PathBuf> {
-    let executable_name = if cfg!(windows) {
-        "claude.exe"
+    let executable_names = if cfg!(windows) {
+        &["claude.exe", "claude.cmd", "claude.bat"][..]
     } else {
-        "claude"
+        &["claude"][..]
     };
     let search_path = env::var_os("PATH");
     let home = dirs::home_dir();
     claude_binary_candidates(
-        executable_name,
-        search_path.as_deref(),
-        home.as_deref(),
-        cfg!(unix),
-        cfg!(target_os = "macos"),
+        executable_names,
+        BinarySearchContext {
+            search_path: search_path.as_deref(),
+            home: home.as_deref(),
+            data_dir: dirs::data_dir().as_deref(),
+            local_data_dir: dirs::data_local_dir().as_deref(),
+            unix_like: cfg!(unix),
+            macos: cfg!(target_os = "macos"),
+            windows: cfg!(windows),
+        },
     )
     .into_iter()
     .find(|candidate| candidate.is_file())
 }
 
-fn claude_binary_candidates(
-    executable_name: &str,
-    search_path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+#[derive(Clone, Copy)]
+struct BinarySearchContext<'a> {
+    search_path: Option<&'a std::ffi::OsStr>,
+    home: Option<&'a Path>,
+    data_dir: Option<&'a Path>,
+    local_data_dir: Option<&'a Path>,
     unix_like: bool,
     macos: bool,
+    windows: bool,
+}
+
+fn claude_binary_candidates(
+    executable_names: &[&str],
+    context: BinarySearchContext<'_>,
 ) -> Vec<PathBuf> {
+    let BinarySearchContext {
+        search_path,
+        home,
+        data_dir,
+        local_data_dir,
+        unix_like,
+        macos,
+        windows,
+    } = context;
     let mut candidates = Vec::new();
     if let Some(path) = search_path {
-        candidates.extend(env::split_paths(&path).map(|directory| directory.join(executable_name)));
+        for directory in env::split_paths(&path) {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if unix_like {
-        candidates.extend([
-            PathBuf::from("/usr/local/bin").join(executable_name),
-            PathBuf::from("/usr/bin").join(executable_name),
-        ]);
+        for directory in [Path::new("/usr/local/bin"), Path::new("/usr/bin")] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if macos {
         candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
     }
     if let Some(home) = home {
-        candidates.extend([
-            home.join(".local/bin").join(executable_name),
-            home.join(".local/share/pnpm").join(executable_name),
-            home.join(".npm-global/bin").join(executable_name),
-            home.join(".volta/bin").join(executable_name),
-            home.join(".asdf/shims").join(executable_name),
-            home.join(".bun/bin").join(executable_name),
-            home.join("Library/pnpm").join(executable_name),
-        ]);
+        for directory in [
+            home.join(".local/bin"),
+            home.join(".local/share/pnpm"),
+            home.join(".npm-global/bin"),
+            home.join(".volta/bin"),
+            home.join(".asdf/shims"),
+            home.join(".bun/bin"),
+            home.join("Library/pnpm"),
+        ] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
         let nvm_versions = home.join(".nvm/versions/node");
         if let Ok(entries) = fs::read_dir(nvm_versions) {
             let mut nvm_candidates: Vec<_> = entries
                 .flatten()
-                .map(|entry| entry.path().join("bin").join(executable_name))
+                .flat_map(|entry| {
+                    let directory = entry.path().join("bin");
+                    executable_names
+                        .iter()
+                        .map(move |name| directory.join(name))
+                })
                 .filter(|path| path.is_file())
                 .collect();
             nvm_candidates.sort_by_key(|path| {
@@ -1057,34 +1054,62 @@ fn claude_binary_candidates(
             candidates.extend(nvm_candidates);
         }
     }
+    if windows {
+        for directory in [
+            data_dir.map(|root| root.join("npm")),
+            data_dir.map(|root| root.join("pnpm")),
+            local_data_dir.map(|root| root.join("pnpm")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
+    }
     candidates
 }
 
-fn claude_is_running(home: &Path) -> bool {
-    if fs::read_dir(home.join("sessions"))
-        .ok()
-        .is_some_and(|mut entries| entries.next().is_some())
+fn claude_is_running() -> bool {
+    let system = System::new_all();
+    system.processes().values().any(|process| {
+        is_claude_process_shape(
+            &process.name().to_string_lossy(),
+            process.exe(),
+            process.cmd(),
+        )
+    })
+}
+
+fn is_claude_process_shape(
+    name: &str,
+    executable: Option<&Path>,
+    command: &[std::ffi::OsString],
+) -> bool {
+    let fixed_names = [
+        Some(name.to_ascii_lowercase()),
+        executable
+            .and_then(Path::file_name)
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+        command
+            .first()
+            .and_then(|value| Path::new(value).file_name())
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+    ];
+    if fixed_names
+        .into_iter()
+        .flatten()
+        .any(|value| value == "claude" || value == "claude.exe")
     {
         return true;
     }
-    let system = System::new_all();
-    system.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
-        let executable = process
-            .exe()
-            .and_then(Path::file_name)
-            .map(|value| value.to_string_lossy().to_ascii_lowercase());
-        let command = process
-            .cmd()
-            .first()
-            .and_then(|value| Path::new(value).file_name())
-            .map(|value| value.to_string_lossy().to_ascii_lowercase());
-        name == "claude"
-            || executable.as_deref() == Some("claude")
-            || executable.as_deref() == Some("claude.exe")
-            || command.as_deref() == Some("claude")
-            || command.as_deref() == Some("claude.exe")
-    })
+    command
+        .iter()
+        .map(|value| value.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .replace('\\', "/")
+        .contains("@anthropic-ai/claude-code")
 }
 
 #[cfg(test)]
@@ -1096,13 +1121,54 @@ mod tests {
     #[test]
     fn binary_candidates_cover_linux_desktop_install_locations() {
         let home = tempfile::tempdir().expect("binary fixture home");
-        let candidates = claude_binary_candidates("claude", None, Some(home.path()), true, false);
+        let candidates = claude_binary_candidates(
+            &["claude"],
+            BinarySearchContext {
+                search_path: None,
+                home: Some(home.path()),
+                data_dir: None,
+                local_data_dir: None,
+                unix_like: true,
+                macos: false,
+                windows: false,
+            },
+        );
 
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/claude")));
         assert!(candidates.contains(&PathBuf::from("/usr/bin/claude")));
         assert!(candidates.contains(&home.path().join(".local/bin/claude")));
         assert!(candidates.contains(&home.path().join(".local/share/pnpm/claude")));
         assert!(candidates.contains(&home.path().join(".npm-global/bin/claude")));
+    }
+
+    #[test]
+    fn windows_binary_and_process_shapes_cover_package_manager_wrappers() {
+        let roaming = Path::new(r"C:\Users\CleanerX\AppData\Roaming");
+        let local = Path::new(r"C:\Users\CleanerX\AppData\Local");
+        let candidates = claude_binary_candidates(
+            &["claude.exe", "claude.cmd", "claude.bat"],
+            BinarySearchContext {
+                search_path: None,
+                home: None,
+                data_dir: Some(roaming),
+                local_data_dir: Some(local),
+                unix_like: false,
+                macos: false,
+                windows: true,
+            },
+        );
+        assert!(candidates.contains(&roaming.join("npm/claude.cmd")));
+        assert!(candidates.contains(&local.join("pnpm/claude.bat")));
+        assert!(is_claude_process_shape(
+            "node.exe",
+            Some(Path::new(r"C:\Program Files\nodejs\node.exe")),
+            &[
+                std::ffi::OsString::from("node.exe"),
+                std::ffi::OsString::from(
+                    r"C:\Users\CleanerX\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js",
+                ),
+            ],
+        ));
     }
 
     #[tokio::test]
@@ -1152,8 +1218,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn marks_every_mutable_item_blocked_while_a_writer_marker_exists() {
+    #[test]
+    fn stale_session_markers_do_not_block_cleanup_without_a_writer() {
         let fixture = tempfile::tempdir().expect("Claude fixture");
         let bucket = fixture.path().join("projects/project");
         fs::create_dir_all(&bucket).expect("bucket");
@@ -1168,18 +1234,57 @@ mod tests {
         )
         .expect("marker");
 
-        let snapshot = ClaudeCodeAdapter::new()
-            .scan(fixture.path().to_str())
-            .await
-            .expect("scan active fixture");
-        assert!(snapshot.installation.running);
+        let mut sessions = Vec::new();
+        let mut items = Vec::new();
+        let mut buckets = HashMap::new();
+        let mut warnings = Vec::new();
+        scan_project_sessions(
+            fixture.path(),
+            false,
+            &mut sessions,
+            &mut items,
+            &mut buckets,
+            &mut warnings,
+        )
+        .expect("scan stale marker fixture");
+
         assert!(
-            snapshot
-                .items
+            items
+                .iter()
+                .filter(|item| !item.protected)
+                .all(|item| item.blocked_reason.is_none())
+        );
+        assert_eq!(sessions[0].status, "notLoaded");
+    }
+
+    #[test]
+    fn recognized_writer_blocks_session_cleanup() {
+        let fixture = tempfile::tempdir().expect("Claude fixture");
+        let bucket = fixture.path().join("projects/project");
+        fs::create_dir_all(&bucket).expect("bucket");
+        write_transcript(&bucket.join(format!("{SESSION_ID}.jsonl")), fixture.path());
+
+        let mut sessions = Vec::new();
+        let mut items = Vec::new();
+        let mut buckets = HashMap::new();
+        let mut warnings = Vec::new();
+        scan_project_sessions(
+            fixture.path(),
+            true,
+            &mut sessions,
+            &mut items,
+            &mut buckets,
+            &mut warnings,
+        )
+        .expect("scan live writer fixture");
+
+        assert!(
+            items
                 .iter()
                 .filter(|item| !item.protected)
                 .all(|item| item.blocked_reason.is_some())
         );
+        assert_eq!(sessions[0].status, "loaded");
     }
 
     #[cfg(unix)]

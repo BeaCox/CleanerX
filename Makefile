@@ -2,10 +2,11 @@ PNPM ?= pnpm
 CARGO ?= cargo
 TARGET_ARG := $(if $(TARGET),--target $(TARGET),)
 LINUX_PROFILE ?= release
+WINDOWS_PROFILE ?= release
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup format format-check lint test test-rust test-web web check ci dev app dmg bundles linux smoke-linux
+.PHONY: help setup format format-check lint test test-rust test-web web check ci dev app dmg bundles linux smoke-linux windows smoke-windows
 
 help:
 	@echo "CleanerX development commands"
@@ -18,6 +19,8 @@ help:
 	@echo "  make bundles           Build both .app and DMG in one Tauri run"
 	@echo "  make linux             Build unsigned Linux .deb and AppImage bundles"
 	@echo "  make smoke-linux       Launch the Linux binary under Xvfb for 8 seconds"
+	@echo "  make windows           Build unsigned Windows MSI and NSIS installers"
+	@echo "  make smoke-windows     Launch the Windows binary for 8 seconds"
 	@echo "  make app TARGET=...    Build for an explicit Rust target triple"
 
 setup:
@@ -68,3 +71,9 @@ smoke-linux:
 	@mkdir -p target
 	@status=0; timeout --signal=TERM 8s xvfb-run -a target/$(LINUX_PROFILE)/cleanerx-app >target/linux-smoke.log 2>&1 || status=$$?; \
 		if test $$status -ne 124; then cat target/linux-smoke.log >&2; exit $$status; fi
+
+windows:
+	$(PNPM) tauri build $(TARGET_ARG) --bundles nsis,msi
+
+smoke-windows:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1 -Profile $(WINDOWS_PROFILE)
