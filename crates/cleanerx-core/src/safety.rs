@@ -170,12 +170,12 @@ fn hash_metadata_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<(
     Ok(())
 }
 
-fn validate_tree(path: &Path, allowed_root: &Path) -> Result<(), CleanerError> {
+fn validate_tree(path: &Path, _allowed_root: &Path) -> Result<(), CleanerError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
 
-        let root_metadata = fs::symlink_metadata(allowed_root)?;
+        let root_metadata = fs::symlink_metadata(_allowed_root)?;
         validate_tree_on_device(path, root_metadata.dev())
     }
     #[cfg(not(unix))]
