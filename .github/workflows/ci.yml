@@ -67,7 +67,7 @@ jobs:
                   web=true
                   app=true
                   ;;
-                Cargo.toml|Cargo.lock|crates/*|src-tauri/*)
+                .cargo/*|Cargo.toml|Cargo.lock|crates/*|scripts/*|src-tauri/*)
                   rust=true
                   app=true
                   ;;
@@ -199,3 +199,38 @@ jobs:
         run: cargo build -p cleanerx-app
       - name: Smoke-test Linux application
         run: make smoke-linux LINUX_PROFILE=debug
+
+  windows-native:
+    name: Windows native integration
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.3.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-app-debug-v1
+          save-if: ${{ github.event_name == 'push' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build frontend assets
+        run: pnpm build
+      - name: Verify Windows Credential Manager backup and restore
+        if: needs.changes.outputs.rust == 'true'
+        env:
+          CLEANERX_WINDOWS_CREDENTIAL_MANAGER_TEST: "1"
+        run: cargo test --workspace live_windows_credential_manager_backup_round_trip -- --ignored
+      - name: Build Windows debug application
+        run: cargo build -p cleanerx-app
+      - name: Smoke-test Windows application
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1 -Profile debug

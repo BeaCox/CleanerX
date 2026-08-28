@@ -491,16 +491,37 @@ impl AgentAdapter for OpenCodeAdapter {
 }
 
 fn default_data_home() -> Option<PathBuf> {
-    env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
-        .map(|root| root.join("opencode"))
+    platform_data_home(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
 }
 
 fn default_cache_home() -> Option<PathBuf> {
-    env::var_os("XDG_CACHE_HOME")
+    platform_cache_home(
+        env::var_os("XDG_CACHE_HOME").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+fn platform_data_home(
+    xdg_data_home: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    xdg_data_home
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
+        .or_else(|| home.map(|home| home.join(".local/share")))
+        .map(|root| root.join("opencode"))
+        .filter(|path| path.is_absolute())
+}
+
+fn platform_cache_home(
+    xdg_cache_home: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    xdg_cache_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(".cache")))
         .map(|root| root.join("opencode"))
         .filter(|path| path.is_absolute())
 }
@@ -1209,15 +1230,16 @@ fn content_from_logs(
     installation: &AgentInstallation,
     item: &CleanupItem,
 ) -> Result<ItemContentDetail, CleanerError> {
-    let home = PathBuf::from(&installation.home).canonicalize()?;
+    let roots = vec![PathBuf::from(&installation.home)];
     let path = item
         .paths
         .first()
         .map(PathBuf::from)
         .ok_or_else(|| CleanerError::NotFound("OpenCode log directory".into()))?;
-    if !is_plain_directory(&path)? || !path.canonicalize()?.starts_with(&home) {
+    if !is_plain_directory(&path)? {
         return Err(CleanerError::UnsafePath(path.display().to_string()));
     }
+    cleanerx_core::validate_existing_beneath(&path, &roots)?;
     let mut files = fs::read_dir(&path)?
         .flatten()
         .map(|entry| entry.path())
@@ -1572,60 +1594,90 @@ fn modified_at(path: &Path) -> Option<DateTime<Utc>> {
 }
 
 fn find_opencode_binary() -> Option<PathBuf> {
-    let executable_name = if cfg!(windows) {
-        "opencode.exe"
+    let executable_names = if cfg!(windows) {
+        &["opencode.exe", "opencode.cmd", "opencode.bat"][..]
     } else {
-        "opencode"
+        &["opencode"][..]
     };
     let search_path = env::var_os("PATH");
     let home = dirs::home_dir();
     opencode_binary_candidates(
-        executable_name,
-        search_path.as_deref(),
-        home.as_deref(),
-        cfg!(unix),
-        cfg!(target_os = "macos"),
+        executable_names,
+        BinarySearchContext {
+            search_path: search_path.as_deref(),
+            home: home.as_deref(),
+            data_dir: dirs::data_dir().as_deref(),
+            local_data_dir: dirs::data_local_dir().as_deref(),
+            unix_like: cfg!(unix),
+            macos: cfg!(target_os = "macos"),
+            windows: cfg!(windows),
+        },
     )
     .into_iter()
     .find(|candidate| candidate.is_file())
 }
 
-fn opencode_binary_candidates(
-    executable_name: &str,
-    search_path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+#[derive(Clone, Copy)]
+struct BinarySearchContext<'a> {
+    search_path: Option<&'a std::ffi::OsStr>,
+    home: Option<&'a Path>,
+    data_dir: Option<&'a Path>,
+    local_data_dir: Option<&'a Path>,
     unix_like: bool,
     macos: bool,
+    windows: bool,
+}
+
+fn opencode_binary_candidates(
+    executable_names: &[&str],
+    context: BinarySearchContext<'_>,
 ) -> Vec<PathBuf> {
+    let BinarySearchContext {
+        search_path,
+        home,
+        data_dir,
+        local_data_dir,
+        unix_like,
+        macos,
+        windows,
+    } = context;
     let mut candidates = Vec::new();
     if let Some(path) = search_path {
-        candidates.extend(env::split_paths(&path).map(|directory| directory.join(executable_name)));
+        for directory in env::split_paths(&path) {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if unix_like {
-        candidates.extend([
-            PathBuf::from("/usr/local/bin").join(executable_name),
-            PathBuf::from("/usr/bin").join(executable_name),
-        ]);
+        for directory in [Path::new("/usr/local/bin"), Path::new("/usr/bin")] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if macos {
         candidates.push(PathBuf::from("/opt/homebrew/bin/opencode"));
     }
     if let Some(home) = home {
-        candidates.extend([
-            home.join(".local/bin").join(executable_name),
-            home.join(".local/share/pnpm").join(executable_name),
-            home.join(".npm-global/bin").join(executable_name),
-            home.join(".opencode/bin").join(executable_name),
-            home.join(".volta/bin").join(executable_name),
-            home.join(".asdf/shims").join(executable_name),
-            home.join(".bun/bin").join(executable_name),
-            home.join("Library/pnpm").join(executable_name),
-        ]);
+        for directory in [
+            home.join(".local/bin"),
+            home.join(".local/share/pnpm"),
+            home.join(".npm-global/bin"),
+            home.join(".opencode/bin"),
+            home.join(".volta/bin"),
+            home.join(".asdf/shims"),
+            home.join(".bun/bin"),
+            home.join("Library/pnpm"),
+        ] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
         let nvm_versions = home.join(".nvm/versions/node");
         if let Ok(entries) = fs::read_dir(nvm_versions) {
             let mut nvm_candidates = entries
                 .flatten()
-                .map(|entry| entry.path().join("bin").join(executable_name))
+                .flat_map(|entry| {
+                    let directory = entry.path().join("bin");
+                    executable_names
+                        .iter()
+                        .map(move |name| directory.join(name))
+                })
                 .filter(|path| path.is_file())
                 .collect::<Vec<_>>();
             nvm_candidates.sort_by_key(|path| {
@@ -1636,6 +1688,18 @@ fn opencode_binary_candidates(
                 )
             });
             candidates.extend(nvm_candidates);
+        }
+    }
+    if windows {
+        for directory in [
+            data_dir.map(|root| root.join("npm")),
+            data_dir.map(|root| root.join("pnpm")),
+            local_data_dir.map(|root| root.join("pnpm")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
         }
     }
     candidates
@@ -1667,31 +1731,64 @@ fn opencode_is_running() -> bool {
 }
 
 fn is_opencode_process(process: &sysinfo::Process) -> bool {
+    is_opencode_process_shape(
+        &process.name().to_string_lossy(),
+        process.exe(),
+        process.cmd(),
+    )
+}
+
+fn is_opencode_process_shape(name: &str, executable: Option<&Path>, command: &[OsString]) -> bool {
     let fixed_names = [
-        Some(process.name().to_string_lossy().to_ascii_lowercase()),
-        process
-            .exe()
+        Some(name.to_ascii_lowercase()),
+        executable
             .and_then(Path::file_name)
             .map(|value| value.to_string_lossy().to_ascii_lowercase()),
     ];
-    fixed_names
+    if fixed_names
         .into_iter()
         .flatten()
         .chain(
-            process
-                .cmd()
+            command
                 .iter()
                 .take(2)
                 .filter_map(|value| Path::new(value).file_name())
                 .map(|value| value.to_string_lossy().to_ascii_lowercase()),
         )
         .any(|name| is_opencode_process_name(&name))
+    {
+        return true;
+    }
+    let interpreter = command
+        .first()
+        .and_then(|value| Path::new(value).file_name())
+        .map(|value| value.to_string_lossy().to_ascii_lowercase());
+    matches!(
+        interpreter.as_deref(),
+        Some("node" | "node.exe" | "bun" | "bun.exe")
+    ) && command
+        .iter()
+        .skip(1)
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .replace('\\', "/")
+        })
+        .any(|value| {
+            value.contains("node_modules/opencode-ai") || value.contains("/opencode/bin/opencode")
+        })
 }
 
 fn is_opencode_process_name(name: &str) -> bool {
     matches!(
         name,
-        "opencode" | "opencode.exe" | "opencode2" | "opencode2.exe"
+        "opencode"
+            | "opencode.exe"
+            | "opencode-cli"
+            | "opencode-cli.exe"
+            | "opencode2"
+            | "opencode2.exe"
     ) || name.starts_with("opencode-")
         || name.starts_with("opencode2-")
 }
@@ -1704,15 +1801,30 @@ fn is_remote_client(arguments: &[OsString]) -> bool {
 }
 
 fn process_targets_database(environment: &[OsString], database: &Path) -> Option<bool> {
+    process_targets_database_for_platform(environment, database, cfg!(windows))
+}
+
+fn process_targets_database_for_platform(
+    environment: &[OsString],
+    database: &Path,
+    windows: bool,
+) -> Option<bool> {
     if environment.is_empty() {
         return None;
     }
     let data_root = process_environment_value(environment, "XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| {
-            process_environment_value(environment, "HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".local/share"))
+            if windows {
+                process_environment_value(environment, "USERPROFILE")
+                    .or_else(|| process_environment_value(environment, "HOME"))
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            } else {
+                process_environment_value(environment, "HOME")
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            }
         })?
         .join("opencode");
     if let Some(value) = process_environment_value(environment, "OPENCODE_DB") {
@@ -1735,12 +1847,12 @@ fn process_targets_database(environment: &[OsString], database: &Path) -> Option
 }
 
 fn process_environment_value(environment: &[OsString], key: &str) -> Option<String> {
-    let prefix = format!("{key}=");
     environment.iter().find_map(|entry| {
-        entry
-            .to_string_lossy()
-            .strip_prefix(&prefix)
-            .map(str::to_owned)
+        let entry = entry.to_string_lossy();
+        let (entry_key, value) = entry.split_once('=')?;
+        entry_key
+            .eq_ignore_ascii_case(key)
+            .then(|| value.to_owned())
     })
 }
 
@@ -2086,14 +2198,87 @@ mod tests {
     #[test]
     fn binary_candidates_cover_linux_desktop_install_locations() {
         let home = tempfile::tempdir().expect("binary fixture home");
-        let candidates =
-            opencode_binary_candidates("opencode", None, Some(home.path()), true, false);
+        let candidates = opencode_binary_candidates(
+            &["opencode"],
+            BinarySearchContext {
+                search_path: None,
+                home: Some(home.path()),
+                data_dir: None,
+                local_data_dir: None,
+                unix_like: true,
+                macos: false,
+                windows: false,
+            },
+        );
 
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/opencode")));
         assert!(candidates.contains(&PathBuf::from("/usr/bin/opencode")));
         assert!(candidates.contains(&home.path().join(".local/bin/opencode")));
         assert!(candidates.contains(&home.path().join(".local/share/pnpm/opencode")));
         assert!(candidates.contains(&home.path().join(".npm-global/bin/opencode")));
+    }
+
+    #[test]
+    fn windows_paths_wrappers_and_processes_use_the_documented_home_layout() {
+        let roaming = Path::new(r"C:\Users\CleanerX\AppData\Roaming");
+        let local = Path::new(r"C:\Users\CleanerX\AppData\Local");
+        let candidates = opencode_binary_candidates(
+            &["opencode.exe", "opencode.cmd", "opencode.bat"],
+            BinarySearchContext {
+                search_path: None,
+                home: None,
+                data_dir: Some(roaming),
+                local_data_dir: Some(local),
+                unix_like: false,
+                macos: false,
+                windows: true,
+            },
+        );
+        assert!(candidates.contains(&roaming.join("npm/opencode.cmd")));
+        assert!(candidates.contains(&local.join("pnpm/opencode.bat")));
+
+        let home_fixture = Path::new("/windows/Users/CleanerX");
+        assert_eq!(
+            platform_data_home(None, Some(home_fixture)),
+            Some(home_fixture.join(".local/share/opencode")),
+        );
+        assert_eq!(
+            platform_cache_home(None, Some(home_fixture)),
+            Some(home_fixture.join(".cache/opencode")),
+        );
+        assert!(is_opencode_process_shape(
+            "node.exe",
+            Some(Path::new(r"C:\Program Files\nodejs\node.exe")),
+            &[
+                OsString::from("node.exe"),
+                OsString::from(
+                    r"C:\Users\CleanerX\AppData\Roaming\npm\node_modules\opencode-ai\bin\opencode",
+                ),
+            ],
+        ));
+        assert!(is_opencode_process_shape(
+            "opencode-cli.exe",
+            Some(Path::new(
+                r"C:\Users\CleanerX\AppData\Local\OpenCode\opencode-cli.exe"
+            )),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn windows_writer_environment_targets_only_the_matching_database() {
+        let environment = vec![OsString::from("userprofile=/windows/Users/CleanerX")];
+        let database = Path::new("/windows/Users/CleanerX/.local/share/opencode/opencode.db");
+        let other = Path::new("/windows/Other/opencode/opencode.db");
+
+        assert_eq!(
+            process_targets_database_for_platform(&environment, database, true),
+            Some(true),
+        );
+        assert_eq!(
+            process_targets_database_for_platform(&environment, other, true),
+            Some(false),
+        );
     }
 
     #[tokio::test]

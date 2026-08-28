@@ -751,19 +751,13 @@ fn validate_content_paths(
             "Claude content request used a different Agent installation".into(),
         ));
     }
-    let root = PathBuf::from(&installation.home).canonicalize()?;
+    let roots = vec![PathBuf::from(&installation.home)];
     for raw_path in &item.paths {
         let path = Path::new(raw_path);
         if !path.exists() {
             continue;
         }
-        if fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
-        let canonical = path.canonicalize()?;
-        if !canonical.starts_with(&root) {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
+        cleanerx_core::validate_existing_beneath(path, &roots)?;
     }
     Ok(())
 }
@@ -992,59 +986,89 @@ fn newest_modified_markdown(root: &Path) -> Option<DateTime<Utc>> {
 }
 
 fn find_claude_binary() -> Option<PathBuf> {
-    let executable_name = if cfg!(windows) {
-        "claude.exe"
+    let executable_names = if cfg!(windows) {
+        &["claude.exe", "claude.cmd", "claude.bat"][..]
     } else {
-        "claude"
+        &["claude"][..]
     };
     let search_path = env::var_os("PATH");
     let home = dirs::home_dir();
     claude_binary_candidates(
-        executable_name,
-        search_path.as_deref(),
-        home.as_deref(),
-        cfg!(unix),
-        cfg!(target_os = "macos"),
+        executable_names,
+        BinarySearchContext {
+            search_path: search_path.as_deref(),
+            home: home.as_deref(),
+            data_dir: dirs::data_dir().as_deref(),
+            local_data_dir: dirs::data_local_dir().as_deref(),
+            unix_like: cfg!(unix),
+            macos: cfg!(target_os = "macos"),
+            windows: cfg!(windows),
+        },
     )
     .into_iter()
     .find(|candidate| candidate.is_file())
 }
 
-fn claude_binary_candidates(
-    executable_name: &str,
-    search_path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+#[derive(Clone, Copy)]
+struct BinarySearchContext<'a> {
+    search_path: Option<&'a std::ffi::OsStr>,
+    home: Option<&'a Path>,
+    data_dir: Option<&'a Path>,
+    local_data_dir: Option<&'a Path>,
     unix_like: bool,
     macos: bool,
+    windows: bool,
+}
+
+fn claude_binary_candidates(
+    executable_names: &[&str],
+    context: BinarySearchContext<'_>,
 ) -> Vec<PathBuf> {
+    let BinarySearchContext {
+        search_path,
+        home,
+        data_dir,
+        local_data_dir,
+        unix_like,
+        macos,
+        windows,
+    } = context;
     let mut candidates = Vec::new();
     if let Some(path) = search_path {
-        candidates.extend(env::split_paths(&path).map(|directory| directory.join(executable_name)));
+        for directory in env::split_paths(&path) {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if unix_like {
-        candidates.extend([
-            PathBuf::from("/usr/local/bin").join(executable_name),
-            PathBuf::from("/usr/bin").join(executable_name),
-        ]);
+        for directory in [Path::new("/usr/local/bin"), Path::new("/usr/bin")] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if macos {
         candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
     }
     if let Some(home) = home {
-        candidates.extend([
-            home.join(".local/bin").join(executable_name),
-            home.join(".local/share/pnpm").join(executable_name),
-            home.join(".npm-global/bin").join(executable_name),
-            home.join(".volta/bin").join(executable_name),
-            home.join(".asdf/shims").join(executable_name),
-            home.join(".bun/bin").join(executable_name),
-            home.join("Library/pnpm").join(executable_name),
-        ]);
+        for directory in [
+            home.join(".local/bin"),
+            home.join(".local/share/pnpm"),
+            home.join(".npm-global/bin"),
+            home.join(".volta/bin"),
+            home.join(".asdf/shims"),
+            home.join(".bun/bin"),
+            home.join("Library/pnpm"),
+        ] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
         let nvm_versions = home.join(".nvm/versions/node");
         if let Ok(entries) = fs::read_dir(nvm_versions) {
             let mut nvm_candidates: Vec<_> = entries
                 .flatten()
-                .map(|entry| entry.path().join("bin").join(executable_name))
+                .flat_map(|entry| {
+                    let directory = entry.path().join("bin");
+                    executable_names
+                        .iter()
+                        .map(move |name| directory.join(name))
+                })
                 .filter(|path| path.is_file())
                 .collect();
             nvm_candidates.sort_by_key(|path| {
@@ -1055,6 +1079,18 @@ fn claude_binary_candidates(
                 )
             });
             candidates.extend(nvm_candidates);
+        }
+    }
+    if windows {
+        for directory in [
+            data_dir.map(|root| root.join("npm")),
+            data_dir.map(|root| root.join("pnpm")),
+            local_data_dir.map(|root| root.join("pnpm")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
         }
     }
     candidates
@@ -1069,22 +1105,44 @@ fn claude_is_running(home: &Path) -> bool {
     }
     let system = System::new_all();
     system.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
-        let executable = process
-            .exe()
+        is_claude_process_shape(
+            &process.name().to_string_lossy(),
+            process.exe(),
+            process.cmd(),
+        )
+    })
+}
+
+fn is_claude_process_shape(
+    name: &str,
+    executable: Option<&Path>,
+    command: &[std::ffi::OsString],
+) -> bool {
+    let fixed_names = [
+        Some(name.to_ascii_lowercase()),
+        executable
             .and_then(Path::file_name)
-            .map(|value| value.to_string_lossy().to_ascii_lowercase());
-        let command = process
-            .cmd()
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+        command
             .first()
             .and_then(|value| Path::new(value).file_name())
-            .map(|value| value.to_string_lossy().to_ascii_lowercase());
-        name == "claude"
-            || executable.as_deref() == Some("claude")
-            || executable.as_deref() == Some("claude.exe")
-            || command.as_deref() == Some("claude")
-            || command.as_deref() == Some("claude.exe")
-    })
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+    ];
+    if fixed_names
+        .into_iter()
+        .flatten()
+        .any(|value| value == "claude" || value == "claude.exe")
+    {
+        return true;
+    }
+    command
+        .iter()
+        .map(|value| value.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .replace('\\', "/")
+        .contains("@anthropic-ai/claude-code")
 }
 
 #[cfg(test)]
@@ -1096,13 +1154,54 @@ mod tests {
     #[test]
     fn binary_candidates_cover_linux_desktop_install_locations() {
         let home = tempfile::tempdir().expect("binary fixture home");
-        let candidates = claude_binary_candidates("claude", None, Some(home.path()), true, false);
+        let candidates = claude_binary_candidates(
+            &["claude"],
+            BinarySearchContext {
+                search_path: None,
+                home: Some(home.path()),
+                data_dir: None,
+                local_data_dir: None,
+                unix_like: true,
+                macos: false,
+                windows: false,
+            },
+        );
 
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/claude")));
         assert!(candidates.contains(&PathBuf::from("/usr/bin/claude")));
         assert!(candidates.contains(&home.path().join(".local/bin/claude")));
         assert!(candidates.contains(&home.path().join(".local/share/pnpm/claude")));
         assert!(candidates.contains(&home.path().join(".npm-global/bin/claude")));
+    }
+
+    #[test]
+    fn windows_binary_and_process_shapes_cover_package_manager_wrappers() {
+        let roaming = Path::new(r"C:\Users\CleanerX\AppData\Roaming");
+        let local = Path::new(r"C:\Users\CleanerX\AppData\Local");
+        let candidates = claude_binary_candidates(
+            &["claude.exe", "claude.cmd", "claude.bat"],
+            BinarySearchContext {
+                search_path: None,
+                home: None,
+                data_dir: Some(roaming),
+                local_data_dir: Some(local),
+                unix_like: false,
+                macos: false,
+                windows: true,
+            },
+        );
+        assert!(candidates.contains(&roaming.join("npm/claude.cmd")));
+        assert!(candidates.contains(&local.join("pnpm/claude.bat")));
+        assert!(is_claude_process_shape(
+            "node.exe",
+            Some(Path::new(r"C:\Program Files\nodejs\node.exe")),
+            &[
+                std::ffi::OsString::from("node.exe"),
+                std::ffi::OsString::from(
+                    r"C:\Users\CleanerX\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js",
+                ),
+            ],
+        ));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 
 # CleanerX
 
-CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, OpenCode, and pi data on macOS 13+ and x86_64 Linux, and is built with Rust, Tauri 2, React, and TypeScript.
+CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, OpenCode, and pi data on macOS 13+, x86_64 Linux, and x86_64 Windows 10/11, and is built with Rust, Tauri 2, React, and TypeScript.
 
 CleanerX itself does not connect to cloud services, upload data, or collect telemetry. Project paths are used only to organize sessions: CleanerX never recursively scans or modifies source directories.
 
@@ -39,24 +39,24 @@ CleanerX treats deletion as a security boundary:
 | Restore | Manifest hashes and every destination are checked before the first move. Existing IDs and paths are never overwritten. |
 | Privacy | There is no telemetry, crash upload, cloud synchronization, updater, background daemon, or unrestricted shell/filesystem API. |
 
-Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain or the Linux desktop Secret Service. Archives are first written as `.partial` files, verified, and then atomically committed as `.cxb` files. If the native credential store is unavailable, backup creation fails before cleanup begins.
+Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain, the Linux desktop Secret Service, or Windows Credential Manager. Archives are written as sibling `.partial` files, atomically replaced with native same-directory semantics, and reopened to verify the committed manifest and every payload hash before cleanup can begin. If the native credential store is unavailable, backup creation fails before cleanup begins.
 
 For the complete threat model and vulnerability-reporting process, see [SECURITY.md](SECURITY.md).
 
 ## Project status
 
-CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts and unsigned x86_64 Linux `.deb`/AppImage artifacts. Regular CI compiles and smoke-tests a debug Linux desktop application on Ubuntu 22.04; installable Linux packages are built only by the dedicated manual or `v*` tag workflow. Windows and further adapter hardening remain planned work.
+CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Regular CI compiles and smoke-tests debug Linux and Windows desktop applications; installable packages are built only by the dedicated manual or `v*` tag workflows. Further adapter and release hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
 ## Requirements
 
-- macOS 13 or later, or x86_64 Linux with a WebKitGTK 4.1 desktop environment (CI uses Ubuntu 22.04)
+- macOS 13 or later; x86_64 Linux with a WebKitGTK 4.1 desktop environment (CI uses Ubuntu 22.04); or x86_64 Windows 10/11 with the WebView2 Runtime. Windows artifacts statically link the MSVC C runtime, so users do not need a separate Visual C++ Redistributable installation.
 - A supported local Codex, Claude Code, OpenCode, or pi installation for that Agent's inventory and mutations
 - [Rust](https://www.rust-lang.org/tools/install) 1.88 or later
 - [Node.js](https://nodejs.org/) 22 or later (CI uses Node.js 24)
 - [pnpm](https://pnpm.io/installation) 11.3.0 or later
-- Xcode Command Line Tools for native macOS builds, or the Tauri system packages listed below for Linux builds
+- Xcode Command Line Tools for native macOS builds, the Tauri system packages listed below for Linux builds, or Microsoft C++ Build Tools plus WebView2 for Windows builds
 
 Install the Xcode Command Line Tools if needed:
 
@@ -104,7 +104,16 @@ make linux
 
 The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. Normal pushes and pull requests do not build release-mode packages: they compile a debug Linux application and launch it under Xvfb. Run the **Linux unsigned bundles** workflow manually, or push a `v*` tag, to build, smoke-test, inspect, and upload both packages as the short-lived `CleanerX-linux-x86_64-unsigned` workflow artifact. This workflow does not create a GitHub Release.
 
-Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Do not bypass Gatekeeper for binaries from an untrusted source.
+To build the Windows installers on an x86_64 Windows host from a Developer PowerShell:
+
+```powershell
+make windows
+make smoke-windows
+```
+
+The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pushes and pull requests compile and launch a debug Windows application and exercise a Credential Manager-backed backup/restore round trip. Run the **Windows unsigned bundles** workflow manually, or push a `v*` tag, to build and upload the short-lived `CleanerX-windows-x86_64-unsigned` workflow artifact. The installers are intentionally unsigned and the workflow does not create a GitHub Release.
+
+Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Windows SmartScreen may likewise warn about the unsigned installer. Do not bypass either platform's protection for a binary from an untrusted source.
 
 ## Usage
 
@@ -115,11 +124,11 @@ Builds are unsigned. On first launch, macOS may block the application. Use Finde
 5. Choose whether to create an encrypted backup. This option is off by default.
 6. Confirm the operation. CleanerX performs the cleanup and rescans to verify the result.
 
-You can set custom absolute data roots in Settings. Codex resolves `CODEX_HOME` then `~/.codex`; Claude Code resolves `CLAUDE_CONFIG_DIR` then `~/.claude`; OpenCode resolves `XDG_DATA_HOME/opencode` then `~/.local/share/opencode`.
+You can set custom absolute data roots in Settings. Codex resolves `CODEX_HOME` then `~/.codex`; Claude Code resolves `CLAUDE_CONFIG_DIR` then `~/.claude`; OpenCode resolves `XDG_DATA_HOME/opencode` then `~/.local/share/opencode` on every supported platform (where `~` is `%USERPROFILE%` on Windows).
 
 ## Read-only mode
 
-CleanerX first tries the active Codex control socket. If the socket is stale or unresponsive, it falls back to an isolated stdio App Server. If neither transport provides the required official capability, the affected session operation remains read-only.
+On Unix, CleanerX first tries the active Codex control socket. If the socket is stale or unresponsive, it falls back to an isolated stdio App Server. Windows uses the public stdio App Server transport directly because Unix-domain socket proxying is not assumed there. If the available transport does not provide the required official capability, the affected session operation remains read-only.
 
 If CleanerX reports read-only mode:
 
@@ -158,6 +167,8 @@ The root `Makefile` is the stable entry point for local development and CI:
 | `make bundles` | Build the `.app` and DMG in one Tauri invocation. |
 | `make linux` | Build unsigned Linux `.deb` and AppImage packages. |
 | `make smoke-linux` | Launch the built Linux binary under Xvfb for a native smoke test; pass `LINUX_PROFILE=debug` for a debug build. |
+| `make windows` | Build unsigned Windows MSI and NSIS installers. |
+| `make smoke-windows` | Launch the built Windows binary for a native smoke test; pass `WINDOWS_PROFILE=debug` for a debug build. |
 
 Run the complete validation pipeline before submitting a change:
 
@@ -176,7 +187,7 @@ Use `TARGET=<rust-target-triple>` with the bundle commands when building for an 
 - [Agent memory capability and safety model](docs/memory-management.md)
 - [Security policy](SECURITY.md)
 
-CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations. Runtime capabilities are negotiated because Codex evolves independently of CleanerX.
+CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations. Runtime capabilities are negotiated because Codex evolves independently of CleanerX. Windows behavior is validated against the native execution model documented for the [Codex Windows app](https://learn.chatgpt.com/docs/windows/windows-app).
 
 ## Contributing
 

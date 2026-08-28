@@ -459,22 +459,12 @@ fn validate_content_paths(
     if let Some(path) = &installation.app_support {
         roots.push(PathBuf::from(path));
     }
-    let roots: Vec<_> = roots
-        .into_iter()
-        .filter_map(|root| root.canonicalize().ok())
-        .collect();
     for raw_path in &item.paths {
         let path = Path::new(raw_path);
         if !path.exists() {
             continue;
         }
-        if fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
-        let canonical = path.canonicalize()?;
-        if !roots.iter().any(|root| canonical.starts_with(root)) {
-            return Err(CleanerError::UnsafePath(raw_path.clone()));
-        }
+        cleanerx_core::validate_existing_beneath(path, &roots)?;
     }
     Ok(())
 }
@@ -1166,7 +1156,7 @@ impl AppServerClient {
         bypass_socket: bool,
     ) -> Result<Self, CleanerError> {
         let socket = home.join("ipc/ipc.sock");
-        if socket.exists() && !bypass_socket {
+        if cfg!(unix) && socket.exists() && !bypass_socket {
             match Self::connect_transport(binary, home, Some(&socket)).await {
                 Ok(client) => return Ok(client),
                 Err(proxy_error) => {
@@ -2184,38 +2174,63 @@ fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>
 }
 
 fn find_codex_binary() -> Option<PathBuf> {
-    let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let executable_names = if cfg!(windows) {
+        &["codex.exe", "codex.cmd", "codex.bat"][..]
+    } else {
+        &["codex"][..]
+    };
     let search_path = env::var_os("PATH");
     let home = dirs::home_dir();
     codex_binary_candidates(
-        executable_name,
-        search_path.as_deref(),
-        home.as_deref(),
-        cfg!(unix),
-        cfg!(target_os = "macos"),
+        executable_names,
+        BinarySearchContext {
+            search_path: search_path.as_deref(),
+            home: home.as_deref(),
+            data_dir: dirs::data_dir().as_deref(),
+            local_data_dir: dirs::data_local_dir().as_deref(),
+            unix_like: cfg!(unix),
+            macos: cfg!(target_os = "macos"),
+            windows: cfg!(windows),
+        },
     )
     .into_iter()
     .find(|candidate| candidate.is_file())
 }
 
-fn codex_binary_candidates(
-    executable_name: &str,
-    search_path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+#[derive(Clone, Copy)]
+struct BinarySearchContext<'a> {
+    search_path: Option<&'a std::ffi::OsStr>,
+    home: Option<&'a Path>,
+    data_dir: Option<&'a Path>,
+    local_data_dir: Option<&'a Path>,
     unix_like: bool,
     macos: bool,
+    windows: bool,
+}
+
+fn codex_binary_candidates(
+    executable_names: &[&str],
+    context: BinarySearchContext<'_>,
 ) -> Vec<PathBuf> {
+    let BinarySearchContext {
+        search_path,
+        home,
+        data_dir,
+        local_data_dir,
+        unix_like,
+        macos,
+        windows,
+    } = context;
     let mut candidates = Vec::new();
     if let Some(path) = search_path {
         for directory in env::split_paths(&path) {
-            candidates.push(directory.join(executable_name));
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
         }
     }
     if unix_like {
-        candidates.extend([
-            PathBuf::from("/usr/local/bin").join(executable_name),
-            PathBuf::from("/usr/bin").join(executable_name),
-        ]);
+        for directory in [Path::new("/usr/local/bin"), Path::new("/usr/bin")] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
     }
     if macos {
         candidates.extend([
@@ -2225,20 +2240,27 @@ fn codex_binary_candidates(
         ]);
     }
     if let Some(home) = home {
-        candidates.extend([
-            home.join(".local/bin").join(executable_name),
-            home.join(".local/share/pnpm").join(executable_name),
-            home.join(".npm-global/bin").join(executable_name),
-            home.join(".volta/bin").join(executable_name),
-            home.join(".asdf/shims").join(executable_name),
-            home.join(".bun/bin").join(executable_name),
-            home.join("Library/pnpm").join(executable_name),
-        ]);
+        for directory in [
+            home.join(".local/bin"),
+            home.join(".local/share/pnpm"),
+            home.join(".npm-global/bin"),
+            home.join(".volta/bin"),
+            home.join(".asdf/shims"),
+            home.join(".bun/bin"),
+            home.join("Library/pnpm"),
+        ] {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
         let nvm_versions = home.join(".nvm/versions/node");
         if let Ok(entries) = fs::read_dir(nvm_versions) {
             let mut nvm_candidates: Vec<_> = entries
                 .filter_map(Result::ok)
-                .map(|entry| entry.path().join("bin").join(executable_name))
+                .flat_map(|entry| {
+                    let directory = entry.path().join("bin");
+                    executable_names
+                        .iter()
+                        .map(move |name| directory.join(name))
+                })
                 .filter(|path| path.is_file())
                 .collect();
             nvm_candidates.sort_by_key(|path| {
@@ -2251,42 +2273,100 @@ fn codex_binary_candidates(
             candidates.extend(nvm_candidates);
         }
     }
+    if windows {
+        for directory in [
+            data_dir.map(|root| root.join("npm")),
+            data_dir.map(|root| root.join("pnpm")),
+            local_data_dir.map(|root| root.join("pnpm")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidates.extend(executable_names.iter().map(|name| directory.join(name)));
+        }
+    }
     candidates
 }
 
 fn codex_app_support() -> Option<PathBuf> {
+    codex_app_support_candidates(
+        dirs::home_dir().as_deref(),
+        dirs::data_dir().as_deref(),
+        dirs::data_local_dir().as_deref(),
+        cfg!(target_os = "macos"),
+        cfg!(windows),
+    )
+    .into_iter()
+    .find(|path| path.is_dir())
+}
+
+fn codex_app_support_candidates(
+    home: Option<&Path>,
+    data_dir: Option<&Path>,
+    _local_data_dir: Option<&Path>,
+    macos: bool,
+    windows: bool,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    #[cfg(target_os = "macos")]
-    if let Some(home) = dirs::home_dir() {
+    if macos && let Some(home) = home {
         candidates.extend([
             home.join("Library/Application Support/com.openai.codex"),
             home.join("Library/Application Support/Codex"),
             home.join("Library/Application Support/OpenAI/Codex"),
         ]);
     }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(data) = dirs::data_dir() {
+    if !macos
+        && !windows
+        && let Some(data) = data_dir
+    {
         candidates.extend([data.join("Codex"), data.join("com.openai.codex")]);
     }
-    candidates.into_iter().find(|path| path.is_dir())
+    candidates
 }
 
 fn codex_is_running(home: &Path) -> bool {
-    if home.join("ipc/ipc.sock").exists() {
+    if cfg!(unix) && home.join("ipc/ipc.sock").exists() {
         return true;
     }
     let system = System::new_all();
     system.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
-        let command = process
-            .cmd()
-            .iter()
-            .map(|part| part.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase();
-        name == "codex" || name.contains("codex app") || command.contains("codex app-server")
+        is_codex_process_shape(
+            &process.name().to_string_lossy(),
+            process.exe(),
+            process.cmd(),
+        )
     })
+}
+
+fn is_codex_process_shape(
+    name: &str,
+    executable: Option<&Path>,
+    command: &[std::ffi::OsString],
+) -> bool {
+    let fixed_names = [
+        Some(name.to_ascii_lowercase()),
+        executable
+            .and_then(Path::file_name)
+            .map(|value| value.to_string_lossy().to_ascii_lowercase()),
+    ];
+    if fixed_names.into_iter().flatten().any(|value| {
+        matches!(
+            value.as_str(),
+            "codex" | "codex.exe" | "chatgpt" | "chatgpt.exe"
+        ) || value.contains("codex app")
+    }) {
+        return true;
+    }
+    let command = command
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .replace('\\', "/");
+    command.contains("codex app-server")
+        || command.contains("@openai/codex")
+        || command.contains("/codex/bin/codex")
 }
 
 fn project_roots_by_session(
@@ -2415,13 +2495,80 @@ mod tests {
     #[test]
     fn binary_candidates_cover_linux_desktop_install_locations() {
         let home = tempfile::tempdir().expect("binary fixture home");
-        let candidates = codex_binary_candidates("codex", None, Some(home.path()), true, false);
+        let candidates = codex_binary_candidates(
+            &["codex"],
+            BinarySearchContext {
+                search_path: None,
+                home: Some(home.path()),
+                data_dir: None,
+                local_data_dir: None,
+                unix_like: true,
+                macos: false,
+                windows: false,
+            },
+        );
 
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/codex")));
         assert!(candidates.contains(&PathBuf::from("/usr/bin/codex")));
         assert!(candidates.contains(&home.path().join(".local/bin/codex")));
         assert!(candidates.contains(&home.path().join(".local/share/pnpm/codex")));
         assert!(candidates.contains(&home.path().join(".npm-global/bin/codex")));
+    }
+
+    #[test]
+    fn binary_candidates_cover_windows_package_manager_shims() {
+        let roaming = Path::new(r"C:\Users\CleanerX\AppData\Roaming");
+        let local = Path::new(r"C:\Users\CleanerX\AppData\Local");
+        let candidates = codex_binary_candidates(
+            &["codex.exe", "codex.cmd", "codex.bat"],
+            BinarySearchContext {
+                search_path: None,
+                home: None,
+                data_dir: Some(roaming),
+                local_data_dir: Some(local),
+                unix_like: false,
+                macos: false,
+                windows: true,
+            },
+        );
+
+        assert!(candidates.contains(&roaming.join("npm/codex.cmd")));
+        assert!(candidates.contains(&roaming.join("pnpm/codex.exe")));
+        assert!(candidates.contains(&local.join("pnpm/codex.bat")));
+    }
+
+    #[test]
+    fn app_support_candidates_do_not_guess_windows_app_container_paths() {
+        let roaming = Path::new(r"C:\Users\CleanerX\AppData\Roaming");
+        let local = Path::new(r"C:\Users\CleanerX\AppData\Local");
+        let candidates =
+            codex_app_support_candidates(None, Some(roaming), Some(local), false, true);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn process_shape_recognizes_windows_app_and_npm_wrappers() {
+        assert!(is_codex_process_shape(
+            "ChatGPT.exe",
+            Some(Path::new(r"C:\Program Files\ChatGPT\ChatGPT.exe")),
+            &[],
+        ));
+        assert!(is_codex_process_shape(
+            "node.exe",
+            Some(Path::new(r"C:\Program Files\nodejs\node.exe")),
+            &[
+                std::ffi::OsString::from("node.exe"),
+                std::ffi::OsString::from(
+                    r"C:\Users\CleanerX\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js",
+                ),
+            ],
+        ));
+        assert!(!is_codex_process_shape(
+            "node.exe",
+            Some(Path::new(r"C:\Program Files\nodejs\node.exe")),
+            &[std::ffi::OsString::from("unrelated.js")],
+        ));
     }
 
     #[test]
