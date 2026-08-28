@@ -4,67 +4,96 @@
 
 # CleanerX
 
-CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, OpenCode, and pi data on macOS 13+, x86_64 Linux, and x86_64 Windows 10/11, and is built with Rust, Tauri 2, React, and TypeScript.
+<p align="center">
+  <strong>Review and safely clean private local data left by coding agents.</strong>
+</p>
 
-CleanerX itself does not connect to cloud services, upload data, or collect telemetry. Project paths are used only to organize sessions: CleanerX never recursively scans or modifies source directories.
+<p align="center">
+  <a href="https://github.com/BeaCox/CleanerX/actions/workflows/ci.yml"><img src="https://github.com/BeaCox/CleanerX/actions/workflows/ci.yml/badge.svg" alt="Product CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-23201a" alt="Apache-2.0 license"></a>
+</p>
+
+CleanerX is a local-only desktop application for inspecting and cleaning storage created by Codex, Claude Code, OpenCode, and pi. It presents a metadata-first inventory, expands the exact cleanup scope for review, and fails closed when an Agent capability, storage schema, path, or writer state cannot be verified.
+
+CleanerX does not connect to cloud services, upload data, collect telemetry, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory.
 
 > [!CAUTION]
-> CleanerX performs destructive operations on private local data. This repository is an engineering MVP and is not yet intended for broad production use. Review every cleanup plan before running it. Backups are optional and disabled by default, so cleanup without a backup is irreversible.
+> CleanerX permanently deletes private local data. The repository is an engineering preview and does not yet provide a promoted binary release; current builds are unsigned. Nothing is selected automatically. Review every cleanup plan; if backup is unavailable or left off, deletion is irreversible.
 
-## Features
+## Why CleanerX
 
-- Discovers current, archived, root, and child Codex sessions through the Codex App Server.
-- Organizes sessions by project root in a tree, with a searchable flat-list alternative.
-- Reports the real disk usage of session rollouts, attachments, generated media, visualizations, logs, caches, and temporary files.
-- Loads transcript, memory, log, and media details only after an explicit user action, using bounded read-only requests. Content bodies are not retained in inventory snapshots.
-- Deletes session trees through the official `thread/delete` operation and shows all affected descendants before confirmation.
-- Uses OpenCode's official CLI while offline and a strictly verified loopback Server API for inactive-session deletion while OpenCode is running, while keeping its SQLite database read-only to CleanerX.
-- Probes `memory/reset` independently, so an unsupported memory operation does not disable otherwise supported session cleanup.
-- Supports optional encrypted `.cxb` backups and preflighted restore that never overwrites existing data and rolls back committed files after an in-process failure. Crash-interruption recovery remains an M1 release gate.
-- Protects active and pinned sessions, authentication, configuration, MCP credentials, rules, skills, plugins, browser data, cookies, and source code.
-- Provides English and Chinese localization, system-aware light and dark themes, keyboard navigation, and reduced-motion support.
+Coding agents can retain session histories, generated media, memories, logs, caches, and temporary files across many projects. Those data classes do not share one safe deletion rule: some have an official API, some use documented files, and some must remain read-only.
+
+CleanerX gives them one review workflow without flattening those differences:
+
+- inventory first, without retaining content bodies beyond one bounded pi display-title excerpt;
+- group sessions by project while keeping source trees outside the cleanup boundary;
+- block active, pinned, loaded, protected, or otherwise unsafe items;
+- show descendants and dependent artifacts before confirmation;
+- use an official Agent mutation route where one exists;
+- offer encrypted backup only when a verified restore route exists; and
+- rescan after cleanup or recovery instead of trusting journal state alone.
+
+CleanerX is not a general disk cleaner, app uninstaller, project cleaner, or cloud-account deletion tool.
+
+## Supported scope
+
+Support is capability-gated at runtime. A listed Agent or platform does not guarantee that every installed version or data category is writable; unsupported and unrecognized operations remain visible where safe and degrade to read-only behavior.
+
+| Agent | Inventory | Mutation route | Backup and restore |
+| --- | --- | --- | --- |
+| Codex | Sessions and descendants, memory, media, logs, caches, temporary data | App Server for session deletion and independently probed memory reset; guarded fixed-root routes for qualified local data | Not available for session or memory deletion because Codex exposes no supported import route |
+| Claude Code | Sessions, project auto memory, history, caches, temporary data | Documented application-data paths with fixed-root validation and writer blocking | Encrypted backup for qualified restorable paths |
+| OpenCode | Sessions and descendants, logs, cache | Official CLI while offline; verified loopback Server API for idle sessions while running | Official export/import for offline session backup and restore |
+| pi | Sessions and fork lineage, provider catalog cache | Documented per-session file removal with fixed-root validation and writer blocking | Encrypted backup and restore for sessions |
+
+The detailed routes, gates, limitations, and automated evidence live in the [mutation compatibility matrix](docs/compatibility.md).
+
+| Platform | Current boundary | Build output |
+| --- | --- | --- |
+| macOS 13+ | Apple Silicon and Intel | Unsigned `.app` and DMG |
+| Linux x86_64 | WebKitGTK 4.1 desktop environment; CI uses Ubuntu 22.04 | Unsigned `.deb` and AppImage |
+| Windows 10/11 x86_64 | WebView2 Runtime; MSVC C runtime is statically linked | Unsigned MSI and NSIS installers |
+
+There is no promoted binary release yet. The release workflow can produce explicitly unsigned artifacts from a reviewed `v*` tag; see the [release policy](docs/open-source-release-plan.md) for the gates that separate source availability from supported cleanup builds.
 
 ## Safety model
 
 CleanerX treats deletion as a security boundary:
 
-| Area | Guarantee |
+| Boundary | Guarantee |
 | --- | --- |
-| Source projects | Project paths are grouping metadata only and are never recursive scan or cleanup roots. |
-| Session deletion | Codex uses App Server `thread/delete`; OpenCode uses its documented CLI while offline or a verified loopback Server API for inactive sessions; CleanerX never writes private session databases. |
-| Capability failure | Missing or unavailable mutation methods degrade the affected operation to read-only reporting. |
-| Direct file cleanup | Every path must remain under a category-specific allowlisted root. Symlinks, traversal, protected descendants, ownership anomalies, and identity changes are rejected. |
-| Active writers | CleanerX never force-quits Codex or another process. It reports the blocker and lets the user retry. |
-| Backups | Backups are opt-in. When selected, the encrypted archive is verified and atomically committed before mutation starts. |
-| Restore | Manifest hashes, roots, ownership, path boundaries, and every destination are checked before commit. Existing IDs and paths are never overwritten; in-process failures roll back committed files. Crash-interruption recovery remains an M1 release gate. |
-| Privacy | There is no telemetry, crash upload, cloud synchronization, updater, background daemon, or unrestricted shell/filesystem API. |
+| Projects and source | Project paths only organize Agent records. They are never recursive scan or cleanup roots. |
+| Protected data | Authentication, configuration, MCP credentials, rules, skills, plugins, browser accounts, cookies, and source code are never cleanup targets. |
+| Paths | Direct operations must remain beneath category-specific fixed roots. Traversal, links or redirects, ownership anomalies, mount/volume changes, protected descendants, and file identity changes are rejected. |
+| Agent state | Active writers are explained and blocked. CleanerX never force-quits an Agent. |
+| Official state | Codex and OpenCode session state is mutated only through supported public routes. CleanerX never repairs or deletes sessions through private SQLite writes. |
+| Backup | Backup is optional and off by default. When selected, the encrypted archive is atomically committed, reopened, and hash-verified before mutation begins. |
+| Restore | Every destination and manifest hash is preflighted before the first move. Restore never overwrites an existing ID or path and is all-or-nothing. |
+| Recovery | A journal records mutation boundaries, but startup recovery always rescans the owning Agent before deciding whether an operation completed. |
+| Privacy | No telemetry, crash upload, cloud sync, updater, background daemon, or unrestricted shell/filesystem API is included. |
 
-Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain, the Linux desktop Secret Service, or Windows Credential Manager. Archives are written as sibling `.partial` files, atomically replaced with native same-directory semantics, and reopened to verify the committed manifest and every payload hash before cleanup can begin. If the native credential store is unavailable, backup creation fails before cleanup begins.
+Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity stays in macOS Keychain, Linux Secret Service, or Windows Credential Manager. If the native credential store is unavailable, backup creation fails before cleanup begins.
 
-For the complete threat model and vulnerability-reporting process, see [SECURITY.md](SECURITY.md).
+For the normative threat model and private reporting process, read [SECURITY.md](SECURITY.md).
 
-## Project status
+## Build from source
 
-CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts, unsigned x86_64 Linux `.deb`/AppImage artifacts, and unsigned x86_64 Windows MSI/NSIS installers. Product CI runs the complete quality gate on Linux, exercises the Rust workspace on all three operating systems, and smoke-tests the Linux and Windows desktop applications. A valid `v*` release tag reruns that CI and publishes every supported platform from the exact tagged commit in one GitHub Release. Further adapter and release hardening remain planned work.
+### Prerequisites
 
-See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
-
-## Requirements
-
-- macOS 13 or later; x86_64 Linux with a WebKitGTK 4.1 desktop environment (CI uses Ubuntu 22.04); or x86_64 Windows 10/11 with the WebView2 Runtime. Windows artifacts statically link the MSVC C runtime, so users do not need a separate Visual C++ Redistributable installation.
-- A supported local Codex, Claude Code, OpenCode, or pi installation for that Agent's inventory and mutations
 - [Rust](https://www.rust-lang.org/tools/install) 1.88 or later
-- [Node.js](https://nodejs.org/) 22 or later (CI uses Node.js 24)
+- [Node.js](https://nodejs.org/) 22 or later; CI uses Node.js 24
 - [pnpm](https://pnpm.io/installation) 11.3.0 or later
-- Xcode Command Line Tools for native macOS builds, the Tauri system packages listed below for Linux builds, or Microsoft C++ Build Tools plus WebView2 for Windows builds
+- platform build tools: Xcode Command Line Tools on macOS, WebKitGTK/Tauri packages on Linux, or Microsoft C++ Build Tools plus WebView2 on Windows
+- a supported local Agent installation or recognized data root for the inventory you want to inspect
 
-Install the Xcode Command Line Tools if needed:
+On macOS, install the command-line tools if needed:
 
 ```bash
 xcode-select --install
 ```
 
-On Debian or Ubuntu, install the Linux build prerequisites:
+On Debian or Ubuntu, install the native dependencies:
 
 ```bash
 sudo apt update
@@ -72,142 +101,101 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 ```
 
-Encrypted backups on Linux also require a desktop Secret Service provider such as GNOME Keyring or KDE Wallet.
+Encrypted backup on Linux also needs a desktop Secret Service provider such as GNOME Keyring or KDE Wallet.
 
-## Getting started
-
-From the repository root, install the locked frontend dependencies and start the development application:
+### Run the development app
 
 ```bash
 make setup
 make dev
 ```
 
-To build an unsigned macOS application:
-
-```bash
-make app
-open target/release/bundle/macos/CleanerX.app
-```
-
-To build both the `.app` and DMG artifacts:
-
-```bash
-make bundles
-```
-
-To build the Linux packages on an x86_64 Linux host:
-
-```bash
-make linux
-```
-
-The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. Normal pushes and pull requests compile a debug Linux application and launch it under Xvfb without spending CI time on release-mode packaging. A release tag builds, smoke-tests, inspects, and publishes both packages in the cross-platform GitHub Release.
-
-To build the Windows installers on an x86_64 Windows host from a Developer PowerShell:
-
-```powershell
-make windows
-make smoke-windows
-```
-
-The installers are written beneath `target/release/bundle/msi/` and `target/release/bundle/nsis/`. Normal pushes and pull requests test the Rust workspace and compile and launch a debug Windows application without building installers. A release tag builds, smoke-tests, inspects, and publishes both installers in the cross-platform GitHub Release.
-
-### Releases
-
-Release automation accepts SemVer tags such as `v0.1.0` or `v0.1.0-beta.1`. The tag must point to a commit contained in `main`, and its version must match `package.json`, the Tauri configuration, and every Cargo workspace package. Push the reviewed tag to start the release:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The workflow reruns product CI, builds all four platform/architecture variants, records toolchain and runner metadata, publishes the committed lockfiles, and creates SHA-256 checksums before creating the GitHub Release. Prerelease SemVer tags are automatically marked as prereleases. Release assets remain explicitly named as unsigned.
-
-Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Windows SmartScreen may likewise warn about the unsigned installer. Do not bypass either platform's protection for a binary from an untrusted source.
-
-## Usage
-
-1. Launch CleanerX, select the target Agent, and scan its detected installation.
-2. Inspect the overview, session tree, media, memory, logs, caches, and temporary data.
-3. Select individual cleanable items or use scoped bulk selection. Nothing is selected by default.
-4. Review the cleanup plan, including expanded session descendants and any blocked items.
-5. Choose whether to create an encrypted backup. This option is off by default.
-6. Confirm the operation. CleanerX performs the cleanup and rescans to verify the result.
-
-You can set custom absolute data roots in Settings. Codex resolves `CODEX_HOME` then `~/.codex`; Claude Code resolves `CLAUDE_CONFIG_DIR` then `~/.claude`; OpenCode resolves `XDG_DATA_HOME/opencode` then `~/.local/share/opencode` on every supported platform (where `~` is `%USERPROFILE%` on Windows).
-
-## Read-only mode
-
-On Unix, CleanerX first tries the active Codex control socket. If the socket is stale or unresponsive, it falls back to an isolated stdio App Server. Windows uses the public stdio App Server transport directly because Unix-domain socket proxying is not assumed there. If the available transport does not provide the required official capability, the affected session operation remains read-only.
-
-If CleanerX reports read-only mode:
-
-1. Use **Retry connection** and read the specific reason shown in the application.
-2. Confirm that a Codex CLI or supported desktop application is installed. In a terminal, `codex --version` and `codex app-server --help` should succeed when using the CLI.
-3. If your data lives in a custom location, set an absolute `CODEX_HOME` in Settings and scan again.
-4. Restart CleanerX after upgrading Codex.
-
-CleanerX will not bypass a missing official deletion capability by writing to private SQLite databases.
-
-## Architecture
-
-| Path | Responsibility |
-| --- | --- |
-| `crates/cleanerx-core` | Domain types, cleanup planning, path validation, backup and restore, hashing, and transaction invariants. |
-| `crates/adapter-codex` | Codex discovery, capability probing, App Server transport, storage classification, and read-only compatibility fallbacks. |
-| `crates/adapter-claude` | Claude Code discovery, documented local-storage classification, bounded previews, and guarded path cleanup. |
-| `crates/adapter-opencode` | OpenCode discovery, recognized-SQLite read-only inventory, and official CLI delete/export/import routes. |
-| `src-tauri` | Narrow application command boundary and cleanup transaction orchestration. |
-| `src` | React and TypeScript presentation layer. |
-
-Future agents integrate through the compile-time `AgentAdapter` trait. CleanerX does not load a dynamic cleanup-plugin ABI or expose general shell and filesystem access to the webview.
-
-## Development
-
-The root `Makefile` is the stable entry point for local development and CI:
-
-| Command | Purpose |
-| --- | --- |
-| `make setup` | Install dependencies from the lockfile. |
-| `make dev` | Run the Tauri application with hot reload. |
-| `make format` | Format the Rust workspace. |
-| `make check` | Run formatting checks, Clippy, Rust tests, frontend tests, and the production frontend build. |
-| `make app` | Build an unsigned macOS `.app`. |
-| `make dmg` | Build an unsigned macOS DMG. |
-| `make bundles` | Build the `.app` and DMG in one Tauri invocation. |
-| `make linux` | Build unsigned Linux `.deb` and AppImage packages. |
-| `make smoke-linux` | Launch the built Linux binary under Xvfb for a native smoke test; pass `LINUX_PROFILE=debug` for a debug build. |
-| `make windows` | Build unsigned Windows MSI and NSIS installers. |
-| `make smoke-windows` | Launch the built Windows binary for a native smoke test; pass `WINDOWS_PROFILE=debug` for a debug build. |
-
-Run the complete validation pipeline before submitting a change:
+Run the complete validation gate before submitting a change:
 
 ```bash
 make check
 ```
 
-Use `TARGET=<rust-target-triple>` with the bundle commands when building for an explicit architecture.
+### Build a native package
+
+| Command | Host and result |
+| --- | --- |
+| `make app` | macOS: unsigned `.app` |
+| `make bundles` | macOS: unsigned `.app` and DMG |
+| `make linux` | Linux x86_64: unsigned `.deb` and AppImage |
+| `make windows` | Windows x86_64 Developer PowerShell: unsigned MSI and NSIS installers |
+
+Use `TARGET=<rust-target-triple>` with bundle commands when selecting an explicit architecture. Native packages are written beneath `target/release/bundle/`.
+
+Unsigned builds may trigger Gatekeeper or SmartScreen. Verify that the binary came from the expected commit before approving it. Do not disable platform protections globally or trust a checksum as proof of publisher identity.
+
+## Use CleanerX
+
+1. Launch CleanerX, select a detected Agent, and scan.
+2. Inspect the overview, sessions, media, memory, logs, caches, and temporary data available for that Agent.
+3. Select individual eligible items or use selection within the current visible scope. Nothing is selected by default.
+4. Review the expanded cleanup plan, including descendants, dependent artifacts, and blockers.
+5. Choose whether to create an encrypted backup when the complete plan has a supported restore route. Backup is off by default.
+6. Confirm cleanup. CleanerX executes the qualified route and rescans to verify the result.
+
+Custom Agent data roots must be absolute and are saved in Settings. The defaults are:
+
+| Agent | Resolution order |
+| --- | --- |
+| Codex | Settings override → `CODEX_HOME` → `~/.codex` |
+| Claude Code | Settings override → `CLAUDE_CONFIG_DIR` → `~/.claude` |
+| OpenCode | Settings override → `XDG_DATA_HOME/opencode` → `~/.local/share/opencode` |
+| pi | Settings override → `PI_CODING_AGENT_DIR` → `~/.pi/agent` |
+
+On Windows, `~` means `%USERPROFILE%`.
+
+## When an operation is read-only
+
+Read-only mode is a safety result, not a partial deletion attempt. CleanerX shows the specific missing capability, unrecognized schema, unsafe path, or active-writer blocker.
+
+1. Read the reason in CleanerX and use **Retry connection** after resolving it.
+2. Let the affected Agent finish writing, then close it normally; CleanerX will not force-quit it.
+3. Confirm the Agent executable and configured data root. For Codex CLI installations, `codex --version` and `codex app-server --help` should succeed.
+4. Upgrade the Agent if the installed version lacks the required public route, then rescan.
+
+CleanerX will not turn an unsupported operation into a private database write or an unrestricted file deletion.
+
+## Architecture
+
+| Path | Responsibility |
+| --- | --- |
+| `crates/cleanerx-core` | Domain types, cleanup planning, path validation, backup/restore, hashing, and transaction invariants |
+| `crates/adapter-codex` | Codex discovery, App Server transport and capability probing, storage classification, and read-only fallbacks |
+| `crates/adapter-claude` | Claude Code discovery, documented storage classification, bounded previews, and guarded path cleanup |
+| `crates/adapter-opencode` | OpenCode discovery, recognized-SQLite read-only inventory, and official CLI/Server mutation routes |
+| `crates/adapter-pi` | pi discovery, documented session inventory and deletion, fork lineage, and protected-path classification |
+| `src-tauri` | Narrow Tauri command boundary and cleanup transaction orchestration |
+| `src` | React/TypeScript presentation and interaction |
+
+Future Agents implement the compile-time `AgentAdapter` trait. CleanerX does not load a dynamic cleanup-plugin ABI or expose general shell and filesystem access to the webview.
+
+CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations and validates Windows behavior against the documented [Codex Windows execution model](https://learn.chatgpt.com/docs/windows/windows-app). Runtime capabilities are negotiated because Agents evolve independently of CleanerX.
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Development roadmap](docs/roadmap.md)
+Start with the [documentation index](docs/README.md). The main references are:
+
+- [Mutation compatibility matrix](docs/compatibility.md)
 - [Storage and transaction model](docs/storage-model.md)
 - [Agent session hierarchy](docs/agent-session-hierarchy.md)
-- [Agent memory capability and safety model](docs/memory-management.md)
+- [Agent memory model](docs/memory-management.md)
+- [Development roadmap](docs/roadmap.md)
+- [Open-source release policy](docs/open-source-release-plan.md)
 - [Security policy](SECURITY.md)
 
-CleanerX follows the public [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) for session operations. Runtime capabilities are negotiated because Codex evolves independently of CleanerX. Windows behavior is validated against the native execution model documented for the [Codex Windows app](https://learn.chatgpt.com/docs/windows/windows-app).
+## Contributing and support
 
-## Contributing
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the repository-wide [AGENTS.md](AGENTS.md) constraints before starting. Public issues must contain sanitized metadata only; possible protected-data mutation, path escape, credential exposure, or backup/restore compromise belongs in a [private security advisory](https://github.com/BeaCox/CleanerX/security/advisories/new).
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the repository-wide [AGENTS.md](AGENTS.md) constraints before starting. New storage schemas, categories, and mutation paths require fixtures and negative-path tests, including proof that protected files and source trees remain unchanged.
+## Related projects and scope
 
-## Security
-
-Please report vulnerabilities through a private security advisory in the source repository. Do not include real transcripts, credentials, memory databases, operation journals, or `.cxb` archives in a public report. See [SECURITY.md](SECURITY.md) for the requested report details.
+CleanerX benefits from the documentation and interaction patterns established by mature local cleanup tools such as [BleachBit](https://github.com/bleachbit/bleachbit), [Czkawka/Krokiet](https://github.com/qarmin/czkawka), [Pearcleaner](https://github.com/alienator88/Pearcleaner), and [Bulk Crap Uninstaller](https://github.com/Klocman/Bulk-Crap-Uninstaller). Those projects serve broader disk, duplicate-file, application, or package-cleanup use cases. CleanerX does not reuse their cleaner definitions and deliberately stays limited to recognized coding-agent storage.
 
 ## License
 
-Copyright © 2026 BeaCOx. Licensed under the [Apache License 2.0](LICENSE).
+Copyright © 2026 BeaCox. Licensed under the [Apache License 2.0](LICENSE).

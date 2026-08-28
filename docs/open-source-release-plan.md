@@ -45,16 +45,16 @@ The repository may be public before mutation hardening is complete only when:
 
 ## Mutation-capable binary gate
 
-No alpha, beta, or supported binary may promote cleanup mutations until M1 in the [development roadmap](roadmap.md#m1--codex-safety-hardening) passes. In particular:
+No alpha, beta, or supported binary may promote cleanup mutations until M1 in the [development roadmap](roadmap.md#m1--mutation-safety-and-crash-recovery) passes. In particular:
 
 - every direct-file and official-API mutation revalidates capability, path, identity, ownership, protected descendants, and active-writer state;
 - a selected backup is independently reopened and verified before mutation;
 - restore preflights all destinations and is all-or-nothing;
-- every irreversible boundary has deterministic fault-injection coverage;
+- backup creation, restore commits, and journal persistence around adapter mutations have deterministic boundary coverage;
 - interrupted operations have an explainable, recoverable journal state; and
 - unknown capabilities or schemas remain visible but read-only.
 
-If this gate is incomplete, CleanerX may remain a source preview but must not promote a mutation-capable download.
+The shared M1 gate is implemented for the routes recorded in the [mutation compatibility matrix](compatibility.md). A route absent from that matrix must remain read-only until it is qualified; broader version and native-host evidence remains part of the alpha/beta release process.
 
 ## Unsigned-artifact policy
 

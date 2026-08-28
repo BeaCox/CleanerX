@@ -522,6 +522,18 @@ td > strong, .session-name strong { font-variant-numeric: tabular-nums; }
 .no-backup-warning { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--red), transparent 62%); border-radius: var(--radius-m); background: var(--red-soft); color: var(--red); font-size: var(--font-12); line-height: 1.5; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
 .destructive-dialog-mark { display: grid; width: 38px; height: 38px; margin-bottom: 14px; place-items: center; border: 1px solid color-mix(in srgb, var(--red), transparent 55%); border-radius: var(--radius-m); background: var(--red-soft); color: var(--red); }
+.recovery-dialog { width: min(680px, 100%); }
+.recovery-heading-mark { display: grid; width: 38px; height: 38px; margin-bottom: 14px; place-items: center; border: 1px solid var(--border-strong); border-radius: var(--radius-m); background: var(--surface-soft); color: var(--amber); }
+.recovery-lead { margin: 5px 0 14px; color: var(--muted); font-size: var(--font-12); line-height: 1.55; }
+.recovery-operation-id { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-m); }
+.recovery-operation-id span { color: var(--muted-2); font-family: var(--mono); font-size: var(--font-10); letter-spacing: 0.06em; text-transform: uppercase; }
+.recovery-operation-id code { overflow: hidden; color: var(--text); font-size: var(--font-11); text-overflow: ellipsis; white-space: nowrap; }
+.recovery-metrics { margin-top: 10px; }
+.recovery-metrics strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recovery-warning-list { display: grid; gap: 5px; margin: 12px 0; }
+.recovery-warning-list code { padding: 8px 10px; overflow-wrap: anywhere; border-left: 2px solid var(--red); background: var(--red-soft); color: var(--red); font-size: var(--font-10-5); }
+.recovery-termination-note { margin: 13px 0 0; color: var(--muted); font-size: var(--font-12); line-height: 1.55; }
+.recovery-actions { flex-wrap: wrap; }
 .purge-backup-summary { display: grid; grid-template-columns: 1fr 1fr; margin: 16px 0 12px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-l); }
 .purge-backup-summary > div { padding: 10px 12px; border-right: 1px solid var(--border); }
 .purge-backup-summary span, .purge-backup-summary strong { display: block; }

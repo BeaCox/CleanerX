@@ -152,8 +152,8 @@ impl AgentAdapter for CodexAdapter {
                         )
                         .await
                         .is_ok();
-                    capabilities.thread_delete = true;
-                    let memory_reset = client.supports_memory_reset().await;
+                    capabilities.thread_delete = client.supports_method("thread/delete").await;
+                    let memory_reset = client.supports_method("memory/reset").await;
                     capabilities.memory = cleanerx_core::MemoryCapabilities {
                         can_scan: true,
                         can_read_content: true,
@@ -258,7 +258,9 @@ impl AgentAdapter for CodexAdapter {
                     paths.push(associated.to_string_lossy().into_owned());
                 }
             }
-            let blocked_reason = if is_active_status(&session.status) {
+            let blocked_reason = if session.pinned {
+                Some("Pinned threads are protected from cleanup".into())
+            } else if is_active_status(&session.status) {
                 Some("Thread is active or loaded in Codex".into())
             } else {
                 None
@@ -281,7 +283,8 @@ impl AgentAdapter for CodexAdapter {
                 size_bytes: session.size_bytes,
                 modified_at: session.updated_at,
                 risk: RiskLevel::High,
-                recoverable: true,
+                // Codex exposes deletion but no supported session import/restore route.
+                recoverable: false,
                 default_selected: false,
                 protected: false,
                 blocked_reason,
@@ -1286,11 +1289,11 @@ impl AppServerClient {
         }
     }
 
-    async fn supports_memory_reset(&mut self) -> bool {
-        // Invalid params proves that the method is registered without mutating memory.
+    async fn supports_method(&mut self, method: &str) -> bool {
+        // Invalid params prove that the method is registered without invoking its mutation.
         let id = self.next_id;
         self.next_id += 1;
-        let message = json!({ "id": id, "method": "memory/reset", "params": {} });
+        let message = json!({ "id": id, "method": method, "params": {} });
         if self
             .stdin
             .write_all(format!("{message}\n").as_bytes())
@@ -1311,17 +1314,21 @@ impl AppServerClient {
             if value.get("id").and_then(Value::as_u64) != Some(id) {
                 continue;
             }
-            let code = value
-                .pointer("/error/code")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            let message = value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            return code != -32601 && !message.to_ascii_lowercase().contains("not found");
+            return method_probe_registered(&value);
         }
     }
+}
+
+fn method_probe_registered(value: &Value) -> bool {
+    let code = value
+        .pointer("/error/code")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let message = value
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    code != -32601 && !message.to_ascii_lowercase().contains("not found")
 }
 
 impl Drop for AppServerClient {
@@ -1779,7 +1786,8 @@ fn scan_memory(home: &Path, items: &mut Vec<CleanupItem>) -> Result<(), CleanerE
         size_bytes,
         modified_at: newest_modified(&paths),
         risk: RiskLevel::High,
-        recoverable: true,
+        // `memory/reset` has no matching supported import route.
+        recoverable: false,
         default_selected: false,
         protected: false,
         blocked_reason: None,
@@ -1836,10 +1844,13 @@ fn scan_orphan_generated_content(
                 size_bytes: cleanerx_core::safety::allocated_size(&path).unwrap_or(0),
                 modified_at: modified_at(&path),
                 risk: RiskLevel::Review,
-                recoverable: true,
+                recoverable: false,
                 default_selected: false,
                 protected: false,
-                blocked_reason: None,
+                blocked_reason: Some(
+                    "Orphaned media is inspect-only; CleanerX removes session-owned media only after the owning session deletion succeeds"
+                        .into(),
+                ),
                 metadata: BTreeMap::from([
                     ("association".into(), "orphaned".into()),
                     (
@@ -2899,6 +2910,40 @@ mod tests {
         assert_eq!(thumbnail.item_id, item.id);
         assert_eq!(thumbnail.title, image.to_string_lossy());
         assert!(thumbnail.data_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn orphaned_media_is_visible_but_not_independently_mutable() {
+        let home = tempfile::tempdir().expect("Codex home");
+        let orphan = home.path().join("attachments/orphan-id");
+        fs::create_dir_all(&orphan).expect("orphan directory");
+        fs::write(orphan.join("private.png"), b"private image").expect("orphan media");
+        let mut items = Vec::new();
+
+        scan_orphan_generated_content(home.path(), &[], &mut items).expect("scan media");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].category, StorageCategory::Attachment);
+        assert!(
+            items[0]
+                .blocked_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("owning session deletion"))
+        );
+    }
+
+    #[test]
+    fn mutation_method_probes_distinguish_missing_methods_from_invalid_params() {
+        assert!(!method_probe_registered(&json!({
+            "error": { "code": -32601, "message": "Method not found" }
+        })));
+        assert!(!method_probe_registered(&json!({
+            "error": { "code": 1, "message": "thread/delete not found" }
+        })));
+        assert!(method_probe_registered(&json!({
+            "error": { "code": -32602, "message": "missing threadId" }
+        })));
+        assert!(method_probe_registered(&json!({ "result": null })));
     }
 
     #[tokio::test]

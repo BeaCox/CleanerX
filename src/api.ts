@@ -10,6 +10,8 @@ import type {
   InventorySnapshot,
   ItemContentDetail,
   ItemThumbnail,
+  RecoveryInventory,
+  RecoveryOperation,
   SessionFilter,
   SessionPage,
   SessionPageRequest,
@@ -239,6 +241,32 @@ export const api = {
     };
   },
 
+  async listRecoveryOperations(): Promise<RecoveryInventory> {
+    if (inTauri()) return invoke("list_recovery_operations");
+    return { operations: [], warnings: [] };
+  },
+
+  async reconcileRecoveryOperation(operationId: string): Promise<RecoveryOperation> {
+    if (inTauri()) return invoke("reconcile_recovery_operation", { operationId });
+    throw new Error(`Recovery operation ${operationId} is unavailable`);
+  },
+
+  async restoreRecoveryOperation(operationId: string): Promise<void> {
+    if (inTauri()) {
+      await invoke("restore_recovery_operation", { operationId });
+      return;
+    }
+    throw new Error(`Recovery operation ${operationId} is unavailable`);
+  },
+
+  async terminateRecoveryOperation(operationId: string): Promise<void> {
+    if (inTauri()) {
+      await invoke("terminate_recovery_operation", { operationId });
+      return;
+    }
+    throw new Error(`Recovery operation ${operationId} is unavailable`);
+  },
+
   async listBackups(): Promise<BackupRecord[]> {
     if (inTauri()) return invoke("list_backups");
     return structuredClone(mockBackups);
@@ -402,7 +430,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       sizeBytes: record.sizeBytes,
       modifiedAt: record.updatedAt,
       risk: "high" as const,
-      recoverable: true,
+      recoverable: kind !== "codex",
       defaultSelected: false,
       protected: false,
       blockedReason: index === 0 ? `Thread is active or loaded in ${kind === "codex" ? "Codex" : kind === "claudeCode" ? "Claude Code" : kind === "pi" ? "pi" : "OpenCode"}` : undefined,
@@ -416,7 +444,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       paths: ["/Users/demo/.codex/memories_1.sqlite"],
       sizeBytes: 12_600_000,
       risk: "high" as const,
-      recoverable: true,
+      recoverable: false,
       defaultSelected: false,
       protected: false,
       metadata: { scope: "global", files: "1" },
@@ -429,9 +457,10 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       paths: ["/Users/demo/.codex/generated_images/orphan"],
       sizeBytes: 36_200_000,
       risk: "review" as const,
-      recoverable: true,
+      recoverable: false,
       defaultSelected: false,
       protected: false,
+      blockedReason: "Orphaned media is inspect-only; remove session-owned media through its owning session",
       metadata: { entries: "11", association: "orphaned" },
     },
     {
@@ -442,9 +471,10 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
       paths: ["/Users/demo/.codex/attachments/session-files.zip"],
       sizeBytes: 14_800_000,
       risk: "review" as const,
-      recoverable: true,
+      recoverable: false,
       defaultSelected: false,
       protected: false,
+      blockedReason: "Orphaned media is inspect-only; remove session-owned media through its owning session",
       metadata: { entries: "1", association: "orphaned" },
     },
     {
@@ -512,6 +542,7 @@ function createMockSnapshot(kind: AgentKind = "codex"): InventorySnapshot {
           subtitle: "Claude Code project auto memory",
           paths: ["/Users/demo/.claude/projects/-Users-demo-Developer-atlas-web/memory"],
           projectId: "atlas",
+          recoverable: true,
           metadata: { scope: "project", files: "3" },
         };
         if (item.category === "log") return {

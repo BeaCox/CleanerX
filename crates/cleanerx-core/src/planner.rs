@@ -45,7 +45,15 @@ pub fn create_cleanup_plan(
         .collect();
     let selected_session_ids: HashSet<String> = selected
         .iter()
-        .filter_map(|item_id| item_by_id[item_id.as_str()].thread_id.clone())
+        .filter_map(|item_id| {
+            let item = item_by_id[item_id.as_str()];
+            matches!(
+                item.category,
+                StorageCategory::Session | StorageCategory::ArchivedSession
+            )
+            .then(|| item.thread_id.clone())
+            .flatten()
+        })
         .collect();
     let mut expanded_sessions = BTreeSet::new();
     for session_id in &selected_session_ids {
@@ -84,7 +92,7 @@ pub fn create_cleanup_plan(
         operation.paths.clear();
         operation.size_bytes = 0;
         operation.session_ids = deletion_roots;
-        operation.backup_eligible = true;
+        operation.backup_eligible = false;
         for session_id in &expanded_sessions {
             if let Some(session) = session_by_id.get(session_id.as_str()) {
                 operation.size_bytes = operation.size_bytes.saturating_add(session.size_bytes);
@@ -94,10 +102,11 @@ pub fn create_cleanup_plan(
                     operation.paths.push(path.clone());
                 }
                 let item_id = format!("session:{session_id}");
-                if item_by_id.contains_key(item_id.as_str())
-                    && !operation.item_ids.contains(&item_id)
-                {
-                    operation.item_ids.push(item_id);
+                if let Some(item) = item_by_id.get(item_id.as_str()) {
+                    operation.backup_eligible |= item.recoverable;
+                    if !operation.item_ids.contains(&item_id) {
+                        operation.item_ids.push(item_id);
+                    }
                 }
             }
         }
@@ -109,9 +118,21 @@ pub fn create_cleanup_plan(
         if let Some(reason) = &item.blocked_reason {
             blockers.push(format!("{}: {reason}", item.title));
         }
+        if matches!(
+            item.category,
+            StorageCategory::Attachment | StorageCategory::GeneratedImage
+        ) {
+            blockers.push(format!(
+                "{}: session-owned media can be removed only after its owning session deletion succeeds",
+                item.title
+            ));
+        }
     }
     for session_id in &expanded_sessions {
         if let Some(session) = session_by_id.get(session_id.as_str()) {
+            if session.pinned {
+                blockers.push(format!("Session '{}' is pinned", session.name));
+            }
             let status = session.status.to_ascii_lowercase();
             if matches!(status.as_str(), "active" | "loaded") {
                 blockers.push(format!("Session '{}' is active or loaded", session.name));
@@ -145,11 +166,24 @@ pub fn create_cleanup_plan(
     }
 
     let estimated_bytes = grouped.values().map(|operation| operation.size_bytes).sum();
-    let estimated_backup_bytes = grouped
+    let backup_covers_full_plan = grouped
         .values()
-        .filter(|operation| operation.backup_eligible)
-        .map(|operation| operation.size_bytes)
-        .sum();
+        .flat_map(|operation| &operation.item_ids)
+        .all(|item_id| {
+            item_by_id
+                .get(item_id.as_str())
+                .is_some_and(|item| item.recoverable)
+        });
+    if !backup_covers_full_plan {
+        for operation in grouped.values_mut() {
+            operation.backup_eligible = false;
+        }
+    }
+    let estimated_backup_bytes = if backup_covers_full_plan {
+        estimated_bytes
+    } else {
+        0
+    };
 
     Ok(CleanupPlan {
         id: Uuid::new_v4(),
@@ -233,6 +267,99 @@ mod tests {
         let mut snapshot = fixture();
         snapshot.items[0].protected = true;
         assert!(create_cleanup_plan(&snapshot, &["session:root".into()]).is_err());
+    }
+
+    #[test]
+    fn media_selection_never_expands_into_an_owning_session_delete() {
+        let mut snapshot = fixture();
+        snapshot.items.push(CleanupItem {
+            id: "attachment:root".into(),
+            category: StorageCategory::Attachment,
+            title: "Root attachment".into(),
+            subtitle: None,
+            paths: vec!["/tmp/attachments/root".into()],
+            project_id: None,
+            thread_id: Some("root".into()),
+            size_bytes: 1,
+            modified_at: None,
+            risk: RiskLevel::Review,
+            recoverable: true,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::new(),
+        });
+
+        let plan = create_cleanup_plan(&snapshot, &["attachment:root".into()]).expect("plan");
+
+        assert!(plan.expanded_session_ids.is_empty());
+        assert!(
+            plan.operations
+                .iter()
+                .all(|operation| operation.kind != OperationKind::DeleteSession)
+        );
+        assert!(
+            plan.blockers
+                .iter()
+                .any(|blocker| blocker.contains("only after its owning session deletion succeeds"))
+        );
+    }
+
+    #[test]
+    fn session_backup_eligibility_comes_from_the_adapter_item() {
+        let mut snapshot = fixture();
+        snapshot.items[0].recoverable = false;
+
+        let plan = create_cleanup_plan(&snapshot, &["session:root".into()]).expect("plan");
+
+        assert!(!plan.operations[0].backup_eligible);
+        assert_eq!(plan.estimated_backup_bytes, 0);
+    }
+
+    #[test]
+    fn pinned_sessions_remain_blocked_at_the_core_boundary() {
+        let mut snapshot = fixture();
+        snapshot.sessions[0].pinned = true;
+
+        let plan = create_cleanup_plan(&snapshot, &["session:root".into()]).expect("plan");
+
+        assert!(
+            plan.blockers
+                .iter()
+                .any(|blocker| blocker.contains("is pinned"))
+        );
+    }
+
+    #[test]
+    fn backup_is_not_offered_for_a_partially_restorable_plan() {
+        let mut snapshot = fixture();
+        snapshot.items.push(CleanupItem {
+            id: "cache:test".into(),
+            category: StorageCategory::Cache,
+            title: "Regenerable cache".into(),
+            subtitle: None,
+            paths: vec!["/tmp/cache".into()],
+            project_id: None,
+            thread_id: None,
+            size_bytes: 5,
+            modified_at: None,
+            risk: RiskLevel::Safe,
+            recoverable: false,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::new(),
+        });
+
+        let plan = create_cleanup_plan(&snapshot, &["session:root".into(), "cache:test".into()])
+            .expect("plan");
+
+        assert_eq!(plan.estimated_backup_bytes, 0);
+        assert!(
+            plan.operations
+                .iter()
+                .all(|operation| !operation.backup_eligible)
+        );
     }
 
     fn fixture() -> InventorySnapshot {

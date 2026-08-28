@@ -27,8 +27,8 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "publisher": "BeaCOx",
-    "copyright": "Copyright © 2026 BeaCOx",
+    "publisher": "BeaCox",
+    "copyright": "Copyright © 2026 BeaCox",
     "category": "Utility",
     "shortDescription": "Inspect and safely clean local coding-agent storage.",
     "longDescription": "CleanerX is a local-only desktop utility for reviewing and safely cleaning storage created by supported coding agents.",

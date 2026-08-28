@@ -8,11 +8,12 @@ use adapter_opencode::OpenCodeAdapter;
 use adapter_pi::PiAdapter;
 use chrono::{DateTime, Duration, Utc};
 use cleanerx_core::{
-    AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupRecord, BackupSource,
-    BackupStore, CategorySummary, CleanerError, CleanupItem, CleanupPlan, CleanupResult,
-    FileIdentity, InventorySnapshot, ItemContentDetail, ItemThumbnail, OperationKind,
+    AgentAdapter, AgentInstallation, AgentKind, AppSettings, BackupEvent, BackupRecord,
+    BackupSource, BackupStore, CategorySummary, CleanerError, CleanupItem, CleanupPlan,
+    CleanupResult, FileIdentity, InventorySnapshot, ItemContentDetail, ItemThumbnail,
+    JournalInventory, JournalMutationStatus, JournalStore, OperationJournal, OperationKind,
     OperationStatus, PathPolicy, SessionRecord, StorageCategory, atomic_replace_file,
-    create_cleanup_plan, safe_remove, validate_existing_beneath,
+    create_cleanup_plan, safe_remove,
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -42,16 +43,6 @@ impl AppState {
             AgentKind::Pi => &self.pi_adapter,
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OperationJournal {
-    operation_id: Uuid,
-    status: OperationStatus,
-    updated_at: DateTime<Utc>,
-    backup_id: Option<Uuid>,
-    message: Option<String>,
 }
 
 const UNASSIGNED_PROJECT_ID: &str = "__no_project";
@@ -102,6 +93,40 @@ struct InventoryReport {
     unassigned_session_count: usize,
     unassigned_session_size_bytes: u64,
     session_selection: Vec<SessionSelectionCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum RecoveryObservation {
+    Applied,
+    NotApplied,
+    Partial,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryOperation {
+    operation_id: Uuid,
+    agent: AgentKind,
+    journal_status: OperationStatus,
+    updated_at: DateTime<Utc>,
+    backup_id: Option<Uuid>,
+    completed_mutations: usize,
+    total_mutations: usize,
+    observed_applied_mutations: usize,
+    observation: RecoveryObservation,
+    can_finalize: bool,
+    can_restore: bool,
+    can_terminate: bool,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryInventory {
+    operations: Vec<RecoveryOperation>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -569,23 +594,75 @@ async fn execute_cleanup(
     if !plan.blockers.is_empty() {
         return Err(format!("Cleanup is blocked: {}", plan.blockers.join("; ")));
     }
-    write_journal(
-        &state.data_dir,
-        OperationJournal {
-            operation_id: plan.id,
-            status: OperationStatus::Planned,
-            updated_at: Utc::now(),
-            backup_id: None,
-            message: None,
-        },
-    )
-    .map_err(error_message)?;
+    if create_backup && plan.estimated_backup_bytes == 0 {
+        return Err(
+            "A restorable backup is unavailable for the complete selected cleanup plan".into(),
+        );
+    }
+    let journal_store =
+        JournalStore::new(state.data_dir.join("operations")).map_err(error_message)?;
+    let journal_inventory = journal_store.inventory().map_err(error_message)?;
+    if !journal_inventory.warnings.is_empty() {
+        return Err(format!(
+            "Cleanup is blocked by an unrecognized operation journal: {}",
+            journal_inventory.warnings.join("; ")
+        ));
+    }
+    if let Some(pending) =
+        pending_recovery_for_agent(&journal_inventory, snapshot.installation.kind)
+    {
+        return Err(format!(
+            "{} cleanup is blocked until operation {} is recovered or safely closed",
+            snapshot.installation.kind.display_name(),
+            pending.operation_id
+        ));
+    }
+    let planned_item_ids = plan
+        .operations
+        .iter()
+        .flat_map(|operation| &operation.item_ids)
+        .collect::<HashSet<_>>();
+    let item_categories = snapshot
+        .items
+        .iter()
+        .filter(|item| planned_item_ids.contains(&item.id))
+        .map(|item| (item.id.clone(), item.category))
+        .collect::<BTreeMap<_, _>>();
+    let mut journal = OperationJournal::new_with_item_categories(
+        plan.clone(),
+        snapshot.installation.kind,
+        create_backup,
+        item_categories,
+    );
+    journal_store.create(&journal).map_err(error_message)?;
 
-    let result = execute_plan(&state, &plan, &snapshot, create_backup).await;
-    if let Err(error) = &result {
-        let _ = record_failed_operation(&state.data_dir, plan.id, error);
+    let result = execute_plan(
+        &state,
+        &plan,
+        &snapshot,
+        create_backup,
+        &journal_store,
+        &mut journal,
+    )
+    .await;
+    if let Err(error) = &result
+        && let Err(journal_error) = record_failed_operation(&journal_store, plan.id, error)
+    {
+        return Err(format!(
+            "{error}; operation journal also failed: {journal_error}"
+        ));
     }
     result.map_err(error_message)
+}
+
+fn pending_recovery_for_agent(
+    inventory: &JournalInventory,
+    agent: AgentKind,
+) -> Option<&OperationJournal> {
+    inventory
+        .journals
+        .iter()
+        .find(|journal| journal.agent == agent && journal.needs_recovery())
 }
 
 async fn execute_plan(
@@ -593,6 +670,8 @@ async fn execute_plan(
     plan: &CleanupPlan,
     snapshot: &InventorySnapshot,
     create_backup: bool,
+    journal_store: &JournalStore,
+    journal: &mut OperationJournal,
 ) -> Result<CleanupResult, CleanerError> {
     let settings = state.settings.lock().clone();
     let kind = snapshot.installation.kind;
@@ -659,40 +738,50 @@ async fn execute_plan(
             None
         };
         if sources.is_empty() {
-            None
+            return Err(CleanerError::Backup(
+                "the selected backup contains no eligible source files".into(),
+            ));
         } else {
-            let manifest =
-                store.create_backup(plan, kind, snapshot.installation.version.clone(), &sources)?;
-            drop(export_staging);
-            write_journal(
-                &state.data_dir,
-                OperationJournal {
-                    operation_id: plan.id,
-                    status: OperationStatus::BackupWritten,
-                    updated_at: Utc::now(),
-                    backup_id: Some(manifest.id),
-                    message: None,
+            let manifest = store.create_backup_with_hook(
+                plan,
+                kind,
+                snapshot.installation.version.clone(),
+                &sources,
+                |event| {
+                    match event {
+                        BackupEvent::BeforeArchiveCreation(backup_id) => {
+                            journal.mark_backup_writing(backup_id)?;
+                        }
+                        BackupEvent::AfterArchiveCreation(backup_id) => {
+                            journal.mark_backup_archive_committed(backup_id)?;
+                        }
+                        BackupEvent::BeforeArchiveVerification(backup_id) => {
+                            journal.mark_backup_verifying(backup_id)?;
+                        }
+                        BackupEvent::AfterArchiveVerification(backup_id) => {
+                            journal.mark_backup_verified(backup_id)?;
+                        }
+                        BackupEvent::BeforeCatalogCommit(backup_id) => {
+                            journal.mark_backup_catalog_writing(backup_id)?;
+                        }
+                        BackupEvent::AfterCatalogCommit(backup_id) => {
+                            journal.mark_backup_written(backup_id)?;
+                        }
+                    }
+                    journal_store.save(journal)
                 },
             )?;
+            drop(export_staging);
             Some(manifest.id)
         }
     };
 
-    write_journal(
-        &state.data_dir,
-        OperationJournal {
-            operation_id: plan.id,
-            status: OperationStatus::Deleting,
-            updated_at: Utc::now(),
-            backup_id,
-            message: None,
-        },
-    )?;
-
     let mut warnings = Vec::new();
     let mut deleted_item_ids = Vec::new();
     let before = snapshot.total_bytes;
-    for operation in &plan.operations {
+    for (operation_index, operation) in plan.operations.iter().enumerate() {
+        journal.mark_mutation_started(operation_index)?;
+        journal_store.save(journal)?;
         match operation.kind {
             OperationKind::DeleteSession => {
                 if matches!(kind, AgentKind::Codex | AgentKind::OpenCode) {
@@ -754,17 +843,30 @@ async fn execute_plan(
                     )?;
                     deleted_item_ids.extend(operation.item_ids.iter().cloned());
                 } else {
+                    if operation.item_ids.iter().any(|item_id| {
+                        selected_items.iter().any(|item| {
+                            &item.id == item_id
+                                && matches!(
+                                    item.category,
+                                    StorageCategory::Attachment | StorageCategory::GeneratedImage
+                                )
+                        })
+                    }) {
+                        return Err(CleanerError::Blocked(
+                            "Codex session-owned media can be removed only after the official owning-session deletion succeeds"
+                                .into(),
+                        ));
+                    }
                     for item_id in &operation.item_ids {
                         let Some(item) = selected_items.iter().find(|item| &item.id == item_id)
                         else {
                             continue;
                         };
                         match item.category {
-                            StorageCategory::Log => clean_logs(item, settings.log_retention_days)?,
-                            StorageCategory::Attachment
-                            | StorageCategory::GeneratedImage
-                            | StorageCategory::Cache
-                            | StorageCategory::Temporary => {
+                            StorageCategory::Log => {
+                                clean_logs(item, settings.log_retention_days, &policy, &identities)?
+                            }
+                            StorageCategory::Cache | StorageCategory::Temporary => {
                                 for path in &item.paths {
                                     remove_if_unchanged(
                                         Path::new(path),
@@ -774,6 +876,9 @@ async fn execute_plan(
                                     )?;
                                 }
                             }
+                            StorageCategory::Attachment | StorageCategory::GeneratedImage => {
+                                unreachable!("standalone Codex media was rejected before mutation")
+                            }
                             _ => {}
                         }
                         deleted_item_ids.push(item.id.clone());
@@ -781,8 +886,12 @@ async fn execute_plan(
                 }
             }
         }
+        journal.mark_mutation_applied(operation_index)?;
+        journal_store.save(journal)?;
     }
 
+    journal.mark_verification_started()?;
+    journal_store.save(journal)?;
     let verified = adapter.scan(custom_home(&settings, kind)).await?;
     for session_id in &plan.expanded_session_ids {
         if verified
@@ -796,18 +905,12 @@ async fn execute_plan(
             )));
         }
     }
+    journal.mark_verified()?;
+    journal_store.save(journal)?;
     *state.snapshot.lock() = Some(verified.clone());
     let reclaimed_bytes = before.saturating_sub(verified.total_bytes);
-    write_journal(
-        &state.data_dir,
-        OperationJournal {
-            operation_id: plan.id,
-            status: OperationStatus::Complete,
-            updated_at: Utc::now(),
-            backup_id,
-            message: None,
-        },
-    )?;
+    journal.mark_complete()?;
+    journal_store.save(journal)?;
 
     Ok(CleanupResult {
         operation_id: plan.id,
@@ -817,6 +920,370 @@ async fn execute_plan(
         deleted_item_ids,
         warnings,
     })
+}
+
+#[tauri::command]
+async fn list_recovery_operations(state: State<'_, AppState>) -> CommandResult<RecoveryInventory> {
+    let journal_store =
+        JournalStore::new(state.data_dir.join("operations")).map_err(error_message)?;
+    let inventory = journal_store.inventory().map_err(error_message)?;
+    let settings = state.settings.lock().clone();
+    let backups = BackupStore::new(
+        state.data_dir.join("backups"),
+        settings.backup_retention_days,
+    )
+    .and_then(|store| store.list())
+    .map_err(error_message)?;
+    let mut operations = Vec::new();
+    for journal in inventory
+        .journals
+        .into_iter()
+        .filter(OperationJournal::needs_recovery)
+    {
+        operations.push(inspect_recovery_operation(&state, &journal, &backups).await);
+    }
+    Ok(RecoveryInventory {
+        operations,
+        warnings: inventory.warnings,
+    })
+}
+
+#[tauri::command]
+async fn reconcile_recovery_operation(
+    operation_id: Uuid,
+    state: State<'_, AppState>,
+) -> CommandResult<RecoveryOperation> {
+    let journal_store =
+        JournalStore::new(state.data_dir.join("operations")).map_err(error_message)?;
+    let mut journal = journal_store.load(operation_id).map_err(error_message)?;
+    if !journal.needs_recovery() {
+        return Err(format!("Operation {operation_id} no longer needs recovery"));
+    }
+    let settings = state.settings.lock().clone();
+    let backups = BackupStore::new(
+        state.data_dir.join("backups"),
+        settings.backup_retention_days,
+    )
+    .and_then(|store| store.list())
+    .map_err(error_message)?;
+    let mut summary = inspect_recovery_operation(&state, &journal, &backups).await;
+    if !summary.can_terminate {
+        return Err(summary
+            .reason
+            .clone()
+            .unwrap_or_else(|| "The recovery rescan did not complete".into()));
+    }
+    if summary.observation == RecoveryObservation::Applied {
+        journal
+            .mark_reconciled_complete(
+                "A startup rescan confirmed every planned mutation in the current inventory",
+            )
+            .map_err(error_message)?;
+        summary.can_finalize = false;
+    } else {
+        journal
+            .mark_failed(format!(
+                "Startup rescan observed {:?}; no additional mutation was attempted",
+                summary.observation
+            ))
+            .map_err(error_message)?;
+    }
+    journal_store.save(&journal).map_err(error_message)?;
+    summary.journal_status = journal.status;
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn terminate_recovery_operation(
+    operation_id: Uuid,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let journal_store =
+        JournalStore::new(state.data_dir.join("operations")).map_err(error_message)?;
+    let mut journal = journal_store.load(operation_id).map_err(error_message)?;
+    if !journal.needs_recovery() {
+        return Err(format!("Operation {operation_id} no longer needs recovery"));
+    }
+    let settings = state.settings.lock().clone();
+    let backups = BackupStore::new(
+        state.data_dir.join("backups"),
+        settings.backup_retention_days,
+    )
+    .and_then(|store| store.list())
+    .map_err(error_message)?;
+    let summary = inspect_recovery_operation(&state, &journal, &backups).await;
+    if !summary.can_terminate {
+        return Err(summary
+            .reason
+            .unwrap_or_else(|| "The recovery rescan did not complete".into()));
+    }
+    journal
+        .mark_terminated(format!(
+            "The user closed this operation after a startup rescan observed {:?}; no additional Agent mutation was attempted",
+            summary.observation
+        ))
+        .map_err(error_message)?;
+    journal_store.save(&journal).map_err(error_message)
+}
+
+#[tauri::command]
+async fn restore_recovery_operation(
+    operation_id: Uuid,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let journal_store =
+        JournalStore::new(state.data_dir.join("operations")).map_err(error_message)?;
+    let mut journal = journal_store.load(operation_id).map_err(error_message)?;
+    if !journal.needs_recovery() {
+        return Err(format!("Operation {operation_id} no longer needs recovery"));
+    }
+    let settings = state.settings.lock().clone();
+    let backups = BackupStore::new(
+        state.data_dir.join("backups"),
+        settings.backup_retention_days,
+    )
+    .and_then(|store| store.list())
+    .map_err(error_message)?;
+    let summary = inspect_recovery_operation(&state, &journal, &backups).await;
+    let backup_id = summary.backup_id.ok_or_else(|| {
+        format!("Operation {operation_id} has no verified backup in the current catalog")
+    })?;
+    if !summary.can_restore {
+        return Err(summary.reason.unwrap_or_else(|| {
+            "This backup cannot be restored in the current Agent state".into()
+        }));
+    }
+    let (_, restored_snapshot) = perform_restore(backup_id, &state)
+        .await
+        .map_err(error_message)?;
+    if !recovery_restore_is_visible(&journal, &restored_snapshot) {
+        return Err(format!(
+            "{} did not rediscover every restored item for operation {operation_id}",
+            journal.agent.display_name()
+        ));
+    }
+    journal
+        .mark_recovered(format!(
+            "Verified backup {backup_id} was restored and rediscovered after startup recovery"
+        ))
+        .map_err(error_message)?;
+    journal_store.save(&journal).map_err(error_message)
+}
+
+async fn inspect_recovery_operation(
+    state: &AppState,
+    journal: &OperationJournal,
+    backups: &[BackupRecord],
+) -> RecoveryOperation {
+    let settings = state.settings.lock().clone();
+    let backup_id = effective_recovery_backup(journal, backups);
+    let completed_mutations = journal
+        .mutations
+        .iter()
+        .filter(|mutation| mutation.status == JournalMutationStatus::Applied)
+        .count();
+    let mut summary = RecoveryOperation {
+        operation_id: journal.operation_id,
+        agent: journal.agent,
+        journal_status: journal.status,
+        updated_at: journal.updated_at,
+        backup_id,
+        completed_mutations,
+        total_mutations: journal.mutations.len(),
+        observed_applied_mutations: 0,
+        observation: RecoveryObservation::Unknown,
+        can_finalize: false,
+        can_restore: false,
+        can_terminate: false,
+        reason: None,
+    };
+    let snapshot = match state
+        .adapter(journal.agent)
+        .scan(custom_home(&settings, journal.agent))
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            summary.reason = Some(format!(
+                "{} could not be rescanned: {error}",
+                journal.agent.display_name()
+            ));
+            return summary;
+        }
+    };
+    let observations = journal
+        .mutations
+        .iter()
+        .map(|mutation| observe_mutation(journal, mutation, &snapshot))
+        .collect::<Vec<_>>();
+    summary.observed_applied_mutations = observations
+        .iter()
+        .filter(|observation| **observation == RecoveryObservation::Applied)
+        .count();
+    summary.observation = combine_recovery_observations(&observations);
+    summary.can_finalize = summary.observation == RecoveryObservation::Applied;
+    summary.can_terminate = true;
+    summary.can_restore = backup_id.is_some()
+        && !snapshot.installation.running
+        && summary.observation == RecoveryObservation::Applied;
+    if snapshot.installation.running && backup_id.is_some() {
+        summary.reason = Some(format!(
+            "Quit {} before restoring the committed backup",
+            journal.agent.display_name()
+        ));
+    } else if journal.create_backup && backup_id.is_none() {
+        summary.reason = Some(
+            "No independently verified backup for this operation is present in the catalog".into(),
+        );
+    } else if backup_id.is_some() && summary.observation != RecoveryObservation::Applied {
+        summary.reason = Some(
+            "Restore is available only when the rescan confirms every planned destination is absent; existing or partially changed data is never overwritten"
+                .into(),
+        );
+    } else if summary.observation == RecoveryObservation::Unknown {
+        summary.reason = Some(
+            "The rescan cannot prove whether every planned mutation changed the current inventory"
+                .into(),
+        );
+    }
+    summary
+}
+
+fn effective_recovery_backup(journal: &OperationJournal, backups: &[BackupRecord]) -> Option<Uuid> {
+    journal
+        .backup_id
+        .or(journal.backup_candidate_id)
+        .filter(|backup_id| {
+            backups.iter().any(|record| {
+                record.id == *backup_id
+                    && record.operation_id == journal.operation_id
+                    && record.agent == journal.agent
+            })
+        })
+}
+
+fn observe_mutation(
+    journal: &OperationJournal,
+    mutation: &cleanerx_core::JournalMutation,
+    snapshot: &InventorySnapshot,
+) -> RecoveryObservation {
+    match mutation.kind {
+        OperationKind::DeleteSession => {
+            let expected = if journal.plan.expanded_session_ids.is_empty() {
+                &mutation.session_ids
+            } else {
+                &journal.plan.expanded_session_ids
+            };
+            observe_identifiers(
+                expected,
+                snapshot.sessions.iter().map(|session| session.id.as_str()),
+            )
+        }
+        OperationKind::ResetMemory => {
+            if mutation.item_ids.is_empty()
+                || mutation.item_ids.iter().any(|item_id| {
+                    journal.item_categories.get(item_id) != Some(&StorageCategory::Memory)
+                })
+            {
+                return RecoveryObservation::Unknown;
+            }
+            let observation = observe_identifiers(
+                &mutation.item_ids,
+                snapshot.items.iter().map(|item| item.id.as_str()),
+            );
+            if observation == RecoveryObservation::NotApplied {
+                RecoveryObservation::Unknown
+            } else {
+                observation
+            }
+        }
+        OperationKind::CleanRegenerable => {
+            if mutation.item_ids.is_empty()
+                || mutation.item_ids.iter().any(|item_id| {
+                    journal
+                        .item_categories
+                        .get(item_id)
+                        .is_none_or(|category| *category == StorageCategory::Log)
+                })
+            {
+                return RecoveryObservation::Unknown;
+            }
+            observe_identifiers(
+                &mutation.item_ids,
+                snapshot.items.iter().map(|item| item.id.as_str()),
+            )
+        }
+    }
+}
+
+fn observe_identifiers<'a>(
+    expected: &[String],
+    current: impl Iterator<Item = &'a str>,
+) -> RecoveryObservation {
+    if expected.is_empty() {
+        return RecoveryObservation::Unknown;
+    }
+    let current = current.collect::<HashSet<_>>();
+    let present = expected
+        .iter()
+        .filter(|identifier| current.contains(identifier.as_str()))
+        .count();
+    if present == 0 {
+        RecoveryObservation::Applied
+    } else if present == expected.len() {
+        RecoveryObservation::NotApplied
+    } else {
+        RecoveryObservation::Partial
+    }
+}
+
+fn combine_recovery_observations(observations: &[RecoveryObservation]) -> RecoveryObservation {
+    if observations.is_empty() {
+        return RecoveryObservation::Unknown;
+    }
+    if observations
+        .iter()
+        .all(|observation| *observation == RecoveryObservation::Applied)
+    {
+        return RecoveryObservation::Applied;
+    }
+    if observations
+        .iter()
+        .all(|observation| *observation == RecoveryObservation::NotApplied)
+    {
+        return RecoveryObservation::NotApplied;
+    }
+    if observations.contains(&RecoveryObservation::Unknown) {
+        return RecoveryObservation::Unknown;
+    }
+    RecoveryObservation::Partial
+}
+
+fn recovery_restore_is_visible(journal: &OperationJournal, snapshot: &InventorySnapshot) -> bool {
+    journal
+        .mutations
+        .iter()
+        .all(|mutation| match mutation.kind {
+            OperationKind::DeleteSession => {
+                !mutation.item_ids.is_empty()
+                    && mutation.item_ids.iter().all(|item_id| {
+                        snapshot.items.iter().any(|item| {
+                            &item.id == item_id
+                                && matches!(
+                                    item.category,
+                                    StorageCategory::Session | StorageCategory::ArchivedSession
+                                )
+                        })
+                    })
+            }
+            OperationKind::ResetMemory | OperationKind::CleanRegenerable => {
+                !mutation.item_ids.is_empty()
+                    && mutation
+                        .item_ids
+                        .iter()
+                        .all(|item_id| snapshot.items.iter().any(|item| &item.id == item_id))
+            }
+        })
 }
 
 #[tauri::command]
@@ -832,29 +1299,34 @@ async fn restore_backup(
     backup_id: Uuid,
     state: State<'_, AppState>,
 ) -> CommandResult<cleanerx_core::BackupManifest> {
+    perform_restore(backup_id, &state)
+        .await
+        .map(|(manifest, _)| manifest)
+        .map_err(error_message)
+}
+
+async fn perform_restore(
+    backup_id: Uuid,
+    state: &AppState,
+) -> Result<(cleanerx_core::BackupManifest, InventorySnapshot), CleanerError> {
     let settings = state.settings.lock().clone();
     let store = BackupStore::new(
         state.data_dir.join("backups"),
         settings.backup_retention_days,
-    )
-    .map_err(error_message)?;
+    )?;
     let record = store
-        .list()
-        .map_err(error_message)?
+        .list()?
         .into_iter()
         .find(|record| record.id == backup_id)
-        .ok_or_else(|| format!("Backup {backup_id} is not in the current catalog"))?;
+        .ok_or_else(|| CleanerError::NotFound(format!("backup {backup_id}")))?;
     let kind = record.agent;
     let adapter = state.adapter(kind);
-    let installation = adapter
-        .detect(custom_home(&settings, kind))
-        .await
-        .map_err(error_message)?;
+    let installation = adapter.detect(custom_home(&settings, kind)).await?;
     if installation.running {
-        return Err(format!(
+        return Err(CleanerError::Blocked(format!(
             "Quit {} before restoring this backup",
             kind.display_name()
-        ));
+        )));
     }
     let home_label = match kind {
         AgentKind::Codex => "codex_home",
@@ -877,17 +1349,14 @@ async fn restore_backup(
     }
     let import_staging = (kind == AgentKind::OpenCode)
         .then(tempfile::tempdir)
-        .transpose()
-        .map_err(|error| error.to_string())?;
+        .transpose()?;
     if let Some(staging) = &import_staging {
         roots.insert(
             "opencode_session_export".into(),
             staging.path().to_path_buf(),
         );
     }
-    let manifest = store
-        .restore(backup_id, kind, &roots)
-        .map_err(error_message)?;
+    let manifest = store.restore(backup_id, kind, &roots)?;
     if let Some(staging) = &import_staging {
         let exports = manifest
             .entries
@@ -896,18 +1365,12 @@ async fn restore_backup(
             .map(|entry| staging.path().join(&entry.relative_path))
             .collect::<Vec<_>>();
         if !exports.is_empty() {
-            adapter
-                .import_sessions(&installation, &exports)
-                .await
-                .map_err(error_message)?;
+            adapter.import_sessions(&installation, &exports).await?;
         }
     }
-    let snapshot = adapter
-        .scan(custom_home(&settings, kind))
-        .await
-        .map_err(error_message)?;
-    *state.snapshot.lock() = Some(snapshot);
-    Ok(manifest)
+    let snapshot = adapter.scan(custom_home(&settings, kind)).await?;
+    *state.snapshot.lock() = Some(snapshot.clone());
+    Ok((manifest, snapshot))
 }
 
 #[tauri::command]
@@ -1138,12 +1601,7 @@ fn capture_mutation_identities(
         {
             validate_source_revision(item)?;
         }
-        if kind == AgentKind::Codex
-            && matches!(
-                item.category,
-                StorageCategory::Memory | StorageCategory::Log
-            )
-        {
+        if kind == AgentKind::Codex && item.category == StorageCategory::Memory {
             continue;
         }
         for path in &item.paths {
@@ -1276,15 +1734,29 @@ fn remove_if_unchanged(
     }
 }
 
-fn clean_logs(item: &cleanerx_core::CleanupItem, retention_days: u32) -> Result<(), CleanerError> {
+fn clean_logs(
+    item: &cleanerx_core::CleanupItem,
+    retention_days: u32,
+    policy: &PathPolicy,
+    identities: &HashMap<PathBuf, FileIdentity>,
+) -> Result<(), CleanerError> {
     let cutoff = Utc::now().timestamp() - i64::from(retention_days) * 86_400;
-    for path in item
-        .paths
-        .iter()
-        .map(Path::new)
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sqlite"))
-    {
-        let connection = Connection::open(path)?;
+    let mut validated_databases = Vec::new();
+    for path in item.paths.iter().map(Path::new) {
+        let canonical = policy.validate_existing(path)?;
+        let expected = identities.get(&canonical).ok_or_else(|| {
+            CleanerError::UnsafePath(format!(
+                "no preflight identity for Codex log path {}",
+                path.display()
+            ))
+        })?;
+        policy.revalidate_identity(&canonical, expected)?;
+        if canonical.extension().and_then(|ext| ext.to_str()) == Some("sqlite") {
+            validated_databases.push(canonical);
+        }
+    }
+    for path in validated_databases {
+        let connection = Connection::open(&path)?;
         let columns = {
             let mut statement = connection.prepare("PRAGMA table_info(logs)")?;
             statement
@@ -1311,48 +1783,14 @@ fn clean_logs(item: &cleanerx_core::CleanupItem, retention_days: u32) -> Result<
     Ok(())
 }
 
-fn write_journal(data_dir: &Path, journal: OperationJournal) -> Result<(), CleanerError> {
-    save_json_atomic(&journal_path(data_dir, journal.operation_id), &journal)
-}
-
-fn journal_path(data_dir: &Path, operation_id: Uuid) -> PathBuf {
-    data_dir
-        .join("operations")
-        .join(format!("{operation_id}.json"))
-}
-
-fn read_journal(
-    data_dir: &Path,
-    operation_id: Uuid,
-) -> Result<Option<OperationJournal>, CleanerError> {
-    let operations = data_dir.join("operations");
-    let path = journal_path(data_dir, operation_id);
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-        Ok(_) => {
-            let path = validate_existing_beneath(&path, &[operations])?;
-            Ok(Some(serde_json::from_reader(fs::File::open(path)?)?))
-        }
-    }
-}
-
 fn record_failed_operation(
-    data_dir: &Path,
+    journal_store: &JournalStore,
     operation_id: Uuid,
     error: &CleanerError,
 ) -> Result<(), CleanerError> {
-    let backup_id = read_journal(data_dir, operation_id)?.and_then(|journal| journal.backup_id);
-    write_journal(
-        data_dir,
-        OperationJournal {
-            operation_id,
-            status: OperationStatus::Failed,
-            updated_at: Utc::now(),
-            backup_id,
-            message: Some(error.to_string()),
-        },
-    )
+    let mut journal = journal_store.load(operation_id)?;
+    journal.mark_failed(error.to_string())?;
+    journal_store.save(&journal)
 }
 
 fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), CleanerError> {
@@ -1425,6 +1863,10 @@ pub fn run() {
             get_item_thumbnail,
             plan_cleanup,
             execute_cleanup,
+            list_recovery_operations,
+            reconcile_recovery_operation,
+            restore_recovery_operation,
+            terminate_recovery_operation,
             list_backups,
             restore_backup,
             purge_backup,
@@ -1438,18 +1880,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        OperationJournal, SessionFilter, SessionPageRequest, allowed_roots,
-        capture_mutation_identities, inventory_report, load_settings, protected_paths,
-        read_journal, record_failed_operation, remove_operation_paths, session_page,
+        RecoveryObservation, SessionFilter, SessionPageRequest, allowed_roots,
+        capture_mutation_identities, clean_logs, cleanup_session_artifacts,
+        combine_recovery_observations, effective_recovery_backup, inventory_report, load_settings,
+        observe_mutation, pending_recovery_for_agent, protected_paths, record_failed_operation,
+        recovery_restore_is_visible, remove_operation_paths, session_page,
         validate_opencode_session_revisions, validate_settings, validate_source_revision,
-        write_journal,
     };
     use chrono::Utc;
     use cleanerx_core::{
-        AgentCapabilities, AgentInstallation, AgentKind, AppSettings, CleanupItem,
-        InventorySnapshot, OperationKind, PathPolicy, PlannedOperation, ProjectGroup, RiskLevel,
-        SessionRecord, StorageCategory, metadata_revision,
+        AgentCapabilities, AgentInstallation, AgentKind, AppSettings, BackupRecord, CleanupItem,
+        CleanupPlan, InventorySnapshot, JournalInventory, JournalStore, OperationJournal,
+        OperationKind, PathPolicy, PlannedOperation, ProjectGroup, RiskLevel, SessionRecord,
+        StorageCategory, metadata_revision,
     };
+    use rusqlite::{Connection, params};
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
@@ -1570,28 +2015,58 @@ mod tests {
         let data_dir = tempdir().expect("operation journal directory");
         let operation_id = Uuid::new_v4();
         let backup_id = Uuid::new_v4();
-        write_journal(
-            data_dir.path(),
-            OperationJournal {
-                operation_id,
-                status: cleanerx_core::OperationStatus::Deleting,
-                updated_at: Utc::now(),
-                backup_id: Some(backup_id),
-                message: None,
-            },
-        )
-        .expect("deleting journal");
+        let plan = CleanupPlan {
+            id: operation_id,
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["cache:item".into()],
+            expanded_session_ids: Vec::new(),
+            operations: vec![PlannedOperation {
+                kind: OperationKind::CleanRegenerable,
+                item_ids: vec!["cache:item".into()],
+                session_ids: Vec::new(),
+                paths: vec!["/fixture/cache".into()],
+                size_bytes: 1,
+                backup_eligible: true,
+                requires_agent_exit: true,
+                blockers: Vec::new(),
+            }],
+            estimated_bytes: 1,
+            estimated_backup_bytes: 1,
+            blockers: Vec::new(),
+        };
+        let store = JournalStore::new(data_dir.path().join("operations")).expect("journal store");
+        let mut journal = OperationJournal::new(plan, AgentKind::Pi, true);
+        store.create(&journal).expect("planned journal");
+        journal
+            .mark_backup_writing(backup_id)
+            .expect("backup writing");
+        journal
+            .mark_backup_archive_committed(backup_id)
+            .expect("archive committed");
+        journal
+            .mark_backup_verifying(backup_id)
+            .expect("backup verifying");
+        journal
+            .mark_backup_verified(backup_id)
+            .expect("backup verified");
+        journal
+            .mark_backup_catalog_writing(backup_id)
+            .expect("catalog writing");
+        journal
+            .mark_backup_written(backup_id)
+            .expect("backup written");
+        journal.mark_mutation_started(0).expect("deleting");
+        store.save(&journal).expect("deleting journal");
 
         record_failed_operation(
-            data_dir.path(),
+            &store,
             operation_id,
             &cleanerx_core::CleanerError::Blocked("injected deletion failure".into()),
         )
         .expect("failed journal");
 
-        let journal = read_journal(data_dir.path(), operation_id)
-            .expect("read journal")
-            .expect("journal exists");
+        let journal = store.load(operation_id).expect("read journal");
         assert_eq!(journal.status, cleanerx_core::OperationStatus::Failed);
         assert_eq!(journal.backup_id, Some(backup_id));
         assert!(
@@ -1599,6 +2074,183 @@ mod tests {
                 .message
                 .as_deref()
                 .is_some_and(|message| message.contains("injected deletion failure"))
+        );
+    }
+
+    #[test]
+    fn pending_recovery_blocks_only_its_own_agent() {
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["cache:item".into()],
+            expanded_session_ids: Vec::new(),
+            operations: vec![PlannedOperation {
+                kind: OperationKind::CleanRegenerable,
+                item_ids: vec!["cache:item".into()],
+                session_ids: Vec::new(),
+                paths: vec!["/fixture/cache".into()],
+                size_bytes: 1,
+                backup_eligible: false,
+                requires_agent_exit: false,
+                blockers: Vec::new(),
+            }],
+            estimated_bytes: 1,
+            estimated_backup_bytes: 0,
+            blockers: Vec::new(),
+        };
+        let inventory = JournalInventory {
+            journals: vec![OperationJournal::new(plan, AgentKind::Codex, false)],
+            warnings: Vec::new(),
+        };
+
+        assert!(pending_recovery_for_agent(&inventory, AgentKind::Codex).is_some());
+        assert!(pending_recovery_for_agent(&inventory, AgentKind::ClaudeCode).is_none());
+    }
+
+    #[test]
+    fn recovery_observation_uses_rescan_evidence_instead_of_claimed_progress() {
+        let snapshot = session_inventory_fixture();
+        let session_ids = snapshot
+            .sessions
+            .iter()
+            .take(2)
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: snapshot.id,
+            created_at: Utc::now(),
+            selected_item_ids: Vec::new(),
+            expanded_session_ids: session_ids.clone(),
+            operations: vec![PlannedOperation {
+                kind: OperationKind::DeleteSession,
+                item_ids: Vec::new(),
+                session_ids: vec![session_ids[0].clone()],
+                paths: Vec::new(),
+                size_bytes: 1,
+                backup_eligible: false,
+                requires_agent_exit: false,
+                blockers: Vec::new(),
+            }],
+            estimated_bytes: 1,
+            estimated_backup_bytes: 0,
+            blockers: Vec::new(),
+        };
+        let journal = OperationJournal::new(plan, AgentKind::Codex, false);
+        assert_eq!(
+            journal.mutations[0].status,
+            cleanerx_core::JournalMutationStatus::Pending
+        );
+
+        let mut fully_applied = snapshot.clone();
+        fully_applied
+            .sessions
+            .retain(|session| !session_ids.contains(&session.id));
+        assert_eq!(
+            observe_mutation(&journal, &journal.mutations[0], &fully_applied),
+            RecoveryObservation::Applied
+        );
+
+        let mut partially_applied = snapshot;
+        partially_applied
+            .sessions
+            .retain(|session| session.id != session_ids[0]);
+        assert_eq!(
+            observe_mutation(&journal, &journal.mutations[0], &partially_applied),
+            RecoveryObservation::Partial
+        );
+        assert_eq!(
+            combine_recovery_observations(&[
+                RecoveryObservation::Applied,
+                RecoveryObservation::NotApplied,
+            ]),
+            RecoveryObservation::Partial
+        );
+    }
+
+    #[test]
+    fn recovery_restore_requires_every_planned_session_to_be_rediscovered() {
+        let snapshot = session_inventory_fixture();
+        let restored_ids = snapshot
+            .sessions
+            .iter()
+            .take(2)
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: snapshot.id,
+            created_at: Utc::now(),
+            selected_item_ids: restored_ids
+                .iter()
+                .map(|id| format!("session:{id}"))
+                .collect(),
+            expanded_session_ids: restored_ids.clone(),
+            operations: vec![PlannedOperation {
+                kind: OperationKind::DeleteSession,
+                item_ids: restored_ids
+                    .iter()
+                    .map(|id| format!("session:{id}"))
+                    .collect(),
+                session_ids: vec![restored_ids[0].clone()],
+                paths: Vec::new(),
+                size_bytes: 1,
+                backup_eligible: true,
+                requires_agent_exit: true,
+                blockers: Vec::new(),
+            }],
+            estimated_bytes: 1,
+            estimated_backup_bytes: 1,
+            blockers: Vec::new(),
+        };
+        let journal = OperationJournal::new(plan, AgentKind::Pi, true);
+
+        assert!(recovery_restore_is_visible(&journal, &snapshot));
+        let mut incomplete = snapshot;
+        incomplete
+            .items
+            .retain(|item| item.id != format!("session:{}", restored_ids[1]));
+        assert!(!recovery_restore_is_visible(&journal, &incomplete));
+    }
+
+    #[test]
+    fn recovery_accepts_only_a_catalog_backup_bound_to_the_operation_and_agent() {
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: Vec::new(),
+            expanded_session_ids: Vec::new(),
+            operations: Vec::new(),
+            estimated_bytes: 0,
+            estimated_backup_bytes: 0,
+            blockers: Vec::new(),
+        };
+        let mut journal = OperationJournal::new(plan, AgentKind::ClaudeCode, true);
+        let backup_id = Uuid::new_v4();
+        journal
+            .mark_backup_writing(backup_id)
+            .expect("candidate backup");
+        let mut record = BackupRecord {
+            id: backup_id,
+            created_at: Utc::now(),
+            expires_at: Utc::now(),
+            archive_path: "/fixture/backup.cxb".into(),
+            archive_bytes: 1,
+            original_bytes: 1,
+            item_count: 1,
+            operation_id: Uuid::new_v4(),
+            agent: AgentKind::ClaudeCode,
+        };
+        assert_eq!(effective_recovery_backup(&journal, &[record.clone()]), None);
+        record.operation_id = journal.operation_id;
+        record.agent = AgentKind::Codex;
+        assert_eq!(effective_recovery_backup(&journal, &[record.clone()]), None);
+        record.agent = AgentKind::ClaudeCode;
+        assert_eq!(
+            effective_recovery_backup(&journal, &[record]),
+            Some(backup_id)
         );
     }
 
@@ -1857,6 +2509,223 @@ mod tests {
             b"fn protected_source() {}"
         );
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn codex_session_artifacts_are_removed_only_after_the_session_route_returns() {
+        let home = tempdir().expect("Codex home");
+        let source = tempdir().expect("source tree");
+        let rollout = home.path().join("sessions/session.jsonl");
+        let attachment = home.path().join("attachments/session");
+        fs::create_dir_all(rollout.parent().expect("rollout parent")).expect("sessions");
+        fs::create_dir_all(&attachment).expect("attachment directory");
+        fs::write(&rollout, b"private rollout").expect("rollout");
+        fs::write(attachment.join("image.png"), b"private attachment").expect("attachment");
+        let source_file = source.path().join("source.rs");
+        fs::write(&source_file, b"fn protected_source() {}").expect("source");
+        let item = CleanupItem {
+            id: "session:session".into(),
+            category: StorageCategory::Session,
+            title: "session".into(),
+            subtitle: None,
+            paths: vec![
+                rollout.to_string_lossy().into_owned(),
+                attachment.to_string_lossy().into_owned(),
+            ],
+            project_id: None,
+            thread_id: Some("session".into()),
+            size_bytes: 1,
+            modified_at: None,
+            risk: RiskLevel::High,
+            recoverable: true,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::new(),
+        };
+        let session = SessionRecord {
+            id: "session".into(),
+            name: "session".into(),
+            cwd: source.path().to_string_lossy().into_owned(),
+            path: Some(rollout.to_string_lossy().into_owned()),
+            source: "cli".into(),
+            archived: false,
+            pinned: false,
+            status: "notLoaded".into(),
+            created_at: None,
+            updated_at: None,
+            size_bytes: 1,
+            parent_thread_id: None,
+            descendant_ids: vec![],
+        };
+        let selected = vec![&item];
+        let policy = PathPolicy::new(vec![home.path().to_path_buf()], vec![]);
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::Codex)
+            .expect("preflight identities");
+        let mut warnings = Vec::new();
+
+        // Production calls this helper only after `thread/delete` returned success.
+        cleanup_session_artifacts(&selected, &[session], &policy, &identities, &mut warnings)
+            .expect("remove associated media");
+
+        assert!(rollout.exists(), "the official route owns the rollout");
+        assert!(!attachment.exists());
+        assert_eq!(
+            fs::read(source_file).expect("source bytes"),
+            b"fn protected_source() {}"
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn codex_log_cleanup_mutates_only_a_recognized_schema() {
+        let directory = tempdir().expect("Codex logs");
+        let database = directory.path().join("logs_2.sqlite");
+        let connection = Connection::open(&database).expect("logs database");
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE logs (ts INTEGER NOT NULL, estimated_bytes INTEGER NOT NULL, message TEXT);
+                 CREATE TABLE protected_marker (value TEXT NOT NULL);",
+            )
+            .expect("schema");
+        let now = Utc::now().timestamp();
+        connection
+            .execute(
+                "INSERT INTO logs (ts, estimated_bytes, message) VALUES (?1, 10, 'old')",
+                [now - 20 * 86_400],
+            )
+            .expect("old log");
+        connection
+            .execute(
+                "INSERT INTO logs (ts, estimated_bytes, message) VALUES (?1, 20, 'new')",
+                [now],
+            )
+            .expect("new log");
+        connection
+            .execute(
+                "INSERT INTO protected_marker (value) VALUES ('unchanged')",
+                [],
+            )
+            .expect("marker");
+        drop(connection);
+        let item = log_item(&database);
+        let policy = PathPolicy::new(vec![directory.path().to_path_buf()], vec![]);
+        let selected = vec![&item];
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::Codex)
+            .expect("log identities");
+
+        clean_logs(&item, 7, &policy, &identities).expect("recognized cleanup");
+
+        let connection = Connection::open(&database).expect("reopen logs");
+        let messages = connection
+            .prepare("SELECT message FROM logs ORDER BY ts")
+            .expect("query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("messages");
+        assert_eq!(messages, vec!["new"]);
+        assert_eq!(
+            connection
+                .query_row("SELECT value FROM protected_marker", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("marker"),
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn codex_log_cleanup_leaves_an_unknown_schema_unchanged() {
+        let directory = tempdir().expect("Codex logs");
+        let database = directory.path().join("logs_2.sqlite");
+        let connection = Connection::open(&database).expect("logs database");
+        connection
+            .execute_batch("CREATE TABLE logs (ts INTEGER NOT NULL, body TEXT NOT NULL);")
+            .expect("future schema");
+        connection
+            .execute(
+                "INSERT INTO logs (ts, body) VALUES (?1, 'private log')",
+                params![Utc::now().timestamp() - 20 * 86_400],
+            )
+            .expect("log");
+        drop(connection);
+        let item = log_item(&database);
+        let policy = PathPolicy::new(vec![directory.path().to_path_buf()], vec![]);
+        let selected = vec![&item];
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::Codex)
+            .expect("log identities");
+
+        assert!(clean_logs(&item, 7, &policy, &identities).is_err());
+
+        let connection = Connection::open(&database).expect("reopen logs");
+        assert_eq!(
+            connection
+                .query_row("SELECT body FROM logs", [], |row| row.get::<_, String>(0))
+                .expect("private log"),
+            "private log"
+        );
+    }
+
+    #[test]
+    fn codex_log_cleanup_rejects_a_database_replaced_after_preflight() {
+        let directory = tempdir().expect("Codex logs");
+        let database = directory.path().join("logs_2.sqlite");
+        let connection = Connection::open(&database).expect("logs database");
+        connection
+            .execute_batch(
+                "CREATE TABLE logs (ts INTEGER NOT NULL, estimated_bytes INTEGER NOT NULL, message TEXT);
+                 INSERT INTO logs VALUES (0, 10, 'original');",
+            )
+            .expect("original database");
+        drop(connection);
+        let item = log_item(&database);
+        let policy = PathPolicy::new(vec![directory.path().to_path_buf()], vec![]);
+        let selected = vec![&item];
+        let identities = capture_mutation_identities(&selected, &policy, AgentKind::Codex)
+            .expect("log identities");
+
+        fs::rename(&database, directory.path().join("original.sqlite"))
+            .expect("replace original database");
+        let replacement = Connection::open(&database).expect("replacement database");
+        replacement
+            .execute_batch(
+                "CREATE TABLE logs (ts INTEGER NOT NULL, estimated_bytes INTEGER NOT NULL, message TEXT);
+                 INSERT INTO logs VALUES (0, 10, 'replacement-private');",
+            )
+            .expect("replacement schema");
+        drop(replacement);
+
+        assert!(clean_logs(&item, 7, &policy, &identities).is_err());
+        let replacement = Connection::open(&database).expect("reopen replacement");
+        assert_eq!(
+            replacement
+                .query_row("SELECT message FROM logs", [], |row| row
+                    .get::<_, String>(0))
+                .expect("replacement row"),
+            "replacement-private"
+        );
+    }
+
+    fn log_item(database: &std::path::Path) -> CleanupItem {
+        CleanupItem {
+            id: "log:codex".into(),
+            category: StorageCategory::Log,
+            title: "Codex logs".into(),
+            subtitle: None,
+            paths: vec![database.to_string_lossy().into_owned()],
+            project_id: None,
+            thread_id: None,
+            size_bytes: 1,
+            modified_at: None,
+            risk: RiskLevel::Review,
+            recoverable: false,
+            default_selected: false,
+            protected: false,
+            blocked_reason: None,
+            metadata: BTreeMap::new(),
+        }
     }
 
     fn pi_item(path: &std::path::Path) -> CleanupItem {

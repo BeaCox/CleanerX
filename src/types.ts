@@ -209,6 +209,29 @@ export interface CleanupResult {
   warnings: string[];
 }
 
+export type RecoveryObservation = "applied" | "notApplied" | "partial" | "unknown";
+
+export interface RecoveryOperation {
+  operationId: string;
+  agent: AgentKind;
+  journalStatus: string;
+  updatedAt: string;
+  backupId?: string;
+  completedMutations: number;
+  totalMutations: number;
+  observedAppliedMutations: number;
+  observation: RecoveryObservation;
+  canFinalize: boolean;
+  canRestore: boolean;
+  canTerminate: boolean;
+  reason?: string;
+}
+
+export interface RecoveryInventory {
+  operations: RecoveryOperation[];
+  warnings: string[];
+}
+
 export interface BackupRecord {
   id: string;
   createdAt: string;

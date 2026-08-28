@@ -67,6 +67,16 @@ enum RestoreEvent {
     AfterCommit(usize),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupEvent {
+    BeforeArchiveCreation(Uuid),
+    AfterArchiveCreation(Uuid),
+    BeforeArchiveVerification(Uuid),
+    AfterArchiveVerification(Uuid),
+    BeforeCatalogCommit(Uuid),
+    AfterCatalogCommit(Uuid),
+}
+
 impl BackupStore {
     pub fn new(base_dir: PathBuf, retention_days: u32) -> Result<Self, CleanerError> {
         fs::create_dir_all(&base_dir)?;
@@ -99,6 +109,20 @@ impl BackupStore {
         agent_version: Option<String>,
         sources: &[BackupSource],
     ) -> Result<BackupManifest, CleanerError> {
+        self.create_backup_with_hook(plan, agent, agent_version, sources, |_| Ok(()))
+    }
+
+    pub fn create_backup_with_hook<F>(
+        &self,
+        plan: &CleanupPlan,
+        agent: AgentKind,
+        agent_version: Option<String>,
+        sources: &[BackupSource],
+        mut hook: F,
+    ) -> Result<BackupManifest, CleanerError>
+    where
+        F: FnMut(BackupEvent) -> Result<(), CleanerError>,
+    {
         let identity = self.identity()?;
         let recipient = identity.to_public();
         let backup_id = Uuid::new_v4();
@@ -139,6 +163,7 @@ impl BackupStore {
             entries,
         };
 
+        hook(BackupEvent::BeforeArchiveCreation(backup_id))?;
         let output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -164,10 +189,13 @@ impl BackupStore {
         let age_writer = zstd_writer.finish()?;
         age_writer.finish()?;
         atomic_replace_file(&partial_path, &archive_path)?;
+        hook(BackupEvent::AfterArchiveCreation(backup_id))?;
+        hook(BackupEvent::BeforeArchiveVerification(backup_id))?;
         if let Err(error) = verify_committed_archive(&archive_path, &identity, &manifest) {
             let _ = fs::remove_file(&archive_path);
             return Err(error);
         }
+        hook(BackupEvent::AfterArchiveVerification(backup_id))?;
 
         manifest.archive_bytes = fs::metadata(&archive_path)?.len();
         let mut catalog = self.load_catalog()?;
@@ -182,7 +210,9 @@ impl BackupStore {
             operation_id: manifest.operation_id,
             agent: manifest.agent,
         });
+        hook(BackupEvent::BeforeCatalogCommit(backup_id))?;
         self.save_catalog(&catalog)?;
+        hook(BackupEvent::AfterCatalogCommit(backup_id))?;
         Ok(manifest)
     }
 
@@ -992,6 +1022,78 @@ mod tests {
         store.purge(manifest.id).expect("purge");
         assert!(!archive_path.exists());
         assert!(store.list().expect("list after purge").is_empty());
+    }
+
+    #[test]
+    fn backup_fault_injection_covers_every_commit_and_verification_boundary() {
+        for fault_index in 0..6 {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let backup_dir = tempfile::tempdir().expect("backups");
+            let source = workspace.path().join("sessions/thread.jsonl");
+            fs::create_dir_all(source.parent().expect("parent")).expect("mkdir");
+            fs::write(&source, b"protected source bytes").expect("source");
+            let identity = age::x25519::Identity::generate();
+            let store = BackupStore::with_identity(backup_dir.path().to_path_buf(), 30, &identity)
+                .expect("store");
+            let plan = CleanupPlan {
+                id: Uuid::new_v4(),
+                snapshot_id: Uuid::new_v4(),
+                created_at: Utc::now(),
+                selected_item_ids: vec!["session:test".into()],
+                expanded_session_ids: vec!["test".into()],
+                operations: Vec::new(),
+                estimated_bytes: 22,
+                estimated_backup_bytes: 22,
+                blockers: Vec::new(),
+            };
+            let mut event_index = 0;
+            let result = store.create_backup_with_hook(
+                &plan,
+                AgentKind::Codex,
+                Some("test".into()),
+                &[BackupSource {
+                    root_label: "codex_home".into(),
+                    root_path: workspace.path().to_path_buf(),
+                    path: source.clone(),
+                }],
+                |_| {
+                    let current = event_index;
+                    event_index += 1;
+                    if current == fault_index {
+                        Err(CleanerError::Backup(format!(
+                            "injected backup fault at boundary {current}"
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+
+            assert!(matches!(result, Err(CleanerError::Backup(_))));
+            assert_eq!(
+                fs::read(&source).expect("source bytes"),
+                b"protected source bytes"
+            );
+            assert!(
+                fs::read_dir(backup_dir.path())
+                    .expect("backup directory")
+                    .all(|entry| !entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".partial"))
+            );
+            let catalog = store.list().expect("catalog remains readable");
+            if fault_index == 5 {
+                assert_eq!(
+                    catalog.len(),
+                    1,
+                    "catalog commit happened before final hook"
+                );
+            } else {
+                assert!(catalog.is_empty(), "uncommitted backup entered the catalog");
+            }
+        }
     }
 
     #[test]

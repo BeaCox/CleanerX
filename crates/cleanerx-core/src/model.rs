@@ -146,9 +146,12 @@ pub enum OperationStatus {
     Planned,
     BackupWritten,
     Deleting,
+    Verifying,
     Verified,
     Complete,
     Failed,
+    Recovered,
+    Terminated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,7 +310,7 @@ pub struct InventorySnapshot {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannedOperation {
     pub kind: OperationKind,
@@ -320,7 +323,7 @@ pub struct PlannedOperation {
     pub blockers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPlan {
     pub id: Uuid,

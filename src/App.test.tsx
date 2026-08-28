@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
-import type { AgentInstallation, CleanupItem, InventorySnapshot, SessionRecord } from "./types";
+import type { AgentInstallation, CleanupItem, InventorySnapshot, RecoveryInventory, SessionRecord } from "./types";
 
 function chooseMenuOption(label: string, option: string) {
   const trigger = screen.getByRole("combobox", { name: label });
@@ -301,6 +301,8 @@ describe("CleanerX GUI", () => {
   it("keeps backup optional and warns about irreversible cleanup", async () => {
     render(<App />);
     await screen.findByText("Managed data");
+    chooseMenuOption("Target Agent", "Claude Code");
+    await screen.findByText("Switched to Claude Code");
     fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Design token migration" }));
     fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
@@ -312,6 +314,19 @@ describe("CleanerX GUI", () => {
     fireEvent.click(backup);
     expect(screen.getByRole("button", { name: "Back up & clean" })).toBeEnabled();
     expect(screen.queryByText("Without a backup, deleted data cannot be restored.")).not.toBeInTheDocument();
+  });
+
+  it("warns when the selected mutation has no supported restore route", async () => {
+    render(<App />);
+    await screen.findByText("Managed data");
+    fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Design token migration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
+
+    expect(await screen.findByRole("dialog", { name: "Review cleanup plan" })).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: /Create an encrypted backup first/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/has no supported restorable backup route/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Clean without backup" })).toBeEnabled();
   });
 
   it("keeps active sessions unavailable for selection", async () => {
@@ -601,7 +616,7 @@ describe("CleanerX GUI", () => {
     expect(screen.getByLabelText("Open details Generated visuals")).toHaveClass("media-card");
   });
 
-  it("does not open media details when the visual checkbox is clicked", async () => {
+  it("keeps orphan media inspect-only without opening details from its disabled checkbox", async () => {
     render(<App />);
     await screen.findByText("Managed data");
     fireEvent.click(screen.getByRole("button", { name: "Content" }));
@@ -609,9 +624,10 @@ describe("CleanerX GUI", () => {
     const checkPath = checkbox.closest("label")?.querySelector("svg path");
     expect(checkPath).not.toBeNull();
 
+    expect(checkbox).toBeDisabled();
     fireEvent.click(checkPath!);
 
-    expect(checkbox).toBeChecked();
+    expect(checkbox).not.toBeChecked();
     expect(screen.queryByRole("dialog", { name: "Generated visuals" })).not.toBeInTheDocument();
   });
 
@@ -628,6 +644,108 @@ describe("CleanerX GUI", () => {
 
     expect(await screen.findByText("No CleanerX backups yet")).toBeVisible();
     expect(screen.getByText("Backup permanently deleted")).toBeVisible();
+  });
+
+  it("prompts for a rescanned operation and allows it to be reconciled", async () => {
+    const recovery: RecoveryInventory = {
+      operations: [{
+        operationId: "4b8779cf-19ee-4c67-9488-5bb2749650c8",
+        agent: "codex",
+        journalStatus: "verifying",
+        updatedAt: new Date().toISOString(),
+        backupId: "7f9fd849-9817-46ef-b075-7a437d32b03c",
+        completedMutations: 1,
+        totalMutations: 1,
+        observedAppliedMutations: 1,
+        observation: "applied",
+        canFinalize: true,
+        canRestore: false,
+        canTerminate: true,
+        reason: "Quit Codex before restoring the committed backup",
+      }],
+      warnings: [],
+    };
+    const list = vi.spyOn(api, "listRecoveryOperations")
+      .mockResolvedValueOnce(recovery)
+      .mockResolvedValue({ operations: [], warnings: [] });
+    const reconcile = vi.spyOn(api, "reconcileRecoveryOperation").mockResolvedValue({
+      ...recovery.operations[0],
+      journalStatus: "complete",
+      canFinalize: false,
+    });
+    try {
+      render(<App />);
+      const dialog = await screen.findByRole("dialog", { name: "Incomplete operation requires recovery" });
+      expect(within(dialog).getByText("4b8779cf-19ee-4c67-9488-5bb2749650c8")).toBeVisible();
+      expect(within(dialog).getByText("All applied")).toBeVisible();
+      expect(within(dialog).getByRole("button", { name: "Restore verified backup" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Continue browsing" })).toBeEnabled();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Accept verified result" }));
+
+      await waitFor(() => expect(reconcile).toHaveBeenCalledWith(recovery.operations[0].operationId));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Incomplete operation requires recovery" })).not.toBeInTheDocument());
+    } finally {
+      list.mockRestore();
+      reconcile.mockRestore();
+    }
+  });
+
+  it("opens recovery immediately when cleanup fails after journaling", async () => {
+    const recovery: RecoveryInventory = {
+      operations: [{
+        operationId: "a0dd8117-fb63-4bc4-8bd7-d76eb93797f7",
+        agent: "codex",
+        journalStatus: "failed",
+        updatedAt: new Date().toISOString(),
+        completedMutations: 0,
+        totalMutations: 1,
+        observedAppliedMutations: 0,
+        observation: "notApplied",
+        canFinalize: false,
+        canRestore: false,
+        canTerminate: true,
+        reason: "No independently verified backup is available",
+      }],
+      warnings: [],
+    };
+    const list = vi.spyOn(api, "listRecoveryOperations")
+      .mockResolvedValueOnce({ operations: [], warnings: [] })
+      .mockResolvedValue(recovery);
+    const execute = vi.spyOn(api, "executeCleanup").mockRejectedValue(new Error("injected mutation failure"));
+    try {
+      render(<App />);
+      await screen.findByText("Managed data");
+      fireEvent.click(screen.getByRole("button", { name: /Sessions 5/ }));
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Design token migration" }));
+      fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Clean without backup" }));
+
+      expect(await screen.findByRole("dialog", { name: "Incomplete operation requires recovery" })).toBeVisible();
+      expect(screen.getByText("a0dd8117-fb63-4bc4-8bd7-d76eb93797f7")).toBeVisible();
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally {
+      list.mockRestore();
+      execute.mockRestore();
+    }
+  });
+
+  it("allows an unrecognized recovery warning to be dismissed for browsing", async () => {
+    const list = vi.spyOn(api, "listRecoveryOperations").mockResolvedValue({
+      operations: [],
+      warnings: ["operation journal format 99 is not recognized"],
+    });
+    try {
+      render(<App />);
+      const dialog = await screen.findByRole("dialog", { name: "Operation recovery record is unavailable" });
+      expect(within(dialog).getByText(/can keep browsing, but new cleanup remains blocked/)).toBeVisible();
+      expect(within(dialog).getByText("operation journal format 99 is not recognized")).toBeVisible();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Continue browsing" }));
+      expect(screen.queryByRole("dialog", { name: "Operation recovery record is unavailable" })).not.toBeInTheDocument();
+      expect(await screen.findByText("Managed data")).toBeVisible();
+    } finally {
+      list.mockRestore();
+    }
   });
 });
 

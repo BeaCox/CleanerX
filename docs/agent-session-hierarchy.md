@@ -1,5 +1,9 @@
 # Agent session hierarchy
 
+Status: current cross-Agent presentation and cleanup-impact model
+
+Last reviewed: 2026-08-28
+
 CleanerX uses a common **forest** model for storage navigation:
 
 ```text
@@ -20,7 +24,7 @@ A project can contain multiple independent root sessions, so this is a forest ra
 | Codex | App Server `thread/list` exposes `parentThreadId` / `ancestorThreadId`; `thread/delete` removes a thread and its spawned descendants. | Project root → root thread → child/subagent threads. |
 | Claude Code | Sessions are associated with a project bucket. Forked sessions have independent IDs; subagent transcripts are stored beneath their parent session directory. | Project bucket → independent root sessions. Forks remain sibling roots because the documented transcript metadata does not expose a stable parent-session ID; subagent files are included in the owning session's cleanup impact rather than invented as selectable sessions. |
 | OpenCode | The recognized official SQLite schema records `project_id` and `parent_id`; the public server exposes child-session and fork routes, and official deletion recursively removes children. | Official project record → root session → child/fork sessions. The project `worktree` and session `directory` are grouping metadata only and are never scanned. |
-| Pi | Session JSONL entries use `id` and `parentId`, and session files can reference a `parentSession`; `/tree`, `/fork`, and `/clone` expose branching. | Working-directory bucket → session files. A `parentSession` reference to another inventoried file is shown as its tree child, but never expands into a deletion descendant because removing one pi session file never removes another. Message-entry branching is intentionally not shown in CleanerX MVP. |
+| pi | Session JSONL entries use `id` and `parentId`, and session files can reference a `parentSession`; `/tree`, `/fork`, and `/clone` expose branching. | Working-directory bucket → session files. A `parentSession` reference to another inventoried file is shown as its tree child, but never expands into a deletion descendant because removing one pi session file never removes another. Message-entry branching is intentionally not shown in CleanerX MVP. |
 
 Official references:
 
@@ -30,8 +34,8 @@ Official references:
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
 - [OpenCode agents](https://opencode.ai/docs/agents/)
 - [OpenCode server session APIs](https://dev.opencode.ai/docs/server/)
-- [Pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)
-- [Pi session navigation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sessions.md)
+- [pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)
+- [pi session navigation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sessions.md)
 
 ## Product decisions
 
@@ -47,4 +51,4 @@ Official references:
 - For pi, the documented `sessions/--<working-directory>--/` bucket is positive association evidence. CleanerX groups every recognized session file in that bucket together and records the session header `cwd` as a display root. A `parentSession` reference to another inventoried file is shown as tree lineage, but pi file deletion never cascades, so a fork is never included as a deletion descendant of its parent.
 - The “No project” virtual root sorts sessions by most recent update. A known `cwd` may be shown only as recognition metadata; an absent `cwd` is displayed explicitly and is never inferred from CleanerX's working directory.
 - A parent cleanup remains explicit. The confirmation plan expands and displays every descendant that the Agent's official delete operation will also remove.
-- CleanerX does not inspect message bodies while building the hierarchy. Codex content can be loaded on demand in a bounded detail view; Agent-specific entry-level branching, such as Pi's internal message tree, remains out of scope for the MVP hierarchy.
+- CleanerX does not inspect message bodies while building the hierarchy. Codex content can be loaded on demand in a bounded detail view; Agent-specific entry-level branching, such as pi's internal message tree, remains out of scope for the MVP hierarchy.
