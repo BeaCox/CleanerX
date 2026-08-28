@@ -10,7 +10,7 @@ The complete metadata-only inventory snapshot remains behind the Rust boundary. 
 
 ### Codex
 
-Codex Home resolution order is user override, `CODEX_HOME`, then `~/.codex`. The executable is resolved from `PATH`, known macOS application resources, and common Homebrew/NVM/Volta/asdf/Bun/pnpm user locations so Finder launches do not depend on an interactive shell PATH. Application Support is a separate optional allowlisted root.
+Codex Home resolution order is user override, `CODEX_HOME`, then `~/.codex`. The executable is resolved from `PATH`, known macOS application resources, `/usr/local/bin` and `/usr/bin` on Unix, and common NVM/Volta/asdf/Bun/npm/pnpm user locations. Linux desktop launches therefore do not depend on an interactive shell `PATH`. Application Support is a separate optional allowlisted root.
 
 CleanerX initializes an App Server JSON-RPC connection and opts into capability discovery. It prefers the existing Unix control socket through `codex app-server proxy`; a missing, stale, or unresponsive socket falls back to a temporary stdio server. Failure of both transports disables session mutations. It calls `thread/list` for active and archived pages and `thread/loaded/list` for runtime blockers. No message preview or turn body is retained in the inventory model. After an explicit detail action, `thread/read` with `includeTurns: true` loads a bounded read-only preview without resuming the thread; a recognized rollout parser is the read-only fallback.
 
@@ -77,6 +77,8 @@ any in-progress state ───────────────────�
 ```
 
 Each transition is written to an atomic JSON operation journal. Backup is an explicit option and defaults off; the review warns that direct cleanup is irreversible. When backup is selected, eligible items are collected relative to a named fixed root, hashed with SHA-256, archived as tar + zstd, encrypted with age X25519, written to `.partial`, finalized, and entered in the backup catalog before mutation starts. With backup disabled, the journal proceeds directly from `planned` to `deleting`; path, capability, writer, and post-operation verification guards are unchanged.
+
+The age identity is stored in the operating system's native credential store: macOS Keychain on macOS and the desktop Secret Service on Linux. Credential-store failure aborts backup creation before mutation. Direct filesystem targets must stay on the same filesystem device as their category-specific allowlisted root; nested Linux mount points are rejected together with symlinks, foreign ownership, and changed file identities.
 
 After cleanup, CleanerX scans the same Agent again. A selected session that remains is a failed verification; CleanerX does not try to repair a private database or broaden the deletion set.
 

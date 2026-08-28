@@ -577,6 +577,63 @@ mod tests {
         assert!(store.list().expect("list after purge").is_empty());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated Linux Secret Service session"]
+    fn live_linux_secret_service_backup_round_trip() {
+        assert_eq!(
+            std::env::var("CLEANERX_LINUX_SECRET_SERVICE_TEST").as_deref(),
+            Ok("1"),
+            "run only inside the isolated CI Secret Service session"
+        );
+        let credential = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+            .expect("Linux Secret Service backend");
+        let _ = credential.delete_credential();
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let source = workspace.path().join("sessions/thread.jsonl");
+        fs::create_dir_all(source.parent().expect("parent")).expect("mkdir");
+        fs::write(&source, b"private Linux transcript").expect("write");
+        let store = BackupStore::new(backup_dir.path().to_path_buf(), 30).expect("store");
+        let plan = CleanupPlan {
+            id: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            selected_item_ids: vec!["session:linux-test".into()],
+            expanded_session_ids: vec!["linux-test".into()],
+            operations: Vec::<PlannedOperation>::new(),
+            estimated_bytes: 24,
+            estimated_backup_bytes: 24,
+            blockers: vec![],
+        };
+        let manifest = store
+            .create_backup(
+                &plan,
+                AgentKind::Codex,
+                Some("linux-test".into()),
+                &[BackupSource {
+                    root_label: "codex_home".into(),
+                    root_path: workspace.path().to_path_buf(),
+                    path: source.clone(),
+                }],
+            )
+            .expect("Secret Service-backed backup");
+        fs::remove_file(&source).expect("remove original");
+        let roots = BTreeMap::from([("codex_home".into(), workspace.path().to_path_buf())]);
+        store
+            .restore(manifest.id, AgentKind::Codex, &roots)
+            .expect("Secret Service-backed restore");
+
+        assert_eq!(
+            fs::read(source).expect("restored bytes"),
+            b"private Linux transcript"
+        );
+        credential
+            .delete_credential()
+            .expect("remove isolated CI credential");
+    }
+
     #[test]
     fn purge_rejects_a_catalog_path_outside_the_backup_store() {
         let backup_dir = tempfile::tempdir().expect("backups");

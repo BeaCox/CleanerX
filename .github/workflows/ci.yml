@@ -17,8 +17,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy -p cleanerx-core -p adapter-codex --all-targets -- -D warnings
-      - run: cargo test -p cleanerx-core -p adapter-codex
+      - run: cargo clippy -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi --all-targets -- -D warnings
+      - run: cargo test -p cleanerx-core -p adapter-codex -p adapter-claude -p adapter-opencode -p adapter-pi
 
   frontend:
     runs-on: ubuntu-24.04
@@ -35,3 +35,65 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  linux-app:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri and smoke-test system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            dbus-x11 \
+            file \
+            gnome-keyring \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget \
+            xvfb
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: make check
+      - name: Verify Linux Secret Service backup and restore
+        run: |
+          mkdir -p \
+            "$RUNNER_TEMP/cleanerx-keyring/data" \
+            "$RUNNER_TEMP/cleanerx-keyring/config" \
+            "$RUNNER_TEMP/cleanerx-keyring/runtime"
+          chmod 700 "$RUNNER_TEMP/cleanerx-keyring/runtime"
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_DATA_HOME="$1/data"
+            export XDG_CONFIG_HOME="$1/config"
+            export XDG_RUNTIME_DIR="$1/runtime"
+            eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            CLEANERX_LINUX_SECRET_SERVICE_TEST=1 \
+              cargo test -p cleanerx-core live_linux_secret_service_backup_round_trip -- --ignored
+          ' _ "$RUNNER_TEMP/cleanerx-keyring"
+      - run: make linux
+      - run: make smoke-linux
+      - name: Inspect Linux packages
+        run: |
+          dpkg-deb --info target/release/bundle/deb/*.deb
+          file target/release/bundle/appimage/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CleanerX-linux-x86_64-unsigned
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

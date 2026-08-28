@@ -923,18 +923,44 @@ fn bounded_string(mut value: String, limit: usize) -> String {
 
 fn find_pi_binary() -> Option<PathBuf> {
     let executable_name = if cfg!(windows) { "pi.exe" } else { "pi" };
+    let search_path = env::var_os("PATH");
+    let home = dirs::home_dir();
+    pi_binary_candidates(
+        executable_name,
+        search_path.as_deref(),
+        home.as_deref(),
+        cfg!(unix),
+        cfg!(target_os = "macos"),
+    )
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+fn pi_binary_candidates(
+    executable_name: &str,
+    search_path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+    unix_like: bool,
+    macos: bool,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(path) = env::var_os("PATH") {
+    if let Some(path) = search_path {
         candidates.extend(env::split_paths(&path).map(|directory| directory.join(executable_name)));
     }
-    #[cfg(target_os = "macos")]
-    candidates.extend([
-        PathBuf::from("/opt/homebrew/bin/pi"),
-        PathBuf::from("/usr/local/bin/pi"),
-    ]);
-    if let Some(home) = dirs::home_dir() {
+    if unix_like {
+        candidates.extend([
+            PathBuf::from("/usr/local/bin").join(executable_name),
+            PathBuf::from("/usr/bin").join(executable_name),
+        ]);
+    }
+    if macos {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/pi"));
+    }
+    if let Some(home) = home {
         candidates.extend([
             home.join(".local/bin").join(executable_name),
+            home.join(".local/share/pnpm").join(executable_name),
+            home.join(".npm-global/bin").join(executable_name),
             home.join(".volta/bin").join(executable_name),
             home.join(".asdf/shims").join(executable_name),
             home.join(".bun/bin").join(executable_name),
@@ -957,7 +983,7 @@ fn find_pi_binary() -> Option<PathBuf> {
             candidates.extend(nvm_candidates);
         }
     }
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    candidates
 }
 
 fn pi_is_running() -> bool {
@@ -1012,6 +1038,18 @@ mod tests {
 
     const SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
+
+    #[test]
+    fn binary_candidates_cover_linux_desktop_install_locations() {
+        let home = tempfile::tempdir().expect("binary fixture home");
+        let candidates = pi_binary_candidates("pi", None, Some(home.path()), true, false);
+
+        assert!(candidates.contains(&PathBuf::from("/usr/local/bin/pi")));
+        assert!(candidates.contains(&PathBuf::from("/usr/bin/pi")));
+        assert!(candidates.contains(&home.path().join(".local/bin/pi")));
+        assert!(candidates.contains(&home.path().join(".local/share/pnpm/pi")));
+        assert!(candidates.contains(&home.path().join(".npm-global/bin/pi")));
+    }
 
     #[tokio::test]
     async fn scans_recognized_sessions_cache_and_protected_data_without_retaining_bodies() {

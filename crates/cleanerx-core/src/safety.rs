@@ -62,16 +62,15 @@ impl PathPolicy {
         }
 
         let canonical = path.canonicalize()?;
-        if !self.allowed_roots.iter().any(|root| {
-            root.canonicalize()
-                .map(|allowed| canonical.starts_with(allowed))
-                .unwrap_or(false)
-        }) {
-            return Err(CleanerError::UnsafePath(format!(
-                "outside allowed roots: {}",
-                path.display()
-            )));
-        }
+        let allowed_root = self
+            .allowed_roots
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .filter(|allowed| canonical.starts_with(allowed))
+            .max_by_key(|allowed| allowed.components().count())
+            .ok_or_else(|| {
+                CleanerError::UnsafePath(format!("outside allowed roots: {}", path.display()))
+            })?;
 
         for protected in &self.protected {
             let protected = protected
@@ -88,7 +87,7 @@ impl PathPolicy {
             }
         }
 
-        validate_tree(&canonical)?;
+        validate_tree(&canonical, &allowed_root)?;
 
         Ok(canonical)
     }
@@ -171,7 +170,21 @@ fn hash_metadata_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<(
     Ok(())
 }
 
-fn validate_tree(path: &Path) -> Result<(), CleanerError> {
+fn validate_tree(path: &Path, allowed_root: &Path) -> Result<(), CleanerError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let root_metadata = fs::symlink_metadata(allowed_root)?;
+        validate_tree_on_device(path, root_metadata.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        validate_tree_on_device(path, 0)
+    }
+}
+
+fn validate_tree_on_device(path: &Path, expected_device: u64) -> Result<(), CleanerError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(CleanerError::UnsafePath(format!(
@@ -180,10 +193,31 @@ fn validate_tree(path: &Path) -> Result<(), CleanerError> {
         )));
     }
     validate_owner(path, &metadata)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        validate_device_boundary(path, expected_device, metadata.dev())?;
+    }
+    #[cfg(not(unix))]
+    validate_device_boundary(path, expected_device, expected_device)?;
     if metadata.is_dir() {
         for entry in fs::read_dir(path)? {
-            validate_tree(&entry?.path())?;
+            validate_tree_on_device(&entry?.path(), expected_device)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_device_boundary(
+    path: &Path,
+    expected_device: u64,
+    actual_device: u64,
+) -> Result<(), CleanerError> {
+    if actual_device != expected_device {
+        return Err(CleanerError::UnsafePath(format!(
+            "filesystem mount boundary inside mutation target: {}",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -330,5 +364,33 @@ mod tests {
         fs::write(&file, b"longer replacement").expect("replacement bytes");
         let after = metadata_revision(std::slice::from_ref(&file)).expect("second revision");
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn device_boundary_check_is_platform_independent() {
+        let path = Path::new("/allowlisted/mounted-data");
+        assert!(validate_device_boundary(path, 7, 7).is_ok());
+        assert!(validate_device_boundary(path, 7, 8).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_a_native_linux_mount_boundary() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = PathBuf::from("/");
+        let root_device = fs::metadata(&root).expect("root metadata").dev();
+        let mounted_file = ["/proc/version", "/sys/kernel/uevent_seqnum"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| {
+                fs::metadata(path)
+                    .map(|metadata| metadata.dev() != root_device)
+                    .unwrap_or(false)
+            })
+            .expect("Linux test runner exposes a mounted virtual filesystem");
+        let policy = PathPolicy::new(vec![root], vec![]);
+
+        assert!(policy.validate_existing(&mounted_file).is_err());
     }
 }

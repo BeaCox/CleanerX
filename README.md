@@ -4,7 +4,7 @@
 
 # CleanerX
 
-CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, and OpenCode data on macOS 13+ and is built with Rust, Tauri 2, React, and TypeScript.
+CleanerX is a local-first desktop application for inspecting and safely cleaning storage created by coding agents. The current engineering MVP supports Codex, Claude Code, OpenCode, and pi data on macOS 13+ and x86_64 Linux, and is built with Rust, Tauri 2, React, and TypeScript.
 
 CleanerX itself does not connect to cloud services, upload data, or collect telemetry. Project paths are used only to organize sessions: CleanerX never recursively scans or modifies source directories.
 
@@ -39,30 +39,40 @@ CleanerX treats deletion as a security boundary:
 | Restore | Manifest hashes and every destination are checked before the first move. Existing IDs and paths are never overwritten. |
 | Privacy | There is no telemetry, crash upload, cloud synchronization, updater, background daemon, or unrestricted shell/filesystem API. |
 
-Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain. Archives are first written as `.partial` files, verified, and then atomically committed as `.cxb` files.
+Backups use tar + zstd and [age](https://age-encryption.org/) X25519 encryption. The private identity is stored in macOS Keychain or the Linux desktop Secret Service. Archives are first written as `.partial` files, verified, and then atomically committed as `.cxb` files. If the native credential store is unavailable, backup creation fails before cleanup begins.
 
 For the complete threat model and vulnerability-reporting process, see [SECURITY.md](SECURITY.md).
 
 ## Project status
 
-CleanerX is currently an engineering MVP focused on macOS. There is no signed or notarized public build yet. The repository can build unsigned Apple Silicon and Intel `.app` and DMG artifacts; Windows, Linux, and further adapter hardening remain planned work.
+CleanerX is currently an engineering MVP. There is no signed or notarized public build yet. The repository builds unsigned Apple Silicon and Intel `.app`/DMG artifacts and unsigned x86_64 Linux `.deb`/AppImage artifacts. Linux packages are built and smoke-tested on Ubuntu 22.04 in GitHub Actions; Windows and further adapter hardening remain planned work.
 
 See the [development roadmap](docs/roadmap.md) for current milestones, release gates, and deliberate non-goals.
 
 ## Requirements
 
-- macOS 13 or later
-- A supported local Codex, Claude Code, or OpenCode installation for that Agent's inventory and mutations
+- macOS 13 or later, or x86_64 Linux with a WebKitGTK 4.1 desktop environment (CI uses Ubuntu 22.04)
+- A supported local Codex, Claude Code, OpenCode, or pi installation for that Agent's inventory and mutations
 - [Rust](https://www.rust-lang.org/tools/install) 1.88 or later
 - [Node.js](https://nodejs.org/) 22 or later (CI uses Node.js 24)
 - [pnpm](https://pnpm.io/installation) 11.3.0 or later
-- Xcode Command Line Tools for native macOS builds
+- Xcode Command Line Tools for native macOS builds, or the Tauri system packages listed below for Linux builds
 
 Install the Xcode Command Line Tools if needed:
 
 ```bash
 xcode-select --install
 ```
+
+On Debian or Ubuntu, install the Linux build prerequisites:
+
+```bash
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+Encrypted backups on Linux also require a desktop Secret Service provider such as GNOME Keyring or KDE Wallet.
 
 ## Getting started
 
@@ -85,6 +95,14 @@ To build both the `.app` and DMG artifacts:
 ```bash
 make bundles
 ```
+
+To build the Linux packages on an x86_64 Linux host:
+
+```bash
+make linux
+```
+
+The packages are written beneath `target/release/bundle/deb/` and `target/release/bundle/appimage/`. The Linux CI job also launches the release binary under Xvfb and uploads both packages as the `CleanerX-linux-x86_64-unsigned` workflow artifact.
 
 Builds are unsigned. On first launch, macOS may block the application. Use Finder to right-click CleanerX and choose **Open**, or approve it in **System Settings → Privacy & Security**. Do not bypass Gatekeeper for binaries from an untrusted source.
 
@@ -138,6 +156,8 @@ The root `Makefile` is the stable entry point for local development and CI:
 | `make app` | Build an unsigned macOS `.app`. |
 | `make dmg` | Build an unsigned macOS DMG. |
 | `make bundles` | Build the `.app` and DMG in one Tauri invocation. |
+| `make linux` | Build unsigned Linux `.deb` and AppImage packages. |
+| `make smoke-linux` | Launch the built Linux release binary under Xvfb for a native smoke test. |
 
 Run the complete validation pipeline before submitting a change:
 

@@ -9,7 +9,7 @@ CleanerX operates on private local Agent data, so destructive behavior is treate
 - Backups are optional and off by default. Direct cleanup is irreversible and must be stated in the review. If the user selects a backup, deletion cannot begin until the encrypted archive is verified and atomically committed.
 - Codex session deletion uses App Server `thread/delete`. OpenCode session deletion uses its documented CLI command while offline, or a verified loopback Server API only when every related writer reports the full deletion scope idle; backup and restore use the documented export/import commands and remain offline-only. pi session deletion removes only the documented per-session JSONL files through CleanerX's preflighted path transaction while no pi process is running. Unknown schemas, ambiguous databases, unverified writers, authentication challenges, and unavailable routes fail closed.
 - CleanerX never writes OpenCode SQLite rows, deletes its database/WAL files, or treats OpenCode project/worktree paths as cleanup roots.
-- Symbolic links, lexical traversal, paths outside allowlisted roots and changed file identities are rejected.
+- Symbolic links, lexical traversal, paths outside allowlisted roots, nested Unix mount boundaries, ownership anomalies and changed file identities are rejected.
 - CleanerX does not force-quit Codex or another writer.
 - Inventory may retain one normalized, 96-character first-user-message excerpt only as an unnamed Pi session title, matching Pi's own selector; no additional transcript content is retained by the scan.
 - There is no telemetry, crash upload, cloud connection, updater, background daemon or general shell/filesystem command exposed to the GUI.
