@@ -15,7 +15,7 @@
 
 CleanerX is a local-only desktop application for inspecting and cleaning storage created by Codex, Claude Code, OpenCode, and pi. It presents a metadata-first inventory, expands the exact cleanup scope for review, and fails closed when an Agent capability, storage schema, path, or writer state cannot be verified.
 
-CleanerX does not upload data, collect telemetry, synchronize with cloud services, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory. The only built-in network action is an explicit application-update check against CleanerX's GitHub Releases feed.
+CleanerX does not upload data, collect telemetry, synchronize with cloud services, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory. The only built-in external network action is an explicit application-update check against CleanerX's GitHub Releases feed.
 
 <p align="center">
   <img src="assets/screenshots/cleanerx-sessions.jpg" width="1280" alt="CleanerX Sessions tree view showing demo projects, nested sessions, cleanup eligibility, sources, updated times, and storage sizes.">
@@ -23,7 +23,7 @@ CleanerX does not upload data, collect telemetry, synchronize with cloud service
 <p align="center"><sub>Sessions tree view with built-in demo data.</sub></p>
 
 > [!CAUTION]
-> CleanerX permanently deletes private local data. The repository is an engineering preview and does not yet provide a promoted binary release; current builds are unsigned. Nothing is selected automatically. Review every cleanup plan; if backup is unavailable or left off, deletion is irreversible.
+> CleanerX permanently deletes private local data. The current [v0.1.0 release](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) is explicitly unsigned and not notarized. Nothing is selected automatically. Review every cleanup plan; if backup is unavailable or left off, deletion is irreversible.
 
 ## Why CleanerX
 
@@ -60,7 +60,7 @@ The detailed routes, gates, limitations, and automated evidence live in the [mut
 | Linux x86_64 | WebKitGTK 4.1 desktop environment; CI uses Ubuntu 22.04 | Unsigned `.deb` and AppImage |
 | Windows 10/11 x86_64 | WebView2 Runtime; MSVC C runtime is statically linked | Unsigned MSI and NSIS installers |
 
-There is no promoted binary release yet. The release workflow can produce explicitly unsigned artifacts from a reviewed `v*` tag; see the [release policy](docs/open-source-release-plan.md) for the gates that separate source availability from supported cleanup builds.
+[CleanerX v0.1.0](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) is the current stable release within the published compatibility matrix. Its macOS, Linux, and Windows artifacts are explicitly unsigned and not notarized; verify manually downloaded files against the release's SHA-256 checksums. See the [release policy](docs/open-source-release-plan.md) for the gates that separate source availability, mutation safety, and publisher identity.
 
 ## Application updates
 

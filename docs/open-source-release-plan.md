@@ -2,7 +2,7 @@
 
 Status: active policy document
 
-Last reviewed: 2026-08-28
+Last reviewed: 2026-08-30
 
 This document defines the release states and gates for publishing CleanerX as an open-source project. It contains no implementation backlog. Every unfinished release, packaging, pilot, and maintenance task is tracked only in the [development roadmap](roadmap.md).
 
@@ -32,6 +32,8 @@ Advancing the source repository does not automatically advance the downloadable 
 | `v0.1.0` | Repeatable unsigned cross-platform release | Supported within the published compatibility matrix | Establish the first maintained public release. |
 
 A future signed or notarized release may replace unsigned artifacts without changing the safety gates. Signing remains optional until a suitable release identity is available.
+
+Current state: [`v0.1.0`](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) was published as the first stable release on 2026-08-28 UTC. Its applications remain unsigned and non-notarized, and support is limited to the capability-gated compatibility matrix.
 
 ## Source-preview gate
 

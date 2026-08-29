@@ -4,7 +4,7 @@ CleanerX operates on private local Agent data and performs irreversible deletion
 
 ## Supported versions
 
-CleanerX is currently an engineering source preview. There is no promoted supported binary release yet. Report issues against the latest default-branch commit when possible and include the exact commit or tag you tested. The [open-source release policy](docs/open-source-release-plan.md) defines when a tagged build becomes an alpha, beta, or supported release.
+[CleanerX v0.1.0](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) is the current supported release within the published capability and compatibility limits. Its downloadable applications are unsigned and not notarized. Report issues against the latest supported release or default-branch commit, and include the exact commit or tag you tested. The [open-source release policy](docs/open-source-release-plan.md) defines the release gates and support boundary.
 
 ## What to report privately
 
@@ -58,7 +58,7 @@ The maintainer will validate the report privately, bound the affected route, and
 - Backup identities stay in the native platform credential store: macOS Keychain, Linux Secret Service, or Windows Credential Manager. A missing or failing credential backend disables backup creation rather than weakening encryption.
 - CleanerX does not force-quit Codex or another writer.
 - Inventory may retain one normalized, 96-character first-user-message excerpt only as an unnamed pi session title, matching pi's own selector; no additional transcript content is retained by the scan.
-- There is no telemetry, crash upload, cloud synchronization, background daemon, or general shell/filesystem command exposed to the GUI. The sole built-in network action is a user-initiated HTTPS update check against the fixed CleanerX GitHub Releases endpoint; it sends no Agent data and never runs on a timer or at startup.
+- There is no telemetry, crash upload, cloud synchronization, background daemon, or general shell/filesystem command exposed to the GUI. The sole built-in external network action is a user-initiated HTTPS update check against the fixed CleanerX GitHub Releases endpoint; it sends no Agent data and never runs on a timer or at startup. The separately documented OpenCode Server route is restricted to a verified loopback endpoint on the local host.
 - Application updates use Tauri's official updater through three purpose-specific Rust commands. The webview cannot choose an endpoint, public key, target file, or shell command. Update installation requires a manifest-selected artifact whose Tauri signature verifies against the public key embedded in the installed build.
 - The updater signing private key is absent from the repository and release artifacts. Release automation receives it only through GitHub Actions secrets; the maintainer's recovery copy stays in the native credential store. Operating-system signing remains a separate trust layer: the updater signature does not make an artifact Apple-notarized or establish a Microsoft publisher identity.
 
