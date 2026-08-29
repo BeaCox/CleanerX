@@ -2,7 +2,7 @@
 
 Status: active roadmap
 
-Last updated: 2026-08-28
+Last updated: 2026-08-30
 
 This is the repository's single source of truth for unfinished work. Design, security, storage, and release documents describe current behavior and binding constraints; they link here instead of maintaining separate phase or task lists.
 
@@ -30,9 +30,10 @@ CleanerX currently has:
 - unsigned x86_64 Windows MSI and NSIS builds, with a native launch smoke test and an isolated Credential Manager backup/restore round trip;
 - Windows application-data and package-manager launcher discovery, stdio-only Codex control transport, writer-process recognition, write-through atomic replacement, volume/file identity checks, owner validation, and junction/reparse-point rejection;
 - reusable product CI with the complete Linux quality gate, cross-platform Rust tests, and native Linux/Windows launch smoke tests;
-- one SemVer tag workflow that reruns product CI, validates synchronized versions and `main` ancestry, builds every supported platform, and publishes a GitHub Release with explicitly unsigned assets, build metadata, committed lockfiles, and SHA-256 checksums.
+- a published, explicitly unsigned and non-notarized [`v0.1.0`](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) stable release with macOS, Linux, and Windows assets, updater signatures, build metadata, committed lockfiles, and SHA-256 checksums; and
+- one SemVer tag workflow that reruns product CI, validates synchronized versions and `main` ancestry, builds every supported platform, and stages a GitHub Release for maintainer approval.
 
-This is an engineering MVP, not yet a promise that every Codex storage revision or crash boundary has production-grade coverage.
+This is a bounded stable release, not a promise that every Agent version, storage revision, native environment, or crash boundary has production-grade coverage.
 
 ## M0 — Publishable source baseline
 
@@ -98,9 +99,11 @@ Broader version-by-version fixtures, native disposable mutation cycles, and pilo
 
 ## M2 — Cross-platform release readiness
 
-Priority: repeatable unsigned artifacts and a bounded cross-platform path from alpha to `v0.1.0`. The release states and mandatory disclosures are defined in the [open-source release policy](open-source-release-plan.md).
+Priority: maintain the published unsigned `v0.1.0` release and close the outstanding native-host, accessibility, compatibility, and pilot evidence gaps. The release states and mandatory disclosures are defined in the [open-source release policy](open-source-release-plan.md).
 
-### Alpha artifacts
+**Status: `v0.1.0` is published. The successful tag workflow and complete release asset set establish repeatable packaging; the remaining verification and pilot work below still limits the support boundary.**
+
+### Remaining native artifact evidence
 
 - Add Tauri smoke tests for launch, scan, read-only degradation, detail loading, review dialog, backup listing, and settings persistence on macOS 13+.
 - Launch each architecture artifact on a clean supported environment and run an isolated mutation/backup/restore cycle with disposable Agent data.
@@ -109,19 +112,20 @@ Priority: repeatable unsigned artifacts and a bounded cross-platform path from a
 - Document reproducible local commands for both architectures and the supported Finder/System Settings opening path. Never instruct users to disable Gatekeeper globally or run broad quarantine-removal commands.
 - Verify the manual signed updater on every supported updater package after draft artifacts exist: no startup/background request, invalid signatures fail closed, stable feeds exclude prereleases, and installation still requires two explicit user actions.
 
-### Bounded pilot and beta
+### Remaining pilot and compatibility evidence
 
-- Recruit a small pilot audience that understands the unsigned engineering-preview status and begins with read-only inventory/review before mutation testing.
+- Recruit a small pilot audience that understands the unsigned, non-notarized, capability-limited support boundary and begins with read-only inventory/review before mutation testing.
 - Collect sanitized compatibility reports only through repository issues or discussions; do not add telemetry or request transcripts, credentials, memory contents, logs, journals, or backups.
 - Publish observed Agent versions, transports, capabilities, supported mutations, and read-only degradation in the compatibility table.
 - Treat possible source-tree, credential, configuration, backup, restore, or cross-item deletion defects as release blockers; visibly disable an affected mutation category when the regression cannot be bounded immediately.
 - Add a fixture and regression test before closing each storage-compatibility defect.
 
-### `v0.1.0` release and maintenance
+### `v0.1.0` maintenance
 
-- Complete the source, mutation-safety, unsigned-artifact, and pilot exit criteria; freeze the tested compatibility matrix and list unsupported operations by capability.
-- Synchronize all version surfaces and publish a changelog, migration notes where needed, checksums, build metadata, compatibility limits, and the exact source commit.
-- Repeat native smoke tests on the final tag instead of promoting an earlier build by renaming it.
+- Treat the published `v0.1.0` tag and compatibility matrix as the maintained baseline; do not retroactively widen its supported capability set.
+- Complete and record the remaining native, accessibility, disposable-data, and pilot evidence for the current release instead of inferring it from publication.
+- Synchronize every version surface and publish a changelog, migration notes where needed, checksums, build metadata, compatibility limits, and the exact source commit for each later release.
+- Repeat native smoke tests on every final tag instead of promoting an earlier build by renaming it.
 - Keep `main` releasable; use fixtures and negative-path tests for every new schema/category/mutation route; never silently widen a cleanup allowlist in a patch release.
 - Define patch releases for compatibility fixes and minor releases for backward-compatible capability work, and explicitly mark capabilities read-only when the maintained release line can no longer validate them.
 
