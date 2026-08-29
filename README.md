@@ -17,6 +17,11 @@ CleanerX is a local-only desktop application for inspecting and cleaning storage
 
 CleanerX does not upload data, collect telemetry, synchronize with cloud services, or run in the background. A project path is grouping metadata only: CleanerX never recursively scans or modifies a source directory. The only built-in network action is an explicit application-update check against CleanerX's GitHub Releases feed.
 
+<p align="center">
+  <img src="assets/screenshots/cleanerx-sessions.jpg" width="1280" alt="CleanerX Sessions tree view showing demo projects, nested sessions, cleanup eligibility, sources, updated times, and storage sizes.">
+</p>
+<p align="center"><sub>Sessions tree view with built-in demo data.</sub></p>
+
 > [!CAUTION]
 > CleanerX permanently deletes private local data. The repository is an engineering preview and does not yet provide a promoted binary release; current builds are unsigned. Nothing is selected automatically. Review every cleanup plan; if backup is unavailable or left off, deletion is irreversible.
 
