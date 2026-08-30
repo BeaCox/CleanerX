@@ -2,7 +2,7 @@
 
 Status: implemented for tagged desktop releases
 
-Last reviewed: 2026-08-28
+Last reviewed: 2026-08-30
 
 ## Research summary
 
@@ -17,6 +17,9 @@ GitButler adds a configurable periodic check interval and stable/nightly channel
 Primary references:
 
 - [Tauri v2 updater documentation](https://v2.tauri.app/plugin/updater/)
+- [Tauri ARM AppImage guidance](https://v2.tauri.app/distribute/appimage/#appimages-for-arm-based-devices)
+- [Tauri Windows ARM64 installer guidance](https://v2.tauri.app/distribute/windows-installer/#building)
+- [GitHub-hosted ARM64 runner labels](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job#standard-github-hosted-runners-for-public-repositories) and [Windows ARM64 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows11-VS2026-Arm64-Readme.md)
 - [`tauri-apps/tauri-action` updater manifest support](https://github.com/tauri-apps/tauri-action)
 - [Entracte updater command](https://github.com/drmowinckels/entracte/blob/main/src-tauri/src/updater.rs) and [configuration](https://github.com/drmowinckels/entracte/blob/main/src-tauri/tauri.conf.json)
 - [Atuin Desktop endpoint selection](https://github.com/atuinsh/desktop/blob/main/backend/src/commands/updates.rs) and [update UI](https://github.com/atuinsh/desktop/blob/main/src/routes/root/UpdateNotifier.tsx)
@@ -37,15 +40,19 @@ The fixed stable endpoint intentionally excludes GitHub prereleases. A future be
 | --- | --- | --- | --- |
 | macOS arm64 | `.app.tar.gz` | DMG, application ZIP | Tauri replaces the installed application bundle; the DMG remains a manual installer. |
 | macOS x86_64 | `.app.tar.gz` | DMG, application ZIP | Separate static-feed target preserves architecture matching. |
+| Windows arm64 | NSIS `.exe` | MSI | The application is native ARM64; Tauri documents that the NSIS installer shell itself runs through Windows emulation. |
 | Windows x86_64 | NSIS `.exe` | MSI | One static target cannot select both installer families; CleanerX standardizes the updater on NSIS. |
+| Linux arm64 | AppImage | `.deb` | ARM AppImages require a native ARM host, so release CI uses GitHub's Ubuntu 22.04 ARM64 runner. |
 | Linux x86_64 | AppImage | `.deb` | A static feed has one `linux-x86_64` entry and cannot distinguish AppImage from `.deb`; non-AppImage runs do not contact the feed. |
 
 ## Release construction
 
-Normal developer bundle commands remain unsigned and do not require the updater private key. Tagged releases add `src-tauri/tauri.updater.conf.json`, set `TAURI_SIGNING_PRIVATE_KEY` from GitHub Actions secrets, and ask Tauri to create update artifacts and `.sig` files. The release-draft job gathers every architecture, runs `scripts/generate-update-manifest.mjs`, and fails closed on a missing/empty signature before staging `latest.json` and checksums in a draft GitHub Release. A maintainer verifies the complete draft before publishing it.
+Normal developer bundle commands remain unsigned and do not require the updater private key. Tagged releases add `src-tauri/tauri.updater.conf.json`, set `TAURI_SIGNING_PRIVATE_KEY` from GitHub Actions secrets, and ask Tauri to create update artifacts and `.sig` files. Linux and Windows packages are built and smoke-tested on native x64 and ARM64 GitHub runners; ARM AppImage packaging is intentionally not cross-compiled, and Windows ARM64 uses the image with Visual Studio ARM64 C++ tools. Regular product CI also builds and launch-smoke-tests the two new ARM64 targets before a tag can reach the release matrix. The release-draft job gathers every architecture, runs `scripts/generate-update-manifest.mjs`, and fails closed on a missing/empty signature before staging `latest.json` and checksums in a draft GitHub Release. A maintainer verifies the complete draft before publishing it.
+
+Release filenames follow `CleanerX-{version}-{os}-{arch}.{ext}`. User-facing architecture labels are `x64` and `arm64`, while `latest.json` retains Tauri's required `x86_64` and `aarch64` target keys.
 
 [Tauri normally skips Finder cosmetic metadata when it detects `CI=true`](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/macos/dmg/mod.rs#L160-L168), which would silently reduce a configured DMG to Finder's default icon view. The macOS release jobs explicitly set Tauri's supported `TAURI_BUNDLER_DMG_IGNORE_CI=true` override, then mount each completed DMG read-only and require the tracked field-manual background, a non-empty `.DS_Store` selecting that background and the configured window size, the application bundle, and the exact `/Applications` link. A missing or stale layout fails the release before assets are staged.
 
 WiX/MSI does not accept alphanumeric Semantic Versioning prerelease identifiers. The Windows release job therefore uses `scripts/generate-windows-release-config.mjs` to derive a numeric MSI-only version that sorts below the eventual stable version (`0.1.0-alpha.1` becomes `0.0.65535.10001`). The application, tag, updater manifest, NSIS installer, and release asset names retain the public Semantic Versioning value. Unsupported prerelease shapes fail during tag validation before platform builds begin.
 
-Tauri's signature establishes continuity with the public key embedded in an installed CleanerX build. It does not establish operating-system publisher identity. Artifact names and release warnings therefore continue to say that current binaries are unsigned and not notarized.
+Tauri's signature establishes continuity with the public key embedded in an installed CleanerX build. It does not establish operating-system publisher identity. The release warning and documentation continue to say that current binaries are unsigned and not notarized; filenames stay short and machine-predictable.

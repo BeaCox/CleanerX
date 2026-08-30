@@ -94,17 +94,27 @@ jobs:
           - name: macOS x86_64
             os: macos-15-intel
             platform: macos
-            arch: x86_64
+            arch: x64
             target: x86_64-apple-darwin
           - name: Linux x86_64
             os: ubuntu-22.04
             platform: linux
-            arch: x86_64
+            arch: x64
+            target: ""
+          - name: Linux arm64
+            os: ubuntu-22.04-arm
+            platform: linux
+            arch: arm64
             target: ""
           - name: Windows x86_64
             os: windows-2025
             platform: windows
-            arch: x86_64
+            arch: x64
+            target: ""
+          - name: Windows arm64
+            os: windows-11-vs2026-arm
+            platform: windows
+            arch: arm64
             target: ""
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
@@ -126,6 +136,10 @@ jobs:
             libxdo-dev \
             patchelf \
             xvfb
+      - name: Install GNU Make on Windows ARM64
+        if: matrix.platform == 'windows' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: choco install make --no-progress -y
       - uses: pnpm/action-setup@v6
         with:
           version: 11.3.0
@@ -225,18 +239,20 @@ jobs:
             echo "Expected exactly one macOS app, DMG, updater archive, and updater signature." >&2
             exit 1
           fi
+          asset_base="CleanerX-${RELEASE_VERSION}-macos-${RELEASE_ARCH}"
           ditto -c -k --keepParent "${app_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.zip"
+            "release-assets/${asset_base}.zip"
           cp "${dmg_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.dmg"
+            "release-assets/${asset_base}.dmg"
           cp "${updater_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.tar.gz"
+            "release-assets/${asset_base}.tar.gz"
           cp "${updater_signature_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_macos_${RELEASE_ARCH}_unsigned.app.tar.gz.sig"
+            "release-assets/${asset_base}.tar.gz.sig"
       - name: Stage Linux release assets
         if: matrix.platform == 'linux'
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           mkdir release-assets
@@ -248,17 +264,19 @@ jobs:
             echo "Expected exactly one deb, AppImage, and AppImage updater signature." >&2
             exit 1
           fi
+          asset_base="CleanerX-${RELEASE_VERSION}-linux-${RELEASE_ARCH}"
           cp "${deb_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.deb"
+            "release-assets/${asset_base}.deb"
           cp "${appimage_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.AppImage"
+            "release-assets/${asset_base}.AppImage"
           cp "${appimage_signature_paths[0]}" \
-            "release-assets/CleanerX_${RELEASE_VERSION}_linux_x86_64_unsigned.AppImage.sig"
+            "release-assets/${asset_base}.AppImage.sig"
       - name: Stage Windows release assets
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_ARCH: ${{ matrix.arch }}
         run: |
           New-Item -ItemType Directory -Path release-assets | Out-Null
           $msi = @(Get-ChildItem target/release/bundle/msi/*.msi)
@@ -267,9 +285,10 @@ jobs:
           if ($msi.Count -ne 1 -or $nsis.Count -ne 1 -or $nsisSignature.Count -ne 1) {
             throw "Expected exactly one MSI, NSIS installer, and NSIS updater signature."
           }
-          Copy-Item $msi[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned.msi"
-          Copy-Item $nsis[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned_setup.exe"
-          Copy-Item $nsisSignature[0].FullName "release-assets/CleanerX_$($env:RELEASE_VERSION)_windows_x86_64_unsigned_setup.exe.sig"
+          $assetBase = "CleanerX-$($env:RELEASE_VERSION)-windows-$($env:RELEASE_ARCH)"
+          Copy-Item $msi[0].FullName "release-assets/$assetBase.msi"
+          Copy-Item $nsis[0].FullName "release-assets/$assetBase.exe"
+          Copy-Item $nsisSignature[0].FullName "release-assets/$assetBase.exe.sig"
       - name: Record build metadata
         shell: bash
         env:
@@ -293,7 +312,7 @@ jobs:
             echo "cargo=$(cargo --version)"
             echo "node=$(node --version)"
             echo "pnpm=$(pnpm --version)"
-          } > "release-assets/CleanerX_${RELEASE_VERSION}_${RELEASE_PLATFORM}_${RELEASE_ARCH}_build-metadata.txt"
+          } > "release-assets/CleanerX-${RELEASE_VERSION}-${RELEASE_PLATFORM}-${RELEASE_ARCH}.txt"
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
@@ -325,7 +344,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          tar -czf "release-assets/CleanerX_${RELEASE_VERSION}_source-lockfiles.tar.gz" \
+          tar -czf "release-assets/CleanerX-${RELEASE_VERSION}-lockfiles.tar.gz" \
             Cargo.lock pnpm-lock.yaml
           {
             echo "tag=$GITHUB_REF_NAME"
@@ -334,8 +353,8 @@ jobs:
             echo "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "source=https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA"
             echo "workflow=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          } > "release-assets/CleanerX_${RELEASE_VERSION}_release-metadata.txt"
-          checksum_file="CleanerX_${RELEASE_VERSION}_SHA256SUMS.txt"
+          } > "release-assets/CleanerX-${RELEASE_VERSION}-release.txt"
+          checksum_file="CleanerX-${RELEASE_VERSION}-checksums.txt"
           rm -f "release-assets/$checksum_file"
           (cd release-assets && sha256sum * > "$checksum_file")
       - name: Create draft release

@@ -77,7 +77,7 @@ An artifact is released from its exact tested tag. An earlier build is never pro
 - The public key is pinned in `src-tauri/tauri.conf.json`. Release automation reads the private key only from the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret, while the maintainer keeps a recovery copy in the native credential store. It must never be committed, logged, or copied into a release artifact.
 - Losing or rotating the private key without a signed transition strands installed builds on their pinned key. Key rotation therefore requires a release signed by the old key that embeds the new trust path before subsequent releases use the new key.
 - The release job fails if any platform artifact or `.sig` file is absent. It creates `latest.json` only after all architecture-specific artifacts have been collected, and checksums include the manifest, signatures, and updater payloads.
-- macOS arm64/x86_64, Windows x86_64 NSIS, and Linux x86_64 AppImage are the in-app update targets. MSI, `.deb`, DMG, and application ZIP artifacts remain manual distribution formats.
+- macOS arm64/x86_64, Windows arm64/x86_64 NSIS, and Linux arm64/x86_64 AppImage are the in-app update targets. MSI, `.deb`, DMG, and application ZIP artifacts remain manual distribution formats.
 
 ## Pilot and defect policy
 

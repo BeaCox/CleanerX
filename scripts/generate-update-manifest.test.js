@@ -16,10 +16,12 @@ function updaterAssets(version = "1.2.3") {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cleanerx-updater-manifest-"));
   temporaryDirectories.push(directory);
   const names = [
-    `CleanerX_${version}_macos_arm64_unsigned.app.tar.gz`,
-    `CleanerX_${version}_macos_x86_64_unsigned.app.tar.gz`,
-    `CleanerX_${version}_linux_x86_64_unsigned.AppImage`,
-    `CleanerX_${version}_windows_x86_64_unsigned_setup.exe`,
+    `CleanerX-${version}-macos-arm64.tar.gz`,
+    `CleanerX-${version}-macos-x64.tar.gz`,
+    `CleanerX-${version}-linux-arm64.AppImage`,
+    `CleanerX-${version}-linux-x64.AppImage`,
+    `CleanerX-${version}-windows-arm64.exe`,
+    `CleanerX-${version}-windows-x64.exe`,
   ];
   names.forEach((name, index) => {
     fs.writeFileSync(path.join(directory, name), `artifact-${index}`);
@@ -41,18 +43,24 @@ describe("update manifest generation", () => {
     expect(Object.keys(manifest.platforms)).toEqual([
       "darwin-aarch64",
       "darwin-x86_64",
+      "linux-aarch64",
       "linux-x86_64",
+      "windows-aarch64",
       "windows-x86_64",
     ]);
+    expect(manifest.platforms["linux-aarch64"]).toEqual({
+      signature: "signature-2",
+      url: "https://github.com/BeaCox/CleanerX/releases/download/v1.2.3/CleanerX-1.2.3-linux-arm64.AppImage",
+    });
     expect(manifest.platforms["windows-x86_64"]).toEqual({
-      signature: "signature-3",
-      url: "https://github.com/BeaCox/CleanerX/releases/download/v1.2.3/CleanerX_1.2.3_windows_x86_64_unsigned_setup.exe",
+      signature: "signature-5",
+      url: "https://github.com/BeaCox/CleanerX/releases/download/v1.2.3/CleanerX-1.2.3-windows-x64.exe",
     });
   });
 
   it("fails closed when an artifact signature is missing", () => {
     const directory = updaterAssets();
-    fs.rmSync(path.join(directory, "CleanerX_1.2.3_linux_x86_64_unsigned.AppImage.sig"));
+    fs.rmSync(path.join(directory, "CleanerX-1.2.3-linux-x64.AppImage.sig"));
 
     expect(() => buildUpdateManifest({
       assetsDirectory: directory,
