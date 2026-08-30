@@ -66,18 +66,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
+          - name: macOS ARM64
             runner: macos-15
-            smoke: false
-          - name: Windows
+            platform: macos
+          - name: Linux ARM64
+            runner: ubuntu-22.04-arm
+            platform: linux
+          - name: Windows x64
             runner: windows-2025
-            smoke: true
+            platform: windows
+          - name: Windows ARM64
+            runner: windows-11-vs2026-arm
+            platform: windows
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Install Linux application dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            xvfb
       - uses: pnpm/action-setup@v6
         with:
           version: 11.3.0
@@ -88,7 +106,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-${{ runner.os }}
+          shared-key: ci-${{ runner.os }}-${{ runner.arch }}
       - run: pnpm install --frozen-lockfile
       - name: Build frontend assets
         run: pnpm build
@@ -97,6 +115,9 @@ jobs:
       - name: Build desktop application
         run: cargo build -p cleanerx-app
       - name: Smoke-test Windows application
-        if: matrix.smoke
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: ./scripts/smoke-windows.ps1 -Profile debug
+      - name: Smoke-test Linux application
+        if: matrix.platform == 'linux'
+        run: make smoke-linux LINUX_PROFILE=debug

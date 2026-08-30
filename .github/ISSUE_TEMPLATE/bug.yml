@@ -20,7 +20,9 @@ body:
       options:
         - macOS 13 or later
         - x86_64 Linux
+        - ARM64 Linux
         - x86_64 Windows 10/11
+        - ARM64 Windows 11
     validations:
       required: true
   - type: dropdown

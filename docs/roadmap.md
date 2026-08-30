@@ -26,12 +26,12 @@ CleanerX currently has:
 - encrypted `.cxb` backup/restore primitives, path guards, and an operation journal;
 - optional, off-by-default cleanup backups with an explicit irreversible-deletion warning;
 - macOS Apple Silicon and Intel `.app`/DMG builds;
-- unsigned x86_64 Linux `.deb` and AppImage builds on Ubuntu 22.04, with a native Xvfb launch smoke test and an isolated Secret Service backup/restore round trip;
-- unsigned x86_64 Windows MSI and NSIS builds, with a native launch smoke test and an isolated Credential Manager backup/restore round trip;
+- release automation for unsigned x64 and ARM64 Linux `.deb` and AppImage builds on native Ubuntu 22.04 runners, with Xvfb launch smoke tests and an isolated x64 Secret Service backup/restore round trip; the published `v0.1.0` assets remain x64-only;
+- release automation for unsigned x64 and ARM64 Windows MSI and NSIS builds on native runners, with launch smoke tests and an isolated x64 Credential Manager backup/restore round trip; the published `v0.1.0` assets remain x64-only;
 - Windows application-data and package-manager launcher discovery, stdio-only Codex control transport, writer-process recognition, write-through atomic replacement, volume/file identity checks, owner validation, and junction/reparse-point rejection;
-- reusable product CI with the complete Linux quality gate, cross-platform Rust tests, and native Linux/Windows launch smoke tests;
+- reusable product CI with the complete Linux x64 quality gate, cross-platform Rust tests, and native x64/ARM64 Linux/Windows launch smoke tests;
 - a published, explicitly unsigned and non-notarized [`v0.1.0`](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) stable release with macOS, Linux, and Windows assets, updater signatures, build metadata, committed lockfiles, and SHA-256 checksums; and
-- one SemVer tag workflow that reruns product CI, validates synchronized versions and `main` ancestry, builds every supported platform, and stages a GitHub Release for maintainer approval.
+- one SemVer tag workflow that reruns product CI, validates synchronized versions and `main` ancestry, builds every supported platform/architecture, and stages consistently named `CleanerX-{version}-{os}-{arch}.{ext}` assets for maintainer approval.
 
 This is a bounded stable release, not a promise that every Agent version, storage revision, native environment, or crash boundary has production-grade coverage.
 
@@ -107,9 +107,10 @@ Priority: maintain the published unsigned `v0.1.0` release and close the outstan
 
 - Add Tauri smoke tests for launch, scan, read-only degradation, detail loading, review dialog, backup listing, and settings persistence on macOS 13+.
 - Launch each architecture artifact on a clean supported environment and run an isolated mutation/backup/restore cycle with disposable Agent data.
+- Record the first tagged native Linux ARM64 and Windows ARM64 package/install/update evidence; workflow support alone does not retroactively widen the published `v0.1.0` boundary.
 - Confirm bundles contain no development URLs, private source-map paths, local preferences, test data, journals, or backup identities.
 - Verify accessibility: keyboard-only navigation, focus order, contrast, system Chinese/English switching, dark mode, and reduced motion.
-- Document reproducible local commands for both architectures and the supported Finder/System Settings opening path. Never instruct users to disable Gatekeeper globally or run broad quarantine-removal commands.
+- Document reproducible local commands for each architecture and the supported Finder/System Settings opening path. Never instruct users to disable Gatekeeper globally or run broad quarantine-removal commands.
 - Verify the manual signed updater on every supported updater package after draft artifacts exist: no startup/background request, invalid signatures fail closed, stable feeds exclude prereleases, and installation still requires two explicit user actions.
 
 ### Remaining pilot and compatibility evidence

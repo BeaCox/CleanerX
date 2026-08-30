@@ -57,8 +57,8 @@ The detailed routes, gates, limitations, and automated evidence live in the [mut
 | Platform | Current boundary | Build output |
 | --- | --- | --- |
 | macOS 13+ | Apple Silicon and Intel | Unsigned `.app` and DMG |
-| Linux x86_64 | WebKitGTK 4.1 desktop environment; CI uses Ubuntu 22.04 | Unsigned `.deb` and AppImage |
-| Windows 10/11 x86_64 | WebView2 Runtime; MSVC C runtime is statically linked | Unsigned MSI and NSIS installers |
+| Linux x64 / ARM64 | WebKitGTK 4.1 desktop environment; release CI uses native Ubuntu 22.04 runners | Unsigned `.deb` and AppImage |
+| Windows 10/11 x64; Windows 11 ARM64 | WebView2 Runtime; MSVC C runtime is statically linked | Unsigned MSI and NSIS installers |
 
 [CleanerX v0.1.0](https://github.com/BeaCox/CleanerX/releases/tag/v0.1.0) is the current stable release within the published compatibility matrix. Its macOS, Linux, and Windows artifacts are explicitly unsigned and not notarized; verify manually downloaded files against the release's SHA-256 checksums. See the [release policy](docs/open-source-release-plan.md) for the gates that separate source availability, mutation safety, and publisher identity.
 
@@ -135,10 +135,12 @@ make check
 | --- | --- |
 | `make app` | macOS: unsigned `.app` |
 | `make bundles` | macOS: unsigned `.app` and DMG |
-| `make linux` | Linux x86_64: unsigned `.deb` and AppImage |
-| `make windows` | Windows x86_64 Developer PowerShell: unsigned MSI and NSIS installers |
+| `make linux` | Native Linux architecture: unsigned `.deb` and AppImage |
+| `make windows` | Native Windows Developer PowerShell: unsigned MSI and NSIS installers |
 
 Use `TARGET=<rust-target-triple>` with bundle commands when selecting an explicit architecture. Native packages are written beneath `target/release/bundle/`.
+
+Tagged release assets use the predictable form `CleanerX-{version}-{os}-{arch}.{ext}`, for example `CleanerX-0.2.0-linux-arm64.AppImage` and `CleanerX-0.2.0-windows-x64.exe`. The release warning, not a filename suffix, records that current builds are unsigned.
 
 Unsigned builds may trigger Gatekeeper or SmartScreen. Verify that the binary came from the expected commit before approving it. Do not disable platform protections globally or trust a checksum as proof of publisher identity.
 

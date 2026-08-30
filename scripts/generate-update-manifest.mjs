@@ -3,10 +3,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const targets = [
-  ["darwin-aarch64", (version) => `CleanerX_${version}_macos_arm64_unsigned.app.tar.gz`],
-  ["darwin-x86_64", (version) => `CleanerX_${version}_macos_x86_64_unsigned.app.tar.gz`],
-  ["linux-x86_64", (version) => `CleanerX_${version}_linux_x86_64_unsigned.AppImage`],
-  ["windows-x86_64", (version) => `CleanerX_${version}_windows_x86_64_unsigned_setup.exe`],
+  ["darwin-aarch64", (version) => `CleanerX-${version}-macos-arm64.tar.gz`],
+  ["darwin-x86_64", (version) => `CleanerX-${version}-macos-x64.tar.gz`],
+  ["linux-aarch64", (version) => `CleanerX-${version}-linux-arm64.AppImage`],
+  ["linux-x86_64", (version) => `CleanerX-${version}-linux-x64.AppImage`],
+  ["windows-aarch64", (version) => `CleanerX-${version}-windows-arm64.exe`],
+  ["windows-x86_64", (version) => `CleanerX-${version}-windows-x64.exe`],
 ];
 
 export function buildUpdateManifest({ assetsDirectory, version, repository, tag, publishedAt }) {
