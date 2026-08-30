@@ -66,13 +66,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS ARM64
+          - name: macOS
             runner: macos-15
             platform: macos
           - name: Linux ARM64
             runner: ubuntu-22.04-arm
             platform: linux
-          - name: Windows x64
+          - name: Windows
             runner: windows-2025
             platform: windows
           - name: Windows ARM64
