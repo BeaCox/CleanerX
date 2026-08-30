@@ -76,6 +76,11 @@ CleanerX uses a flat technical-instrument aesthetic ("field manual console") bec
 
 ## Development workflow
 
+- Before modifying code or documentation, create a dedicated task branch from the latest `main` when the current branch is `main`.
+- Name task branches for their intent with a concise kebab-case suffix, using prefixes such as `fix/`, `feat/`, `doc/`, `refactor/`, `test/`, or `chore/`.
+- Use one branch per independent work item. Keep related commits on that branch, and continue using an existing task branch when it already matches the requested work.
+- Never commit or push changes directly to `main`; submit completed work through a pull request. Read-only investigation and fast-forward synchronization of local `main` with `origin/main` do not require a task branch.
+- Do not switch branches while unrelated uncommitted changes are present. Preserve those changes and ask for direction if they cannot be safely isolated.
 - Use the root `Makefile` as the stable entry point. Tool-specific commands remain implemented by Cargo, pnpm, and Tauri underneath it.
 - Run `make check` before handing off a code change. It covers Rust formatting, Clippy, Rust tests, frontend tests, and the frontend production build.
 - Use `make dev` for hot-reload development, `make app` for a local unsigned `.app`, and `make bundles` for `.app` plus DMG release artifacts.
